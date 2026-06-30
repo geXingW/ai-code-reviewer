@@ -36,14 +36,49 @@ jobs:
             --to HEAD \
             --verbose
 
-  # Placeholder for future backend tests
-  # Will be enabled in Issue #2 (backend skeleton)
-  backend-placeholder:
-    name: Backend Tests (placeholder)
+  backend-test:
+    name: Backend Tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: ai_reviewer
+          POSTGRES_PASSWORD: ai_reviewer
+          POSTGRES_DB: ai_code_reviewer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_reviewer -d ai_code_reviewer"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: CHANGE_ME_FERNET_KEY_GENERATE_WITH_Fernet.generate_key
     steps:
       - uses: actions/checkout@v7
-      - name: Skip backend tests
-        run: |
-          echo "Backend code not yet present; will be enabled in Issue #2."
-          echo "Tracking: https://github.com/geXingW/ai-code-reviewer/milestone/1"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: pip install -e "backend[dev]"
+      - name: Lint backend
+        run: ruff check .
+        working-directory: backend
+      - name: Type check backend
+        run: mypy app
+        working-directory: backend
+      - name: Test backend
+        run: pytest
+        working-directory: backend
