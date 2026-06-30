@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import uuid4
 
 import pytest
 
-from app.engines.llm_engine.engine import LLMDirectEngine
+from app.engines.llm_engine.engine import LLMDirectEngine, OpenAICompatibleLLMClient
 from app.engines.types import (
     DiffHunk,
     ProviderConfig,
@@ -34,6 +35,41 @@ class _FakeLLMClient:
         _ = provider
         _ = timeout_seconds
         self.prompts.append(prompt)
+        return self.responses.pop(0)
+
+
+@dataclass
+class _FakeProviderHTTPResponse:
+    """HTTP response double used by provider-backed engine client tests."""
+
+    payload: dict[str, Any]
+
+    def json(self) -> dict[str, Any]:
+        """Return queued JSON payload."""
+
+        return self.payload
+
+    def raise_for_status(self) -> None:
+        """No-op for successful fake responses."""
+
+
+@dataclass
+class _FakeProviderHTTPClient:
+    """Capture provider HTTP requests from OpenAICompatibleLLMClient."""
+
+    responses: list[_FakeProviderHTTPResponse]
+    requests: list[dict[str, Any]] = field(default_factory=list)
+
+    async def post(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> _FakeProviderHTTPResponse:
+        """Record request and return the next fake response."""
+
+        self.requests.append({"url": url, "headers": headers or {}, "json": json or {}})
         return self.responses.pop(0)
 
 
@@ -272,6 +308,37 @@ async def test_review_ignores_malformed_or_out_of_diff_findings() -> None:
     assert len(findings) == 1
     assert findings[0].title == "ok"
     assert findings[0].confidence == 1.0
+
+
+@pytest.mark.asyncio
+async def test_default_client_uses_provider_abstraction() -> None:
+    """Default LLM client delegates OpenAI-compatible calls through app.llm providers."""
+
+    http_client = _FakeProviderHTTPClient(
+        responses=[
+            _FakeProviderHTTPResponse(
+                payload={
+                    "choices": [{"message": {"content": "{\"findings\": []}"}}],
+                    "usage": {"total_tokens": 12},
+                }
+            )
+        ]
+    )
+    client = OpenAICompatibleLLMClient(http_client=http_client)
+
+    provider_config = _ctx().provider
+    assert provider_config is not None
+
+    content = await client.complete(
+        provider=provider_config,
+        prompt="review this diff",
+        timeout_seconds=5.0,
+    )
+
+    assert content == "{\"findings\": []}"
+    request = http_client.requests[0]
+    assert request["url"] == "https://llm.example.com/v1/chat/completions"
+    assert request["json"]["response_format"] == {"type": "json_object"}
 
 
 @pytest.mark.asyncio
