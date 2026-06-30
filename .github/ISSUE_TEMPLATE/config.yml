@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 提问 / 讨论
+    url: https://github.com/geXingW/ai-code-reviewer/discussions
+    about: 一般问题请到 Discussions
+  - name: 🔒 安全漏洞
+    url: https://github.com/geXingW/ai-code-reviewer/blob/master/SECURITY.md
+    about: 私下报告，请勿开 Issue

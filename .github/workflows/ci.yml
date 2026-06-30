@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint-markdown:
+    name: Lint Markdown
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Markdown files exist
+        run: |
+          ls -la README.md LICENSE CONTRIBUTING.md CHANGELOG.md SECURITY.md CODE_OF_CONDUCT.md
+          ls -la docs/ARCHITECTURE.md
+
+  commitlint:
+    name: Commit Message Lint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-save @commitlint/cli @commitlint/config-conventional
+      - name: Validate commit messages
+        run: |
+          npx commitlint \
+            --from origin/${{ github.base_ref }} \
+            --to HEAD \
+            --verbose
+
+  # Placeholder for future backend tests
+  # Will be enabled in Issue #2 (backend skeleton)
+  backend-placeholder:
+    name: Backend Tests (placeholder)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Skip backend tests
+        run: |
+          echo "Backend code not yet present; will be enabled in Issue #2."
+          echo "Tracking: https://github.com/geXingW/ai-code-reviewer/milestone/1"

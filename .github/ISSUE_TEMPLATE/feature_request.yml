@@ -1,0 +1,41 @@
+name: ✨ Feature Request
+description: 提议新功能
+title: "[Feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题？
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的解决方案
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的其他方案
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 影响范围
+      options:
+        - 评审引擎 (Engine)
+        - LLM 供应商 (Provider)
+        - 规则系统 (Rules)
+        - 阻断策略 (Block Policy)
+        - GitLab 集成
+        - Jenkins 集成
+        - 前端管理后台
+        - 误报反馈
+        - 文档
+        - 其他
+    validations:
+      required: true
