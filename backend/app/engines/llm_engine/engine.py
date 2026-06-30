@@ -18,7 +18,6 @@ import re
 from collections.abc import Mapping
 from typing import Any, Protocol, cast
 
-import httpx
 from pydantic import ValidationError
 
 from app.engines.base import ReviewEngine
@@ -32,6 +31,7 @@ from app.engines.types import (
     ReviewHistoryItem,
     RuleSpec,
 )
+from app.llm import AsyncHTTPClient, ChatMessage, LLMError, build_provider
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +54,16 @@ class LLMCompletionClient(Protocol):
 
 
 class OpenAICompatibleLLMClient:
-    """Small OpenAI-compatible chat completion client.
+    """Provider-backed completion client used by ``LLMDirectEngine`` by default."""
 
-    The client posts to ``{provider.base_url}/chat/completions`` and extracts the
-    first ``choices[0].message.content`` value. It deliberately does not own
-    provider discovery, retry policy, or token resolution; those are expected to
-    move into the dedicated provider abstraction later.
-    """
+    def __init__(self, *, http_client: AsyncHTTPClient | None = None) -> None:
+        """Create a completion client.
+
+        Args:
+            http_client: Optional provider HTTP transport for tests.
+        """
+
+        self._http_client = http_client
 
     async def complete(
         self,
@@ -69,66 +72,23 @@ class OpenAICompatibleLLMClient:
         prompt: str,
         timeout_seconds: float,
     ) -> str:
-        """Call an OpenAI-compatible chat-completions endpoint.
+        """Call the configured provider through the shared LLM abstraction."""
 
-        Args:
-            provider: Resolved provider settings, including plaintext API key.
-            prompt: Prompt to send as a user message.
-            timeout_seconds: HTTP timeout in seconds.
-
-        Returns:
-            str: Raw assistant message content.
-
-        Raises:
-            httpx.HTTPError: Network or non-2xx HTTP failures.
-            ValueError: Response shape is missing expected content.
-        """
-
-        if not provider.base_url.strip():
-            msg = "provider.base_url must not be empty"
-            raise ValueError(msg)
-        if not provider.model.strip():
-            msg = "provider.model must not be empty"
-            raise ValueError(msg)
-        if not provider.api_key.strip():
-            msg = "provider.api_key must not be empty"
-            raise ValueError(msg)
-
-        url = provider.base_url.rstrip("/") + "/chat/completions"
-        payload: dict[str, Any] = {
-            "model": provider.model,
-            "temperature": provider.temperature,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
+        llm_provider = build_provider(provider, http_client=self._http_client)
+        response = await llm_provider.chat(
+            [
+                ChatMessage(
+                    role="system",
+                    content=(
                         "You are a senior code reviewer. Return only valid JSON "
                         "that follows the user's output contract."
                     ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-        }
-        if provider.max_tokens is not None:
-            payload["max_tokens"] = provider.max_tokens
-
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.post(
-                url,
-                headers={"Authorization": f"Bearer {provider.api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-        data = response.json()
-        try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            msg = "OpenAI-compatible response missing choices[0].message.content"
-            raise ValueError(msg) from exc
-        if not isinstance(content, str):
-            msg = "OpenAI-compatible response content must be a string"
-            raise ValueError(msg)
-        return content
+                ),
+                ChatMessage(role="user", content=prompt),
+            ]
+        )
+        _ = timeout_seconds
+        return response.content
 
 
 @register_engine
@@ -186,7 +146,7 @@ class LLMDirectEngine(ReviewEngine):
             )
             return self._parse_findings(raw_response, ctx)
         except (
-            httpx.HTTPError,
+            LLMError,
             ValueError,
             TypeError,
             json.JSONDecodeError,

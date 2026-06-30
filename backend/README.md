@@ -24,3 +24,9 @@ uvicorn app.main:app --reload
 ```
 
 The service exposes `GET /health`, which checks PostgreSQL and Redis connectivity.
+
+## Architecture docs
+
+- [Review Engine Architecture](docs/engine_architecture.md)
+- [GitLab Webhook MVP](docs/gitlab_webhook_mvp.md)
+- [LLM Provider Abstraction](docs/llm_providers.md)

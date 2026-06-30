@@ -211,8 +211,9 @@ The built-in `llm-direct` engine is a diff-only review engine:
 - Builds a five-section prompt covering review scope, active rules,
   confirmed false-positive history, merge request diff, and the JSON
   output contract.
-- Calls an OpenAI-compatible `/chat/completions` endpoint through an
-  injectable client.
+- Calls the shared `app.llm` provider abstraction through an injectable
+  client. OpenAI-compatible, Anthropic native, and Custom providers all
+  normalize responses to the same `ChatResponse` contract.
 - Parses model JSON into runtime `Finding` objects.
 - Resolves missing line numbers by matching `existing_code` against
   added diff lines.
