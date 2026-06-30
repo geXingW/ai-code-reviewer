@@ -79,6 +79,8 @@ class OrchestratorResult:
     status: str
     finding_count: int
     has_blocker: bool
+    blocker_count: int = 0
+    policy_applied: str | None = None
     note_id: int | None = None
 
 
@@ -137,6 +139,7 @@ class ReviewOrchestrator:
             event.target_branch,
         )
         has_blocker, blocker_count = compute_has_blocker(findings, block_policy)
+        policy_applied = f"{block_policy.branch_pattern} -> {block_policy.block_severity}"
         note = await self._gitlab_client.create_merge_request_note(
             project_id=event.project_id,
             mr_iid=event.mr_iid,
@@ -159,6 +162,8 @@ class ReviewOrchestrator:
             status="done",
             finding_count=len(findings),
             has_blocker=has_blocker,
+            blocker_count=blocker_count,
+            policy_applied=policy_applied,
             note_id=_extract_int(note, "id"),
         )
 

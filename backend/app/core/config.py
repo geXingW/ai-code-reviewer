@@ -48,6 +48,10 @@ class Settings(BaseSettings):
         SecretStr,
         Field(description="Shared secret expected in the X-Gitlab-Token webhook header."),
     ] = SecretStr("test-webhook-secret")
+    internal_api_token: Annotated[
+        SecretStr,
+        Field(description="Server-to-server token expected in the X-Internal-Token header."),
+    ] = SecretStr("test-internal-token")
     default_review_engine: Annotated[
         str,
         Field(description="Default registered ReviewEngine name used for GitLab webhook reviews."),
