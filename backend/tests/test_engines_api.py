@@ -87,7 +87,8 @@ async def test_engine_health_returns_details(client: AsyncClient) -> None:
     payload = response.json()
     assert payload["name"] == "llm-direct"
     assert payload["status"] == "ok"
-    assert payload["details"]["implementation"] == "placeholder"
+    assert payload["details"]["implementation"] == "llm-direct"
+    assert payload["details"]["supports_feedback"] is True
 
 
 @pytest.mark.asyncio

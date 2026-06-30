@@ -63,8 +63,10 @@ GitLab MR webhook
   this before high-volume production use.
 - Review records and findings are not persisted by this orchestrator yet. The
   service returns a generated review UUID and can be wired to repositories later.
-- The default `llm-direct` engine is still a skeleton until the real LLM review
-  implementation lands.
+- The default `llm-direct` engine now performs real diff-only LLM review when
+  `ReviewContext.provider` is populated. Until project/provider lookup is wired
+  into the orchestrator, webhook runs without a provider degrade safely to no
+  findings.
 - Duplicate webhook delivery de-duplication is not implemented yet.
 
 ## Local smoke test

@@ -1,7 +1,7 @@
 # Review Engine Architecture
 
-> **Status:** stable contract — implementation: skeleton (Issue #3); full LLM
-> engine lands in Issue #6.
+> **Status:** stable contract — `llm-direct` implementation is available
+> for diff-only reviews.
 
 This document explains the *review engine* abstraction layer: what
 problem it solves, the contract concrete engines must honour, and how to
@@ -177,8 +177,13 @@ Example response:
 {
   "name": "llm-direct",
   "status": "ok",
-  "message": "Skeleton engine — full implementation lands in Issue #6.",
-  "details": {"implementation": "placeholder", "tracking_issue": 6}
+  "message": "LLMDirectEngine is configured; provider health is checked during review.",
+  "details": {
+    "implementation": "llm-direct",
+    "supports_feedback": true,
+    "requires_repo_clone": false,
+    "timeout_seconds": 30.0
+  }
 }
 ```
 
@@ -199,18 +204,26 @@ Example response:
 
 ---
 
-## 7. What this Issue #3 ships vs. what comes later
+## 7. Built-in `llm-direct` behavior
 
-This PR ships **the abstraction layer and a placeholder
-`llm-direct`** that returns no findings. The placeholder exists so the
-registry, REST API, and lifespan wiring are exercisable end-to-end and
-covered by tests.
+The built-in `llm-direct` engine is a diff-only review engine:
 
-The real engine internals — prompt template, sliding-window line
-resolution, second-pass false-positive filter, OpenAI-compat HTTP
-client — arrive in Issue #6. They will replace the body of
-`app/engines/llm_engine/engine.py` **without breaking the public
-contract** documented above.
+- Builds a five-section prompt covering review scope, active rules,
+  confirmed false-positive history, merge request diff, and the JSON
+  output contract.
+- Calls an OpenAI-compatible `/chat/completions` endpoint through an
+  injectable client.
+- Parses model JSON into runtime `Finding` objects.
+- Resolves missing line numbers by matching `existing_code` against
+  added diff lines.
+- Filters findings that match prior confirmed false-positive history.
+- Degrades safely to `[]` when provider config is missing, the upstream
+  call fails, or the model returns malformed JSON.
+
+This implementation deliberately does not introduce a full provider
+registry. It consumes `ReviewContext.provider` and keeps the transport
+behind a small client protocol, so a later provider abstraction can swap
+the client without changing the public engine contract.
 
 When new engine families (OCR bundle, hybrid) start, follow the steps
 in §6 and they will appear in `/api/engines` automatically.
