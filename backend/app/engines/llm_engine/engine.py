@@ -479,8 +479,10 @@ def _optional_int(value: object) -> int | None:
         return None
     if isinstance(value, bool):
         return None
+    if not isinstance(value, int | float | str | bytes | bytearray):
+        return None
     try:
-        parsed = int(value)  # type: ignore[arg-type]
+        parsed = int(value)
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
