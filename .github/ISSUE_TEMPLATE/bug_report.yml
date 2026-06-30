@@ -1,0 +1,63 @@
+name: 🐛 Bug Report
+description: 报告一个 Bug
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug 描述
+      description: 清晰简洁地描述这个 Bug
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 配置某项目 ...
+        2. 触发 MR ...
+        3. 观察到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      placeholder: v0.1.0 / commit sha / main
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境
+      placeholder: |
+        - OS:
+        - Python:
+        - GitLab 版本:
+        - Jenkins 版本:
+        - 评审引擎:
+        - LLM 供应商:
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      render: shell
