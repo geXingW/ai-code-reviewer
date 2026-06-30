@@ -46,7 +46,7 @@ class ReviewEngine(ABC):
     async def health_check(self) -> HealthStatus: ...
 ```
 
-**Rules every engine must follow**
+### Rules every engine must follow
 
 - `name()` is **stable forever**. It is written into the `reviews.engine_used`
   column. Rename ⇒ historical rows become orphans. Add a new engine instead.

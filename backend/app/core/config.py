@@ -36,9 +36,25 @@ class Settings(BaseSettings):
         Field(description="Fernet key used to encrypt tokens and secrets."),
     ] = SecretStr("CHANGE_ME_FERNET_KEY_GENERATE_WITH_Fernet.generate_key")
     log_level: Annotated[str, Field(description="Python logging level name.")] = "INFO"
+    gitlab_base_url: Annotated[
+        str,
+        Field(description="GitLab instance base URL used by webhook review orchestration."),
+    ] = "http://localhost"
+    gitlab_token: Annotated[
+        SecretStr,
+        Field(description="GitLab access token used to read MR diff and write feedback."),
+    ] = SecretStr("CHANGE_ME_GITLAB_TOKEN")
+    gitlab_webhook_secret: Annotated[
+        SecretStr,
+        Field(description="Shared secret expected in the X-Gitlab-Token webhook header."),
+    ] = SecretStr("test-webhook-secret")
+    default_review_engine: Annotated[
+        str,
+        Field(description="Default registered ReviewEngine name used for GitLab webhook reviews."),
+    ] = "llm-direct"
     cors_origins: Annotated[
         list[str],
-        Field(description="Allowed browser origins for CORS."),
+        Field(description="Allowed CORS origins."),
     ] = ["http://localhost:5173"]
 
 
