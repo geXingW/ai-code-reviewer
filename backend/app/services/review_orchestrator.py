@@ -9,10 +9,17 @@ can persist ``reviews`` / ``review_findings`` without changing this public flow.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from app.core.block_policy import (
+    BlockPolicyLike,
+    build_default_block_policies,
+    compute_has_blocker,
+    match_block_policy,
+)
 from app.engines import DiffHunk, Finding, ReviewContext
 from app.engines.registry import EngineRegistry, get_engine_registry
 from app.integrations.gitlab.client import GitLabClient
@@ -21,8 +28,6 @@ _DIFF_HEADER_RE = re.compile(
     r"@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? "
     r"\+(?P<new_start>\d+)(?:,(?P<new_lines>\d+))? @@",
 )
-_BLOCKING_SEVERITIES = {"BLOCKER"}
-
 
 @dataclass(frozen=True)
 class GitLabMergeRequestEvent:
@@ -86,10 +91,12 @@ class ReviewOrchestrator:
         gitlab_client: GitLabClient,
         engine_registry: EngineRegistry | None = None,
         default_engine: str = "llm-direct",
+        block_policies: Sequence[BlockPolicyLike] | None = None,
     ) -> None:
         self._gitlab_client = gitlab_client
         self._engine_registry = engine_registry or get_engine_registry()
         self._default_engine = default_engine
+        self._block_policies = block_policies
 
     async def review_merge_request(self, event: GitLabMergeRequestEvent) -> OrchestratorResult:
         """Run the configured review engine for one GitLab MR event.
@@ -125,7 +132,11 @@ class ReviewOrchestrator:
         )
         engine = self._engine_registry.get(self._default_engine)
         findings = await engine.review(context)
-        has_blocker = any(finding.severity in _BLOCKING_SEVERITIES for finding in findings)
+        block_policy = match_block_policy(
+            self._block_policies or build_default_block_policies(event.project_uuid),
+            event.target_branch,
+        )
+        has_blocker, blocker_count = compute_has_blocker(findings, block_policy)
         note = await self._gitlab_client.create_merge_request_note(
             project_id=event.project_id,
             mr_iid=event.mr_iid,
@@ -137,7 +148,7 @@ class ReviewOrchestrator:
             state="failed" if has_blocker else "success",
             name="ai-code-reviewer",
             description=(
-                f"{len(findings)} finding(s), blocking issue detected"
+                f"{len(findings)} finding(s), {blocker_count} blocking finding(s)"
                 if has_blocker
                 else f"AI Review completed with {len(findings)} finding(s)"
             ),
