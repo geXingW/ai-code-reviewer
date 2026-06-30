@@ -9,11 +9,13 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import close_all_sessions
 
+from app.api.engines import router as engines_router
 from app.api.health import router as health_router
 from app.core.config import get_settings
 from app.core.db import engine
 from app.core.logging import configure_logging
 from app.core.redis import close_redis
+from app.engines import load_builtin_engines
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 
     settings = get_settings()
     configure_logging(settings)
+    load_builtin_engines()
     logger.info("Starting %s %s", settings.app_name, settings.app_version)
     try:
         yield
@@ -86,6 +89,7 @@ def create_app() -> FastAPI:
         return response
 
     app.include_router(health_router)
+    app.include_router(engines_router)
     return app
 
 
