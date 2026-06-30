@@ -53,9 +53,28 @@ GitLab MR webhook
   -> fetch MR changes via GitLab API
   -> build ReviewContext
   -> run configured ReviewEngine
+  -> match target branch against block policies
   -> create one MR note
   -> set commit status success/failed
 ```
+
+## Branch block policy behavior
+
+The orchestrator no longer hard-codes `BLOCKER` as the only merge-blocking
+severity. It evaluates the target branch against ordered block policies and then
+applies the matched severity threshold to engine findings.
+
+Default policies seeded for new projects are:
+
+- `master` -> block on `BLOCKER`
+- `release/*` -> block on `BLOCKER`
+- `hotfix/*` -> block on `BLOCKER`
+- `*` -> `NONE`, allowing other branches by default
+
+The reusable helper `build_default_block_policies(project_id)` creates the ORM
+rows. Project CRUD persistence is still outside this MVP, so webhook processing
+uses these defaults unless project-specific policies are injected by a later
+repository/service layer.
 
 ## Current MVP limits
 
