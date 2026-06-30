@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
@@ -321,8 +322,7 @@ def count_tokens(text: str) -> int:
     """
 
     try:
-        import tiktoken  # type: ignore[import-not-found]
-
+        tiktoken = importlib.import_module("tiktoken")
         encoding = tiktoken.get_encoding("cl100k_base")
         return len(encoding.encode(text))
     except Exception:  # noqa: BLE001 - optional dependency fallback by design.
