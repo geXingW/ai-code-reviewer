@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import respx
 from httpx import Response
@@ -63,6 +65,44 @@ async def test_create_merge_request_note_posts_body() -> None:
     assert route.called
     assert note["id"] == 99
     assert route.calls.last.request.content == b'{"body":"AI Review completed"}'
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_create_merge_request_discussion_posts_position_payload() -> None:
+    """Client can create a line-level discussion on a merge request diff."""
+
+    route = respx.post(
+        "https://gitlab.example.com/api/v4/projects/123/merge_requests/7/discussions"
+    ).mock(return_value=Response(201, json={"id": "discussion-1"}))
+
+    client = GitLabClient(base_url="https://gitlab.example.com", token="secret")
+    discussion = await client.create_merge_request_discussion(
+        project_id=123,
+        mr_iid=7,
+        body="**[BLOCKER] Secret leaked**",
+        base_sha="base456",
+        start_sha="start789",
+        head_sha="abc123",
+        old_path="app.py",
+        new_path="app.py",
+        line_number=10,
+    )
+
+    assert discussion["id"] == "discussion-1"
+    payload = json.loads(route.calls.last.request.content)
+    assert payload == {
+        "body": "**[BLOCKER] Secret leaked**",
+        "position": {
+            "position_type": "text",
+            "base_sha": "base456",
+            "start_sha": "start789",
+            "head_sha": "abc123",
+            "old_path": "app.py",
+            "new_path": "app.py",
+            "new_line": 10,
+        },
+    }
 
 
 @pytest.mark.asyncio

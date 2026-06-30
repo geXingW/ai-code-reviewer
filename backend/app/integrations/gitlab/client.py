@@ -4,6 +4,7 @@ The client deliberately exposes only the small surface the review MVP
 needs today:
 
 * fetch MR changes/diff
+* post line-level MR discussions
 * post an MR note
 * set a commit status
 
@@ -91,6 +92,74 @@ class GitLabClient:
             "POST",
             f"/api/v4/projects/{project_id}/merge_requests/{mr_iid}/notes",
             json={"body": body},
+        )
+
+    async def create_merge_request_discussion(
+        self,
+        *,
+        project_id: int,
+        mr_iid: int,
+        body: str,
+        base_sha: str,
+        start_sha: str,
+        head_sha: str,
+        old_path: str,
+        new_path: str,
+        line_number: int,
+    ) -> dict[str, Any]:
+        """Create a line-level discussion on an MR diff.
+
+        Args:
+            project_id: Numeric GitLab project ID.
+            mr_iid: MR IID scoped to the project.
+            body: Markdown discussion body.
+            base_sha: Base SHA from GitLab MR diff refs.
+            start_sha: Start SHA from GitLab MR diff refs.
+            head_sha: Head SHA from GitLab MR diff refs.
+            old_path: Old-path file location for the finding.
+            new_path: New-path file location for the finding.
+            line_number: New-file line number for the finding.
+
+        Returns:
+            dict[str, Any]: Raw GitLab discussion response.
+        """
+
+        if not body.strip():
+            msg = "GitLab discussion body must not be empty."
+            raise ValueError(msg)
+        if not base_sha.strip():
+            msg = "GitLab discussion base_sha must not be empty."
+            raise ValueError(msg)
+        if not start_sha.strip():
+            msg = "GitLab discussion start_sha must not be empty."
+            raise ValueError(msg)
+        if not head_sha.strip():
+            msg = "GitLab discussion head_sha must not be empty."
+            raise ValueError(msg)
+        if not old_path.strip():
+            msg = "GitLab discussion old_path must not be empty."
+            raise ValueError(msg)
+        if not new_path.strip():
+            msg = "GitLab discussion new_path must not be empty."
+            raise ValueError(msg)
+        if line_number <= 0:
+            msg = "GitLab discussion line_number must be positive."
+            raise ValueError(msg)
+        return await self._request_json(
+            "POST",
+            f"/api/v4/projects/{project_id}/merge_requests/{mr_iid}/discussions",
+            json={
+                "body": body,
+                "position": {
+                    "position_type": "text",
+                    "base_sha": base_sha,
+                    "start_sha": start_sha,
+                    "head_sha": head_sha,
+                    "old_path": old_path,
+                    "new_path": new_path,
+                    "new_line": line_number,
+                },
+            },
         )
 
     async def set_commit_status(
