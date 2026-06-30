@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import close_all_sessions
 from app.api.engines import router as engines_router
 from app.api.gitlab_webhook import router as gitlab_webhook_router
 from app.api.health import router as health_router
+from app.api.reviews import router as reviews_router
 from app.core.config import get_settings
 from app.core.db import engine
 from app.core.logging import configure_logging
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(engines_router)
     app.include_router(gitlab_webhook_router)
+    app.include_router(reviews_router)
     return app
 
 
