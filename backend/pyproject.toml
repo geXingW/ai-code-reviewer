@@ -50,7 +50,10 @@ select = ["E", "F", "I", "B", "UP", "ANN", "ASYNC", "S"]
 ignore = ["S101", "S104", "S105", "S110"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["ANN201"]
+# Tests use mock secrets in fixtures; suppress hard-coded password warnings.
+"tests/**/*.py" = ["ANN201", "S106"]
+# Alembic migrations are auto-generated and line breaks hurt readability.
+"alembic/versions/*.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"

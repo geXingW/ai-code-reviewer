@@ -1,9 +1,8 @@
 """Encrypted SQLAlchemy column helpers for sensitive string fields."""
 
-from typing import Any
-
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import Text
+from sqlalchemy.engine import Dialect
 from sqlalchemy.types import TypeDecorator
 
 from app.core.config import get_settings
@@ -73,14 +72,14 @@ class EncryptedString(TypeDecorator[str]):
     impl = Text
     cache_ok = True
 
-    def process_bind_param(self, value: str | None, dialect: Any) -> str | None:
+    def process_bind_param(self, value: str | None, dialect: Dialect) -> str | None:
         """Encrypt values before binding them to SQL statements."""
 
         if value is None:
             return None
         return encrypt_field(value)
 
-    def process_result_value(self, value: str | None, dialect: Any) -> str | None:
+    def process_result_value(self, value: str | None, dialect: Dialect) -> str | None:
         """Decrypt values loaded from SQL result rows."""
 
         if value is None:
