@@ -1,5 +1,6 @@
 """SQLAlchemy association model connecting projects and rules."""
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import Boolean, ForeignKey, String, text
@@ -7,6 +8,10 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.project import Project
+    from app.models.rule import Rule
 
 
 class ProjectRule(Base, TimestampMixin):
