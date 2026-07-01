@@ -9,6 +9,8 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import close_all_sessions
 
+from app.api.admin import login_router as admin_login_router
+from app.api.admin import router as admin_router
 from app.api.engines import router as engines_router
 from app.api.gitlab_webhook import router as gitlab_webhook_router
 from app.api.health import router as health_router
@@ -94,6 +96,8 @@ def create_app() -> FastAPI:
     app.include_router(engines_router)
     app.include_router(gitlab_webhook_router)
     app.include_router(reviews_router)
+    app.include_router(admin_login_router)
+    app.include_router(admin_router)
     return app
 
 

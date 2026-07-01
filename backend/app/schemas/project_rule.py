@@ -12,7 +12,7 @@ Severity = Literal["INFO", "WARNING", "BLOCKER"]
 class ProjectRuleCreate(BaseModel):
     """Payload for enabling a rule on a project."""
 
-    project_id: UUID
+    project_id: UUID | None = None
     rule_id: UUID
     enabled: bool = True
     severity_override: Severity | None = None

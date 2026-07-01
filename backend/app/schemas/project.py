@@ -4,7 +4,10 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.project_block_policy import ProjectBlockPolicyCreate, ProjectBlockPolicyRead
+from app.schemas.project_rule import ProjectRuleCreate, ProjectRuleRead
 
 BlockSeverity = Literal["INFO", "WARNING", "BLOCKER"]
 
@@ -24,6 +27,8 @@ class ProjectCreate(BaseModel):
     ignore_paths: list[Any] | None = None
     default_block_severity: BlockSeverity = "BLOCKER"
     deleted_at: datetime | None = None
+    rules: list[ProjectRuleCreate] = Field(default_factory=list)
+    block_policies: list[ProjectBlockPolicyCreate] = Field(default_factory=list)
 
 
 class ProjectUpdate(BaseModel):
@@ -41,10 +46,12 @@ class ProjectUpdate(BaseModel):
     ignore_paths: list[Any] | None = None
     default_block_severity: BlockSeverity | None = None
     deleted_at: datetime | None = None
+    rules: list[ProjectRuleCreate] | None = None
+    block_policies: list[ProjectBlockPolicyCreate] | None = None
 
 
 class ProjectRead(BaseModel):
-    """GitLab project returned by API responses with sensitive fields masked."""
+    """GitLab project configuration returned by API responses."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -61,6 +68,12 @@ class ProjectRead(BaseModel):
     ignore_paths: list[Any] | None
     default_block_severity: BlockSeverity
     deleted_at: datetime | None
+    rules: list[ProjectRuleRead] = Field(
+        default_factory=list,
+        validation_alias="project_rules",
+        serialization_alias="rules",
+    )
+    block_policies: list[ProjectBlockPolicyRead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

@@ -1,0 +1,770 @@
+"""MVP admin REST API endpoints for CRUD and false-positive workflows."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any, Literal, TypeVar, cast
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import Select, asc, desc, func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.core.config import get_settings
+from app.core.db import DbSession
+from app.models.engine import Engine
+from app.models.finding import Finding
+from app.models.negative_example import NegativeExample
+from app.models.project import Project
+from app.models.project_block_policy import ProjectBlockPolicy
+from app.models.project_rule import ProjectRule
+from app.models.provider import Provider
+from app.models.review import Review
+from app.models.rule import Rule
+from app.schemas.engine import EngineCreate, EngineRead, EngineUpdate
+from app.schemas.finding import FindingCreate, FindingRead, FindingUpdate
+from app.schemas.negative_example import NegativeExampleRead
+from app.schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
+from app.schemas.project_block_policy import ProjectBlockPolicyCreate
+from app.schemas.project_rule import ProjectRuleCreate
+from app.schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
+from app.schemas.review import ReviewCreate, ReviewRead, ReviewUpdate
+from app.schemas.rule import RuleCreate, RuleRead, RuleUpdate
+
+ModelT = TypeVar("ModelT")
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
+
+_ALLOWED_SORTS: dict[str, set[str]] = {
+    "providers": {"created_at", "updated_at", "name", "enabled"},
+    "rules": {"created_at", "updated_at", "rule_id", "title", "enabled"},
+    "projects": {"created_at", "updated_at", "name", "enabled"},
+    "reviews": {"created_at", "updated_at", "status", "mr_iid", "finding_count"},
+    "findings": {"created_at", "updated_at", "severity", "file_path", "fp_status"},
+    "negative_examples": {"created_at", "updated_at", "rule_id"},
+    "engines": {"created_at", "updated_at", "name", "enabled"},
+}
+
+
+
+
+
+def _unauthorized() -> HTTPException:
+    """Build a consistent 401 response for admin bearer authentication failures."""
+
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid admin token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _require_admin_auth(
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> str:
+    """Validate the admin bearer token before serving protected management APIs."""
+
+    if authorization is None:
+        raise _unauthorized()
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise _unauthorized()
+    return _verify_token(token.strip())
+
+
+def _verify_token(token: str) -> str:
+    """Verify a compact HMAC admin token and return the authenticated subject."""
+
+    try:
+        body, encoded_signature = token.split(".", 1)
+    except ValueError as exc:
+        raise _unauthorized() from exc
+
+    secret = get_settings().internal_api_token.get_secret_value().encode()
+    expected_signature = base64.urlsafe_b64encode(
+        hmac.new(secret, body.encode(), hashlib.sha256).digest(),
+    ).decode()
+    if not hmac.compare_digest(encoded_signature, expected_signature):
+        raise _unauthorized()
+
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(body.encode()).decode())
+        username = str(payload["sub"])
+        expires_at = int(payload["exp"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise _unauthorized() from exc
+
+    expected_username = getattr(get_settings(), "admin_username", "admin")
+    if not hmac.compare_digest(username, expected_username):
+        raise _unauthorized()
+    if expires_at <= int(datetime.now(UTC).timestamp()):
+        raise _unauthorized()
+    return username
+
+
+login_router = APIRouter(prefix="/api", tags=["admin"])
+router = APIRouter(prefix="/api", tags=["admin"], dependencies=[Depends(_require_admin_auth)])
+
+class Page(BaseModel):
+    """Generic paginated response envelope for admin list endpoints."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    items: list[Any]
+    total: int
+    limit: int
+    offset: int
+
+
+class LoginRequest(BaseModel):
+    """MVP single-account login payload."""
+
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class LoginResponse(BaseModel):
+    """MVP bearer token response."""
+
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_in: int
+
+
+class FalsePositiveMarkRequest(BaseModel):
+    """Developer false-positive mark payload."""
+
+    marked_by: str = Field(min_length=1, max_length=255)
+    reason: str | None = None
+
+
+class FalsePositiveReviewRequest(BaseModel):
+    """Admin false-positive review payload."""
+
+    reviewed_by: str = Field(min_length=1, max_length=255)
+    note: str | None = None
+
+
+@login_router.post("/auth/login", response_model=LoginResponse)
+async def login(payload: LoginRequest) -> LoginResponse:
+    """Authenticate the MVP admin account and return a signed bearer token."""
+
+    settings = get_settings()
+    expected_username = getattr(settings, "admin_username", "admin")
+    expected_password = getattr(settings, "admin_password", "admin")
+    if not hmac.compare_digest(payload.username, expected_username) or not hmac.compare_digest(
+        payload.password,
+        expected_password,
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    expires_in = 24 * 60 * 60
+    expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+    return LoginResponse(
+        access_token=_sign_token(payload.username, expires_at),
+        expires_in=expires_in,
+    )
+
+
+@router.get("/providers", response_model=Page)
+async def list_providers(
+    db: DbSession,
+    enabled: bool | None = None,
+    q: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: str = "-created_at",
+) -> Page:
+    """List LLM providers with paging, keyword filtering, and sorting."""
+
+    stmt = select(Provider)
+    if enabled is not None:
+        stmt = stmt.where(Provider.enabled == enabled)
+    if q:
+        stmt = stmt.where(Provider.name.ilike(f"%{q}%"))
+    return await _paginate(db, stmt, ProviderRead, "providers", sort, limit, offset)
+
+
+@router.post("/providers", response_model=ProviderRead, status_code=status.HTTP_201_CREATED)
+async def create_provider(payload: ProviderCreate, db: DbSession) -> ProviderRead:
+    """Create an LLM provider configuration."""
+
+    provider = Provider(**payload.model_dump())
+    return await _create(db, provider, ProviderRead, "Provider already exists")
+
+
+@router.get("/providers/{provider_id}", response_model=ProviderRead)
+async def get_provider(provider_id: UUID, db: DbSession) -> ProviderRead:
+    """Return one LLM provider by ID."""
+
+    provider = await _get_or_404(db, Provider, provider_id, "Provider")
+    return ProviderRead.model_validate(provider)
+
+
+@router.patch("/providers/{provider_id}", response_model=ProviderRead)
+async def update_provider(
+    provider_id: UUID,
+    payload: ProviderUpdate,
+    db: DbSession,
+) -> ProviderRead:
+    """Update an LLM provider configuration."""
+
+    provider = await _get_or_404(db, Provider, provider_id, "Provider")
+    return await _update(db, provider, payload, ProviderRead)
+
+
+@router.delete("/providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_provider(provider_id: UUID, db: DbSession) -> None:
+    """Delete an LLM provider configuration."""
+
+    await _delete(db, Provider, provider_id, "Provider")
+
+
+@router.get("/rules", response_model=Page)
+async def list_rules(
+    db: DbSession,
+    enabled: bool | None = None,
+    q: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: str = "-created_at",
+) -> Page:
+    """List review rules with filters and pagination."""
+
+    stmt = select(Rule)
+    if enabled is not None:
+        stmt = stmt.where(Rule.enabled == enabled)
+    if q:
+        stmt = stmt.where((Rule.rule_id.ilike(f"%{q}%")) | (Rule.title.ilike(f"%{q}%")))
+    return await _paginate(db, stmt, RuleRead, "rules", sort, limit, offset)
+
+
+@router.post("/rules", response_model=RuleRead, status_code=status.HTTP_201_CREATED)
+async def create_rule(payload: RuleCreate, db: DbSession) -> RuleRead:
+    """Create a reusable review rule."""
+
+    rule = Rule(**payload.model_dump())
+    return await _create(db, rule, RuleRead, "Rule already exists")
+
+
+@router.get("/rules/{rule_id}", response_model=RuleRead)
+async def get_rule(rule_id: UUID, db: DbSession) -> RuleRead:
+    """Return one review rule by ID."""
+
+    rule = await _get_or_404(db, Rule, rule_id, "Rule")
+    return RuleRead.model_validate(rule)
+
+
+@router.patch("/rules/{rule_id}", response_model=RuleRead)
+async def update_rule(rule_id: UUID, payload: RuleUpdate, db: DbSession) -> RuleRead:
+    """Update a reusable review rule."""
+
+    rule = await _get_or_404(db, Rule, rule_id, "Rule")
+    return await _update(db, rule, payload, RuleRead)
+
+
+@router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_rule(rule_id: UUID, db: DbSession) -> None:
+    """Delete a reusable review rule."""
+
+    await _delete(db, Rule, rule_id, "Rule")
+
+
+@router.get("/projects", response_model=Page)
+async def list_projects(
+    db: DbSession,
+    enabled: bool | None = None,
+    q: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: str = "-created_at",
+) -> Page:
+    """List GitLab project configurations."""
+
+    stmt = _project_select()
+    if enabled is not None:
+        stmt = stmt.where(Project.enabled == enabled)
+    if q:
+        stmt = stmt.where(
+            (Project.name.ilike(f"%{q}%")) | (Project.gitlab_project_id.ilike(f"%{q}%")),
+        )
+    return await _paginate(db, stmt, ProjectRead, "projects", sort, limit, offset)
+
+
+@router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
+async def create_project(payload: ProjectCreate, db: DbSession) -> ProjectRead:
+    """Create a project with optional nested rules and block policies."""
+
+    data = payload.model_dump(exclude={"rules", "block_policies"})
+    project = Project(**data)
+    _replace_project_rules(project, payload.rules or [])
+    _replace_block_policies(project, payload.block_policies or [])
+    db.add(project)
+    await _commit_or_400(db, "Project create failed")
+    await db.refresh(project)
+    return await _load_project_read(db, project.id)
+
+
+@router.get("/projects/{project_id}", response_model=ProjectRead)
+async def get_project(project_id: UUID, db: DbSession) -> ProjectRead:
+    """Return one project configuration by ID."""
+
+    return await _load_project_read(db, project_id)
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectRead)
+async def update_project(project_id: UUID, payload: ProjectUpdate, db: DbSession) -> ProjectRead:
+    """Update a project and optionally replace nested rules and block policies."""
+
+    project = await _get_or_404(db, Project, project_id, "Project", options=True)
+    data = payload.model_dump(exclude_unset=True, exclude={"rules", "block_policies"})
+    for field, value in data.items():
+        setattr(project, field, value)
+    if payload.rules is not None:
+        _replace_project_rules(project, payload.rules)
+    if payload.block_policies is not None:
+        _replace_block_policies(project, payload.block_policies)
+    await _commit_or_400(db, "Project update failed")
+    return await _load_project_read(db, project_id)
+
+
+@router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project(project_id: UUID, db: DbSession) -> None:
+    """Delete a project configuration and dependent rules/policies/reviews."""
+
+    await _delete(db, Project, project_id, "Project")
+
+
+@router.get("/reviews", response_model=Page)
+@router.get("/reviews/records", response_model=Page)
+async def list_reviews(
+    db: DbSession,
+    project_id: UUID | None = None,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
+    mr_iid: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: str = "-created_at",
+) -> Page:
+    """List review records with management UI filters."""
+
+    stmt = select(Review)
+    if project_id is not None:
+        stmt = stmt.where(Review.project_id == project_id)
+    if status_filter:
+        stmt = stmt.where(Review.status == status_filter)
+    if mr_iid:
+        stmt = stmt.where(Review.mr_iid == mr_iid)
+    return await _paginate(db, stmt, ReviewRead, "reviews", sort, limit, offset)
+
+
+@router.post("/reviews/records", response_model=ReviewRead, status_code=status.HTTP_201_CREATED)
+async def create_review_record(payload: ReviewCreate, db: DbSession) -> ReviewRead:
+    """Create a review record for tests and internal admin seeding."""
+
+    review = Review(**payload.model_dump())
+    return await _create(db, review, ReviewRead, "Review create failed")
+
+
+@router.get("/reviews/{review_id}", response_model=ReviewRead)
+async def get_review_record(review_id: UUID, db: DbSession) -> ReviewRead:
+    """Return one review record by ID."""
+
+    review = await _get_or_404(db, Review, review_id, "Review")
+    return ReviewRead.model_validate(review)
+
+
+@router.patch("/reviews/{review_id}", response_model=ReviewRead)
+async def update_review_record(review_id: UUID, payload: ReviewUpdate, db: DbSession) -> ReviewRead:
+    """Update a review record for internal admin correction."""
+
+    review = await _get_or_404(db, Review, review_id, "Review")
+    return await _update(db, review, payload, ReviewRead)
+
+
+@router.delete("/reviews/{review_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_review_record(review_id: UUID, db: DbSession) -> None:
+    """Delete one review record."""
+
+    await _delete(db, Review, review_id, "Review")
+
+
+@router.get("/findings", response_model=Page)
+async def list_findings(
+    db: DbSession,
+    review_id: UUID | None = None,
+    severity: str | None = None,
+    fp_status: str | None = None,
+    file_path: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: str = "-created_at",
+) -> Page:
+    """List review findings with filters used by review detail and FP queue pages."""
+
+    stmt = select(Finding)
+    if review_id is not None:
+        stmt = stmt.where(Finding.review_id == review_id)
+    if severity:
+        stmt = stmt.where(Finding.severity == severity)
+    if fp_status:
+        stmt = stmt.where(Finding.fp_status == fp_status)
+    if file_path:
+        stmt = stmt.where(Finding.file_path.ilike(f"%{file_path}%"))
+    return await _paginate(db, stmt, FindingRead, "findings", sort, limit, offset)
+
+
+@router.post("/findings", response_model=FindingRead, status_code=status.HTTP_201_CREATED)
+async def create_finding(payload: FindingCreate, db: DbSession) -> FindingRead:
+    """Create a finding for tests and internal admin seeding."""
+
+    finding = Finding(**payload.model_dump())
+    return await _create(db, finding, FindingRead, "Finding create failed")
+
+
+@router.get("/findings/{finding_id}", response_model=FindingRead)
+async def get_finding(finding_id: UUID, db: DbSession) -> FindingRead:
+    """Return one finding by ID."""
+
+    finding = await _get_or_404(db, Finding, finding_id, "Finding")
+    return FindingRead.model_validate(finding)
+
+
+@router.patch("/findings/{finding_id}", response_model=FindingRead)
+async def update_finding(finding_id: UUID, payload: FindingUpdate, db: DbSession) -> FindingRead:
+    """Update one finding for internal admin correction."""
+
+    finding = await _get_or_404(db, Finding, finding_id, "Finding")
+    return await _update(db, finding, payload, FindingRead)
+
+
+@router.delete("/findings/{finding_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_finding(finding_id: UUID, db: DbSession) -> None:
+    """Delete one finding."""
+
+    await _delete(db, Finding, finding_id, "Finding")
+
+
+@router.post("/findings/{finding_id}/false-positive", response_model=FindingRead)
+async def mark_false_positive(
+    finding_id: UUID,
+    payload: FalsePositiveMarkRequest,
+    db: DbSession,
+) -> FindingRead:
+    """Mark a finding as a pending false-positive candidate."""
+
+    finding = await _get_or_404(db, Finding, finding_id, "Finding")
+    finding.fp_status = "PENDING"
+    finding.fp_marked_by = payload.marked_by
+    finding.fp_marked_reason = payload.reason
+    finding.fp_marked_at = datetime.now(UTC)
+    finding.fp_reviewed_by = None
+    finding.fp_reviewed_at = None
+    finding.fp_review_note = None
+    await _commit_or_400(db, "False-positive mark failed")
+    await db.refresh(finding)
+    return FindingRead.model_validate(finding)
+
+
+@router.get("/false-positives/pending", response_model=Page)
+async def list_pending_false_positives(
+    db: DbSession,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: str = "created_at",
+) -> Page:
+    """List pending false-positive candidates awaiting admin review."""
+
+    stmt = select(Finding).where(Finding.fp_status == "PENDING")
+    return await _paginate(db, stmt, FindingRead, "findings", sort, limit, offset)
+
+
+@router.post("/false-positives/{finding_id}/confirm", response_model=FindingRead)
+async def confirm_false_positive(
+    finding_id: UUID,
+    payload: FalsePositiveReviewRequest,
+    db: DbSession,
+) -> FindingRead:
+    """Confirm a false-positive and persist it as a negative prompt example."""
+
+    finding = await _get_pending_finding(db, finding_id)
+    finding.fp_status = "CONFIRMED"
+    finding.fp_reviewed_by = payload.reviewed_by
+    finding.fp_reviewed_at = datetime.now(UTC)
+    finding.fp_review_note = payload.note
+    review = await db.get(Review, finding.review_id)
+    existing_code = finding.existing_code or finding.description or finding.title
+    db.add(
+        NegativeExample(
+            rule_id=finding.rule_id,
+            project_id=review.project_id if review else None,
+            code_snippet=existing_code,
+            explanation=payload.note or finding.fp_marked_reason,
+            source_finding_id=finding.id,
+            approved_by=payload.reviewed_by,
+            approved_at=datetime.now(UTC),
+        ),
+    )
+    await _commit_or_400(db, "False-positive confirm failed")
+    await db.refresh(finding)
+    return FindingRead.model_validate(finding)
+
+
+@router.post("/false-positives/{finding_id}/reject", response_model=FindingRead)
+async def reject_false_positive(
+    finding_id: UUID,
+    payload: FalsePositiveReviewRequest,
+    db: DbSession,
+) -> FindingRead:
+    """Reject a false-positive candidate and retain review audit fields."""
+
+    finding = await _get_pending_finding(db, finding_id)
+    finding.fp_status = "REJECTED"
+    finding.fp_reviewed_by = payload.reviewed_by
+    finding.fp_reviewed_at = datetime.now(UTC)
+    finding.fp_review_note = payload.note
+    await _commit_or_400(db, "False-positive reject failed")
+    await db.refresh(finding)
+    return FindingRead.model_validate(finding)
+
+
+@router.get("/negative-examples", response_model=Page)
+async def list_negative_examples(
+    db: DbSession,
+    rule_id: str | None = None,
+    project_id: UUID | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: str = "-created_at",
+) -> Page:
+    """List approved negative examples generated by false-positive review."""
+
+    stmt = select(NegativeExample)
+    if rule_id:
+        stmt = stmt.where(NegativeExample.rule_id == rule_id)
+    if project_id is not None:
+        stmt = stmt.where(NegativeExample.project_id == project_id)
+    return await _paginate(db, stmt, NegativeExampleRead, "negative_examples", sort, limit, offset)
+
+
+@router.get("/engines/configs", response_model=Page)
+async def list_engine_configs(
+    db: DbSession,
+    enabled: bool | None = None,
+    q: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: str = "-created_at",
+) -> Page:
+    """List persisted engine configurations."""
+
+    stmt = select(Engine)
+    if enabled is not None:
+        stmt = stmt.where(Engine.enabled == enabled)
+    if q:
+        stmt = stmt.where(Engine.name.ilike(f"%{q}%"))
+    return await _paginate(db, stmt, EngineRead, "engines", sort, limit, offset)
+
+
+@router.post("/engines/configs", response_model=EngineRead, status_code=status.HTTP_201_CREATED)
+async def create_engine_config(payload: EngineCreate, db: DbSession) -> EngineRead:
+    """Create a persisted engine configuration."""
+
+    engine = Engine(**payload.model_dump())
+    return await _create(db, engine, EngineRead, "Engine config already exists")
+
+
+@router.get("/engines/configs/{engine_id}", response_model=EngineRead)
+async def get_engine_config(engine_id: UUID, db: DbSession) -> EngineRead:
+    """Return one persisted engine configuration."""
+
+    engine = await _get_or_404(db, Engine, engine_id, "Engine config")
+    return EngineRead.model_validate(engine)
+
+
+@router.patch("/engines/configs/{engine_id}", response_model=EngineRead)
+async def update_engine_config(engine_id: UUID, payload: EngineUpdate, db: DbSession) -> EngineRead:
+    """Update a persisted engine configuration, including enable/disable."""
+
+    engine = await _get_or_404(db, Engine, engine_id, "Engine config")
+    return await _update(db, engine, payload, EngineRead)
+
+
+@router.delete("/engines/configs/{engine_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_engine_config(engine_id: UUID, db: DbSession) -> None:
+    """Delete a persisted engine configuration."""
+
+    await _delete(db, Engine, engine_id, "Engine config")
+
+
+async def _paginate(
+    db: AsyncSession,
+    stmt: Select[tuple[ModelT]],
+    schema: type[SchemaT],
+    sort_group: str,
+    sort: str,
+    limit: int,
+    offset: int,
+) -> Page:
+    """Apply count, sorting, offset, and limit to a select statement."""
+
+    ordered_stmt = _apply_sort(stmt, sort_group, sort)
+    total = await db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
+    result = await db.execute(ordered_stmt.offset(offset).limit(limit))
+    items = [schema.model_validate(row) for row in result.scalars().unique().all()]
+    return Page(items=items, total=total or 0, limit=limit, offset=offset)
+
+
+async def _create(
+    db: AsyncSession,
+    model: ModelT,
+    schema: type[SchemaT],
+    error_message: str,
+) -> SchemaT:
+    """Persist one ORM object and convert it to a response schema."""
+
+    db.add(model)
+    await _commit_or_400(db, error_message)
+    await db.refresh(model)
+    return schema.model_validate(model)
+
+
+async def _update(
+    db: AsyncSession,
+    model: ModelT,
+    payload: BaseModel,
+    schema: type[SchemaT],
+) -> SchemaT:
+    """Patch an ORM object from a Pydantic payload."""
+
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(model, field, value)
+    await _commit_or_400(db, f"{model.__class__.__name__} update failed")
+    await db.refresh(model)
+    return schema.model_validate(model)
+
+
+async def _delete(db: AsyncSession, model_type: type[ModelT], model_id: UUID, label: str) -> None:
+    """Delete an ORM object by primary key or return 404."""
+
+    model = await _get_or_404(db, model_type, model_id, label)
+    await db.delete(model)
+    await _commit_or_400(db, f"{label} delete failed")
+
+
+async def _get_or_404(
+    db: AsyncSession,
+    model_type: type[ModelT],
+    model_id: UUID,
+    label: str,
+    *,
+    options: bool = False,
+) -> ModelT:
+    """Fetch an ORM object by ID or raise a 404 response."""
+
+    if model_type is Project and options:
+        result = await db.execute(_project_select().where(Project.id == model_id))
+        model = result.scalars().unique().one_or_none()
+    else:
+        model = await db.get(cast(type[Any], model_type), model_id)
+    if model is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{label} not found")
+    return cast(ModelT, model)
+
+
+async def _commit_or_400(db: AsyncSession, detail: str) -> None:
+    """Commit database changes and map expected persistence failures to HTTP errors."""
+
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
+
+
+def _apply_sort(stmt: Select[tuple[ModelT]], sort_group: str, sort: str) -> Select[tuple[ModelT]]:
+    """Apply allow-listed sorting to a query."""
+
+    descending = sort.startswith("-")
+    field_name = sort[1:] if descending else sort
+    allowed = _ALLOWED_SORTS.get(sort_group, set())
+    if field_name not in allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sort field")
+    entity = stmt.column_descriptions[0].get("entity")
+    if entity is None or not hasattr(entity, field_name):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sort field")
+    column = getattr(entity, field_name)
+    return stmt.order_by(desc(column) if descending else asc(column))
+
+
+def _project_select() -> Select[tuple[Project]]:
+    """Build project select with nested relationships loaded for response serialization."""
+
+    return select(Project).options(
+        selectinload(Project.project_rules),
+        selectinload(Project.block_policies),
+    )
+
+
+async def _load_project_read(db: AsyncSession, project_id: UUID) -> ProjectRead:
+    """Load and serialize a project with nested rules and policies."""
+
+    result = await db.execute(_project_select().where(Project.id == project_id))
+    project = result.scalars().unique().one_or_none()
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return ProjectRead.model_validate(project)
+
+
+def _replace_project_rules(project: Project, rules: Sequence[ProjectRuleCreate]) -> None:
+    """Replace project-rule associations from request payload."""
+
+    project.project_rules = [
+        ProjectRule(**rule.model_dump(exclude={"project_id"}))
+        for rule in rules
+    ]
+
+
+def _replace_block_policies(project: Project, policies: Sequence[ProjectBlockPolicyCreate]) -> None:
+    """Replace branch block policies from request payload ordered by priority."""
+
+    project.block_policies = [
+        ProjectBlockPolicy(**policy.model_dump(exclude={"project_id"}))
+        for policy in sorted(policies, key=lambda item: item.priority)
+    ]
+
+
+async def _get_pending_finding(db: AsyncSession, finding_id: UUID) -> Finding:
+    """Return a finding that is currently pending false-positive review."""
+
+    finding = await _get_or_404(db, Finding, finding_id, "Finding")
+    if finding.fp_status != "PENDING":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Finding is not pending false-positive review",
+        )
+    return finding
+
+
+def _sign_token(username: str, expires_at: datetime) -> str:
+    """Create a compact HMAC-signed token using only standard-library primitives."""
+
+    payload = {
+        "sub": username,
+        "exp": int(expires_at.timestamp()),
+    }
+    body = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+    secret = get_settings().internal_api_token.get_secret_value().encode()
+    signature = hmac.new(secret, body.encode(), hashlib.sha256).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).decode()
+    return f"{body}.{encoded_signature}"

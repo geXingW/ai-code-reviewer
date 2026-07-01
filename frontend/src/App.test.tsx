@@ -14,6 +14,7 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  window.sessionStorage.clear();
   vi.restoreAllMocks();
 });
 
@@ -32,7 +33,58 @@ function jsonResponse(body: unknown, ok = true, status = 200): MockResponse {
   };
 }
 
+async function loginAsAdmin(): Promise<void> {
+  await userEvent.type(screen.getByLabelText('管理员账号'), 'admin');
+  await userEvent.type(screen.getByLabelText('管理员密码'), 'admin');
+  await userEvent.click(screen.getByRole('button', { name: '登录' }));
+  await waitFor(() => expect(screen.getByText('管理台已登录。')).toBeInTheDocument());
+}
+
 describe('MVP 管理台', () => {
+  it('登录后保存管理 Token，并给管理 API 注入 Authorization 请求头', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    mockFetch(async (url, init) => {
+      calls.push({ url, init });
+      if (url === '/health') {
+        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok', redis: 'ok' });
+      }
+      if (url === '/api/auth/login') {
+        return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
+      }
+      if (url === '/api/engines') {
+        const headers = init?.headers as Record<string, string> | undefined;
+        if (headers?.Authorization !== 'Bearer admin-token') {
+          return jsonResponse({ detail: 'Invalid admin token' }, false, 401);
+        }
+        return jsonResponse([]);
+      }
+      if (url === '/api/providers') {
+        const headers = init?.headers as Record<string, string> | undefined;
+        if (headers?.Authorization !== 'Bearer admin-token') {
+          return jsonResponse({ detail: 'Invalid admin token' }, false, 401);
+        }
+        return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
+      }
+      return jsonResponse({ detail: 'not found' }, false, 404);
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText('管理台登录')).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('管理员账号'), 'admin');
+    await userEvent.type(screen.getByLabelText('管理员密码'), 'admin');
+    await userEvent.click(screen.getByRole('button', { name: '登录' }));
+
+    await waitFor(() => expect(screen.getByText('管理台已登录。')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: '模型供应商' }));
+    await waitFor(() => expect(calls.some((call) => call.url === '/api/providers')).toBe(true));
+
+    const engineCall = calls.find((call) => call.url === '/api/engines');
+    const providerCall = calls.find((call) => call.url === '/api/providers');
+    expect(engineCall?.init?.headers).toMatchObject({ Authorization: 'Bearer admin-token' });
+    expect(providerCall?.init?.headers).toMatchObject({ Authorization: 'Bearer admin-token' });
+  });
+
   it('展示健康状态、引擎状态，并通过内部 Token 拉取最近审查记录', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     mockFetch(async (url, init) => {
@@ -40,7 +92,14 @@ describe('MVP 管理台', () => {
       if (url === '/health') {
         return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok', redis: 'error' });
       }
+      if (url === '/api/auth/login') {
+        return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
+      }
       if (url === '/api/engines') {
+        const headers = init?.headers as Record<string, string> | undefined;
+        if (headers?.Authorization !== 'Bearer admin-token') {
+          return jsonResponse({ detail: 'Invalid admin token' }, false, 401);
+        }
         return jsonResponse([
           {
             name: 'llm-direct',
@@ -80,6 +139,7 @@ describe('MVP 管理台', () => {
     render(<App />);
 
     expect(await screen.findByText('AI Code Reviewer')).toBeInTheDocument();
+    await loginAsAdmin();
     expect(await screen.findByText('服务正常')).toBeInTheDocument();
     expect(screen.getByText('Redis 异常')).toBeInTheDocument();
     expect(screen.getByText('llm-direct')).toBeInTheDocument();
@@ -101,7 +161,14 @@ describe('MVP 管理台', () => {
       if (url === '/health') {
         return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok', redis: 'ok' });
       }
+      if (url === '/api/auth/login') {
+        return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
+      }
       if (url === '/api/engines') {
+        const headers = init?.headers as Record<string, string> | undefined;
+        if (headers?.Authorization !== 'Bearer admin-token') {
+          return jsonResponse({ detail: 'Invalid admin token' }, false, 401);
+        }
         return jsonResponse([]);
       }
       if (url === '/api/reviews/recent') {
@@ -123,6 +190,7 @@ describe('MVP 管理台', () => {
 
     render(<App />);
 
+    await loginAsAdmin();
     await userEvent.type(await screen.findByLabelText('内部调用 Token'), 'test-internal-token');
     await userEvent.type(screen.getByLabelText('GitLab 项目 ID'), '123');
     await userEvent.type(screen.getByLabelText('MR IID'), '7');
