@@ -26,6 +26,11 @@ RUN pip install --no-cache-dir /wheels/* \
     && rm -rf /wheels
 
 COPY app ./app
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
+COPY scripts ./scripts
+
+RUN chown -R appuser:appuser /app
 
 USER appuser
 
