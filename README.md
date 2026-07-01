@@ -69,7 +69,7 @@ CONFIRMED 写入 negative_examples
 ## 技术栈
 
 - **后端**：Python 3.11 + FastAPI + SQLAlchemy + PostgreSQL + Alembic + Celery + Redis
-- **前端**：Vue 3 + Vite + Element Plus
+- **前端**：React + Vite + TypeScript
 - **部署**：Docker Compose 一键启动
 
 ## 路线图
@@ -103,7 +103,7 @@ CONFIRMED 写入 negative_examples
 
 ## Quick Start
 
-> ⚠️ MVP 开发中，以下命令在 v0.1.0 发布后可用。当前阶段请关注 Issues。
+> ⚠️ 当前为 MVP 内网试运行版本，可以用于 GitLab + Jenkins 小范围联调；生产化部署还需要补齐鉴权、网关、审计和高可用能力。
 
 ```bash
 # 1. clone + 配置
@@ -112,7 +112,7 @@ cd ai-code-reviewer
 cp .env.example .env  # 编辑配置
 
 # 2. 一键启动
-docker compose up -d
+./scripts/start-mvp.sh
 
 # 3. 访问后台
 open http://localhost:5173
