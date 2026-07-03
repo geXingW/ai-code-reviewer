@@ -52,6 +52,26 @@ class Settings(BaseSettings):
         SecretStr,
         Field(description="Server-to-server token expected in the X-Internal-Token header."),
     ] = SecretStr("test-internal-token")
+    admin_username: Annotated[
+        str,
+        Field(description="MVP single-account admin username for management API login."),
+    ] = "admin"
+    admin_password: Annotated[
+        SecretStr,
+        Field(description="MVP single-account admin password for management API login."),
+    ] = SecretStr("admin")
+    jwt_secret: Annotated[
+        SecretStr,
+        Field(description="Secret key used to sign standard JWT admin authentication tokens."),
+    ] = SecretStr("CHANGE_ME_JWT_SECRET_GENERATE_32_PLUS_RANDOM_BYTES")
+    jwt_algorithm: Annotated[
+        str,
+        Field(description="JWT signing algorithm (e.g. HS256, HS384, HS512)."),
+    ] = "HS256"
+    jwt_expires_in: Annotated[
+        int,
+        Field(description="JWT token lifetime in seconds."),
+    ] = 86400
     default_review_engine: Annotated[
         str,
         Field(description="Default registered ReviewEngine name used for GitLab webhook reviews."),
