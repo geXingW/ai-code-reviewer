@@ -113,7 +113,8 @@ async def test_login_returns_bearer_token_for_valid_credentials(client: AsyncCli
     assert payload["token_type"] == "bearer"
     assert payload["expires_in"] > 0
     assert isinstance(payload["access_token"], str)
-    assert payload["access_token"].count(".") == 1
+    # Standard JWT has three dot-separated segments: header.payload.signature
+    assert payload["access_token"].count(".") == 2
 
 
 @pytest.mark.asyncio
@@ -191,3 +192,72 @@ async def test_reject_false_positive_keeps_finding_out_of_negative_examples() ->
     assert response.fp_reviewed_by == "lead@example.com"
     assert response.fp_review_note == "Real blocker"
     assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_jwt_token_contains_standard_claims(client: AsyncClient) -> None:
+    """Login token must be a decodable JWT with sub, exp, and iat claims."""
+
+    import jwt as pyjwt
+
+    from app.core.config import get_settings
+
+    response = await client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+
+    settings = get_settings()
+    decoded = pyjwt.decode(
+        token,
+        settings.jwt_secret.get_secret_value(),
+        algorithms=[settings.jwt_algorithm],
+    )
+    assert decoded["sub"] == "admin"
+    assert "exp" in decoded
+    assert "iat" in decoded
+
+
+@pytest.mark.asyncio
+async def test_expired_jwt_token_is_rejected(client: AsyncClient) -> None:
+    """Expired JWT tokens must be rejected with 401 by admin auth middleware."""
+
+    from datetime import datetime, timedelta
+
+    import jwt as pyjwt
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    expired_token = pyjwt.encode(
+        {"sub": "admin", "exp": int((datetime.now(UTC) - timedelta(hours=1)).timestamp())},
+        settings.jwt_secret.get_secret_value(),
+        algorithm=settings.jwt_algorithm,
+    )
+    response = await client.get(
+        "/api/providers",
+        headers={"Authorization": f"Bearer {expired_token}"},
+    )
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_tampered_jwt_token_is_rejected(client: AsyncClient) -> None:
+    """Tokens signed with a different secret must be rejected with 401."""
+
+    from datetime import datetime, timedelta
+
+    import jwt as pyjwt
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    tampered_token = pyjwt.encode(
+        {"sub": "admin", "exp": int((datetime.now(UTC) + timedelta(hours=1)).timestamp())},
+        "completely-wrong-secret-key",
+        algorithm=settings.jwt_algorithm,
+    )
+    response = await client.get(
+        "/api/providers",
+        headers={"Authorization": f"Bearer {tampered_token}"},
+    )
+    assert response.status_code == 401

@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import hmac
-import json
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, TypeVar, cast
 from uuid import UUID
 
+import jwt as pyjwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Select, asc, desc, func, select
@@ -80,31 +78,21 @@ def _require_admin_auth(
 
 
 def _verify_token(token: str) -> str:
-    """Verify a compact HMAC admin token and return the authenticated subject."""
+    """Verify a standard JWT and return the authenticated subject."""
 
+    settings = get_settings()
     try:
-        body, encoded_signature = token.split(".", 1)
-    except ValueError as exc:
+        payload = pyjwt.decode(
+            token,
+            settings.jwt_secret.get_secret_value(),
+            algorithms=[settings.jwt_algorithm],
+        )
+    except pyjwt.PyJWTError as exc:
         raise _unauthorized() from exc
 
-    secret = get_settings().internal_api_token.get_secret_value().encode()
-    expected_signature = base64.urlsafe_b64encode(
-        hmac.new(secret, body.encode(), hashlib.sha256).digest(),
-    ).decode()
-    if not hmac.compare_digest(encoded_signature, expected_signature):
-        raise _unauthorized()
-
-    try:
-        payload = json.loads(base64.urlsafe_b64decode(body.encode()).decode())
-        username = str(payload["sub"])
-        expires_at = int(payload["exp"])
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise _unauthorized() from exc
-
-    expected_username = getattr(get_settings(), "admin_username", "admin")
+    username = str(payload.get("sub", ""))
+    expected_username = settings.admin_username
     if not hmac.compare_digest(username, expected_username):
-        raise _unauthorized()
-    if expires_at <= int(datetime.now(UTC).timestamp()):
         raise _unauthorized()
     return username
 
@@ -157,15 +145,15 @@ async def login(payload: LoginRequest) -> LoginResponse:
     """Authenticate the MVP admin account and return a signed bearer token."""
 
     settings = get_settings()
-    expected_username = getattr(settings, "admin_username", "admin")
-    expected_password = getattr(settings, "admin_password", "admin")
+    expected_username = settings.admin_username
+    expected_password = settings.admin_password.get_secret_value()
     if not hmac.compare_digest(payload.username, expected_username) or not hmac.compare_digest(
         payload.password,
         expected_password,
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
-    expires_in = 24 * 60 * 60
+    expires_in = settings.jwt_expires_in
     expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
     return LoginResponse(
         access_token=_sign_token(payload.username, expires_at),
@@ -757,14 +745,16 @@ async def _get_pending_finding(db: AsyncSession, finding_id: UUID) -> Finding:
 
 
 def _sign_token(username: str, expires_at: datetime) -> str:
-    """Create a compact HMAC-signed token using only standard-library primitives."""
+    """Create a standard JWT signed with the configured secret and algorithm."""
 
+    settings = get_settings()
     payload = {
         "sub": username,
         "exp": int(expires_at.timestamp()),
+        "iat": int(datetime.now(UTC).timestamp()),
     }
-    body = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
-    secret = get_settings().internal_api_token.get_secret_value().encode()
-    signature = hmac.new(secret, body.encode(), hashlib.sha256).digest()
-    encoded_signature = base64.urlsafe_b64encode(signature).decode()
-    return f"{body}.{encoded_signature}"
+    return pyjwt.encode(
+        payload,
+        settings.jwt_secret.get_secret_value(),
+        algorithm=settings.jwt_algorithm,
+    )

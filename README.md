@@ -68,23 +68,24 @@ CONFIRMED 写入 negative_examples
 
 ## 技术栈
 
-- **后端**：Python 3.11 + FastAPI + SQLAlchemy + PostgreSQL + Alembic + Celery + Redis
-- **前端**：React + Vite + TypeScript
+- **后端**：Python 3.11 + FastAPI + SQLAlchemy + PostgreSQL + Alembic + Redis
+- **前端**：Vue 3 + Vite + TypeScript + Element Plus + Pinia + Vue Router
 - **部署**：Docker Compose 一键启动
 
 ## 路线图
 
-### v0.1.0 MVP（Phase 1，预计 3 周）
+### v0.1.0 MVP（Phase 1）
 
 - [x] 项目治理基础设施
-- [ ] 后端骨架 + 数据模型
-- [ ] ReviewEngine 抽象 + LLMEngine 实现
-- [ ] GitLab 客户端（diff / discussion / commit status）
-- [ ] Webhook 接收 + 评审编排
-- [ ] 阻断策略匹配引擎
+- [x] 后端骨架 + 数据模型（10 表 + Fernet 加密 + Alembic）
+- [x] ReviewEngine 抽象 + LLMEngine 实现
+- [x] GitLab 客户端（diff / discussion / commit status）
+- [x] Webhook 接收 + 评审编排
+- [x] 阻断策略匹配引擎
+- [x] REST API（5 套 CRUD + 误报闭环 + JWT 认证）
+- [x] Jenkins Pipeline 模板
+- [x] 部署 + 配置文档
 - [ ] 前端管理后台（7 个页面）
-- [ ] Jenkins Pipeline 模板
-- [ ] 部署 + 配置文档
 
 ### v0.2.0（Phase 2）
 
@@ -123,6 +124,133 @@ open http://localhost:5173
 - [docs/setup.md](docs/setup.md) — 部署
 - [docs/gitlab-setup.md](docs/gitlab-setup.md) — GitLab Webhook 配置
 - [docs/jenkins-setup.md](docs/jenkins-setup.md) — Jenkins Pipeline 集成
+
+## REST API
+
+所有管理 API 需通过 JWT Bearer Token 认证。启动后访问 `http://localhost:8000/docs` 查看交互式 OpenAPI 文档。
+
+### 认证
+
+```bash
+# 登录获取 JWT
+curl -X POST http://localhost:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin"}'
+
+# 响应: {"access_token": "eyJhbGci...", "token_type": "bearer", "expires_in": 86400}
+
+# 携带 token 调用管理 API
+curl http://localhost:8000/api/providers \
+  -H "Authorization: Bearer eyJhbGci..."
+```
+
+### 端点总览
+
+**管理认证**
+- `POST /api/auth/login` — 登录，返回标准 JWT
+
+**LLM 供应商管理**
+- `GET /api/providers` — 列表（支持 `limit` / `offset` / `sort` / `q` / `enabled`）
+- `POST /api/providers` — 创建（api_key 自动 Fernet 加密，响应脱敏 `****`）
+- `GET /api/providers/{id}` — 详情
+- `PATCH /api/providers/{id}` — 更新
+- `DELETE /api/providers/{id}` — 删除
+
+**规则库管理**
+- `GET /api/rules` — 列表
+- `POST /api/rules` — 创建
+- `GET /api/rules/{id}` — 详情
+- `PATCH /api/rules/{id}` — 更新
+- `DELETE /api/rules/{id}` — 删除
+
+**项目管理（含嵌套 rules + block_policies）**
+- `GET /api/projects` — 列表
+- `POST /api/projects` — 创建（可同时传 `rules` + `block_policies` 嵌套数组）
+- `GET /api/projects/{id}` — 详情（含嵌套 rules + policies）
+- `PATCH /api/projects/{id}` — 更新（传 `rules` / `block_policies` 会整体替换）
+- `DELETE /api/projects/{id}` — 删除
+
+**评审记录**
+- `GET /api/reviews` — 列表（支持 `project_id` / `status` / `mr_iid`）
+- `GET /api/reviews/{id}` — 详情
+
+**评审发现**
+- `GET /api/findings` — 列表（支持 `review_id` / `severity` / `fp_status` / `file_path`）
+- `GET /api/findings/{id}` — 详情
+
+**误报闭环**
+- `POST /api/findings/{id}/false-positive` — 开发者标记误报（→ PENDING）
+- `GET /api/false-positives/pending` — 管理员查看待评审队列
+- `POST /api/false-positives/{id}/confirm` — 确认误报 → 写入 `negative_examples` 表
+- `POST /api/false-positives/{id}/reject` — 驳回误报
+- `GET /api/negative-examples` — 负样本库列表
+
+**引擎管理**
+- `GET /api/engines` — 运行时引擎列表 + 健康探测
+- `GET /api/engines/{name}/health` — 单引擎健康详情
+- `GET /api/engines/configs` — 持久化引擎配置列表
+- `POST /api/engines/configs` — 创建引擎配置
+- `GET /api/engines/configs/{id}` — 详情
+- `PATCH /api/engines/configs/{id}` — 更新（含启用/禁用）
+- `DELETE /api/engines/configs/{id}` — 删除
+
+**Jenkins 同步评审**
+- `POST /api/reviews` — 同步触发评审（`X-Internal-Token` 认证，Jenkins Pipeline 调用）
+- `GET /api/reviews/recent` — 最近 20 条评审摘要（MVP Dashboard）
+
+**GitLab Webhook**
+- `POST /webhooks/gitlab` — 接收 GitLab MR Hook（`X-Gitlab-Token` 签名校验）
+
+### 列表端点通用参数
+
+所有 `GET` 列表端点支持：
+
+- `limit` — 每页条数（1-100，默认 20）
+- `offset` — 偏移量（默认 0）
+- `sort` — 排序字段，`-` 前缀降序（如 `-created_at`）
+- `q` — 关键词模糊搜索
+- `enabled` — 按启用状态筛选
+
+### 误报闭环示例
+
+```bash
+# 1. 开发者标记误报
+curl -X POST http://localhost:8000/api/findings/{id}/false-positive \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"marked_by": "dev@example.com", "reason": "Generated file"}'
+
+# 2. 管理员查看待评审队列
+curl http://localhost:8000/api/false-positives/pending \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. 确认误报 → 自动写入 negative_examples
+curl -X POST http://localhost:8000/api/false-positives/{id}/confirm \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reviewed_by": "lead@example.com", "note": "Known safe wrapper"}'
+```
+
+### 环境变量
+
+| 变量 | 说明 | 默认值 |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL 异步连接串 | `postgresql+asyncpg://...` |
+| `REDIS_URL` | Redis 连接串 | `redis://localhost:6379/0` |
+| `SECRET_KEY` | Fernet 加密密钥（加密 api_key / token 等敏感字段） | 需修改 |
+| `INTERNAL_API_TOKEN` | 服务间调用令牌（Jenkins / Webhook 内部触发） | `test-internal-token` |
+| `ADMIN_USERNAME` | 管理后台登录用户名 | `admin` |
+| `ADMIN_PASSWORD` | 管理后台登录密码 | `admin` |
+| `JWT_SECRET` | JWT 签名密钥（≥ 32 字节） | 需修改 |
+| `JWT_ALGORITHM` | JWT 签名算法 | `HS256` |
+| `JWT_EXPIRES_IN` | JWT 有效期（秒） | `86400`（24h） |
+| `GITLAB_BASE_URL` | GitLab 实例地址 | `http://localhost` |
+| `GITLAB_TOKEN` | GitLab API Token | 需配置 |
+| `GITLAB_WEBHOOK_SECRET` | Webhook 签名校验密钥 | `test-webhook-secret` |
+| `DEFAULT_REVIEW_ENGINE` | 默认评审引擎 | `llm-direct` |
+| `CORS_ORIGINS` | 允许的跨域来源 | `["http://localhost:5173"]` |
+
+---
 
 ## 与同类项目对比
 
