@@ -99,6 +99,14 @@ button:disabled {
   grid-column: span 4;
 }
 
+.span-5 {
+  grid-column: span 5;
+}
+
+.span-7 {
+  grid-column: span 7;
+}
+
 .span-8 {
   grid-column: span 8;
 }
@@ -188,6 +196,68 @@ button:disabled {
   outline: none;
 }
 
+.form-grid select,
+.form-grid textarea {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  color: #172033;
+  padding: 11px 12px;
+}
+
+.form-grid select:focus,
+.form-grid textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 18%);
+  outline: none;
+}
+
+.form-grid textarea {
+  grid-column: 1 / -1;
+  resize: vertical;
+}
+
+.form-grid input[type="checkbox"] {
+  border: 0;
+  padding: 0;
+  width: auto;
+}
+
+.form-grid .checkbox-label {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+}
+
+.form-grid .rule-checklist {
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0;
+}
+
+.form-grid .rule-checklist legend {
+  color: #334155;
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  padding: 0;
+}
+
+.form-grid .rule-checkbox {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+}
+
+button.secondary {
+  background: #64748b;
+}
+
 .form-actions {
   align-items: center;
   display: flex;
@@ -218,6 +288,100 @@ button:disabled {
   padding: 18px 0;
 }
 
+.row-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.project-card,
+.review-card {
+  border-top: 1px solid #eef2f7;
+  padding: 14px 0;
+}
+
+.project-card:first-of-type,
+.review-card:first-of-type {
+  border-top: 0;
+}
+
+.finding-list {
+  border-top: 1px dashed #e2e8f0;
+  margin-top: 10px;
+  padding-top: 6px;
+}
+
+.policy-editor {
+  margin-top: 14px;
+  overflow-x: auto;
+}
+
+.policy-head,
+.policy-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 28px 36px minmax(140px, 1fr) 124px 124px auto;
+}
+
+.policy-head {
+  border-bottom: 1px solid #eef2f7;
+  font-size: 13px;
+  font-weight: 700;
+  padding-bottom: 8px;
+}
+
+.policy-row {
+  border-top: 1px solid #eef2f7;
+  padding: 8px 0;
+}
+
+.policy-row.dragging {
+  opacity: 0.4;
+}
+
+.drag-handle {
+  color: #94a3b8;
+  cursor: grab;
+  font-size: 18px;
+  text-align: center;
+  user-select: none;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.priority {
+  color: #64748b;
+  font-weight: 700;
+  text-align: center;
+}
+
+.policy-row input,
+.policy-row select {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.policy-row input[type="checkbox"] {
+  border: 0;
+  padding: 0;
+  width: auto;
+}
+
+.policy-remove {
+  background: #dc2626;
+}
+
+.policy-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+
 @media (max-width: 860px) {
   .hero,
   .status-row,
@@ -228,6 +392,8 @@ button:disabled {
   }
 
   .span-4,
+  .span-5,
+  .span-7,
   .span-8 {
     grid-column: span 12;
   }

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -209,5 +209,126 @@ describe('MVP 管理台', () => {
       source_branch: 'feature/demo',
       commit_sha: 'abc123',
     });
+  });
+
+  it('可展开项目卡片、拖拽排序阻断策略并保存', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const projectId = '00000000-0000-0000-0000-000000000001';
+    const project = {
+      id: projectId,
+      name: 'demo-project',
+      gitlab_project_id: '123',
+      gitlab_access_token: '****',
+      webhook_secret: '****',
+      engine_id: null,
+      provider_id: null,
+      enabled: true,
+      default_block_severity: 'BLOCKER',
+      timeout_seconds: 300,
+      max_files: 50,
+      ignore_paths: null,
+      rules: [],
+      block_policies: [
+        {
+          id: '00000000-0000-0000-0000-0000000000a1',
+          project_id: projectId,
+          branch_pattern: 'master',
+          block_severity: 'BLOCKER',
+          block_on_engine_error: false,
+          require_all_resolved: false,
+          priority: 1,
+          created_at: '2026-07-01T00:00:00Z',
+          updated_at: '2026-07-01T00:00:00Z',
+        },
+        {
+          id: '00000000-0000-0000-0000-0000000000a2',
+          project_id: projectId,
+          branch_pattern: 'release/*',
+          block_severity: 'WARNING',
+          block_on_engine_error: false,
+          require_all_resolved: false,
+          priority: 2,
+          created_at: '2026-07-01T00:00:00Z',
+          updated_at: '2026-07-01T00:00:00Z',
+        },
+      ],
+      created_at: '2026-07-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+    };
+    mockFetch(async (url, init) => {
+      calls.push({ url, init });
+      if (url === '/health') {
+        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok', redis: 'ok' });
+      }
+      if (url === '/api/auth/login') {
+        return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
+      }
+      if (url === '/api/engines') {
+        return jsonResponse([]);
+      }
+      if (url === '/api/projects') {
+        return jsonResponse({ items: [project], total: 1, limit: 50, offset: 0 });
+      }
+      if (url === '/api/engines/configs') {
+        return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
+      }
+      if (url === '/api/rules') {
+        return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
+      }
+      if (url.startsWith('/api/projects/') && init?.method === 'PATCH') {
+        const body = JSON.parse(String(init.body)) as { block_policies: Array<Record<string, unknown>> };
+        return jsonResponse({
+          ...project,
+          block_policies: body.block_policies.map((policy, index) => ({
+            ...policy,
+            id: `bp-${index + 1}`,
+            project_id: projectId,
+            created_at: '2026-07-01T00:00:00Z',
+            updated_at: '2026-07-01T00:00:00Z',
+          })),
+        });
+      }
+      return jsonResponse({ detail: 'not found' }, false, 404);
+    });
+
+    const { container } = render(<App />);
+    await loginAsAdmin();
+    await userEvent.click(screen.getByRole('button', { name: 'GitLab 项目' }));
+    await screen.findByText('demo-project');
+
+    await userEvent.click(screen.getByRole('button', { name: '展开策略' }));
+    const branchInputs = await screen.findAllByPlaceholderText('如 master 或 release/*');
+    expect(branchInputs).toHaveLength(2);
+    expect(branchInputs[0]).toHaveValue('master');
+    expect(branchInputs[1]).toHaveValue('release/*');
+
+    const rows = container.querySelectorAll('.policy-row');
+    const handles = container.querySelectorAll('.drag-handle');
+    expect(rows).toHaveLength(2);
+    // 将第二条策略（release/*）拖到第一条（master）之前
+    fireEvent.dragStart(handles[1]);
+    fireEvent.dragOver(rows[0]);
+    fireEvent.drop(rows[0]);
+
+    const reordered = screen.getAllByPlaceholderText('如 master 或 release/*');
+    expect(reordered[0]).toHaveValue('release/*');
+    expect(reordered[1]).toHaveValue('master');
+
+    await userEvent.click(screen.getByRole('button', { name: '保存策略' }));
+
+    const patchCall = await waitFor(() => {
+      const found = calls.find(
+        (call) => call.url.startsWith('/api/projects/') && call.init?.method === 'PATCH',
+      );
+      expect(found).toBeTruthy();
+      return found;
+    });
+    const body = JSON.parse(String(patchCall?.init?.body)) as {
+      block_policies: Array<Record<string, unknown>>;
+    };
+    expect(body.block_policies).toEqual([
+      expect.objectContaining({ branch_pattern: 'release/*', block_severity: 'WARNING', priority: 1 }),
+      expect.objectContaining({ branch_pattern: 'master', block_severity: 'BLOCKER', priority: 2 }),
+    ]);
   });
 });

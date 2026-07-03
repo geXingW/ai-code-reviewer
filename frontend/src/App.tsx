@@ -1,6 +1,9 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, DragEvent, useEffect, useMemo, useState } from 'react';
 
 import {
+  BlockPolicy,
+  BlockPolicyPayload,
+  BlockPolicySeverity,
   CreateReviewPayload,
   CreateReviewResponse,
   EngineConfig,
@@ -11,15 +14,20 @@ import {
   Page,
   ProjectConfig,
   ProjectFormPayload,
+  ProjectRuleFormPayload,
+  ProjectUpdatePayload,
   ProviderConfig,
   ProviderFormPayload,
   RecentReview,
   ReviewRecord,
   RuleConfig,
+  RuleFormPayload,
   confirmFalsePositive,
   createProject,
   createProvider,
   createReview,
+  createRule,
+  updateProject,
   fetchEngineConfigs,
   fetchEngines,
   fetchFindings,
@@ -29,6 +37,7 @@ import {
   fetchProjects,
   fetchProviders,
   fetchRecentReviews,
+  fetchReviewFindings,
   fetchReviewRecords,
   fetchRules,
   clearStoredAdminAccessToken,
@@ -99,11 +108,29 @@ const initialProjectForm: ProjectFormPayload = {
   gitlab_project_id: '',
   gitlab_access_token: '',
   webhook_secret: '',
+  engine_id: '',
   enabled: true,
   timeout_seconds: 300,
   max_files: 50,
   default_block_severity: 'BLOCKER',
+  rules: [],
 };
+
+const initialRuleForm: RuleFormPayload = {
+  rule_id: '',
+  title: '',
+  prompt_snippet: '',
+  severity_default: 'WARNING',
+  enabled: true,
+};
+
+const BLOCK_SEVERITY_OPTIONS = ['INFO', 'WARNING', 'BLOCKER'] as const;
+const BLOCK_POLICY_SEVERITY_OPTIONS: BlockPolicySeverity[] = [
+  'NONE',
+  'INFO',
+  'WARNING',
+  'BLOCKER',
+];
 
 const navItems: Array<{ key: PageKey; label: string }> = [
   { key: 'dashboard', label: '仪表盘' },
@@ -134,6 +161,7 @@ function App() {
   const [form, setForm] = useState<FormState>(initialForm);
   const [providerForm, setProviderForm] = useState<ProviderFormPayload>(initialProviderForm);
   const [projectForm, setProjectForm] = useState<ProjectFormPayload>(initialProjectForm);
+  const [ruleForm, setRuleForm] = useState<RuleFormPayload>(initialRuleForm);
   const [operator, setOperator] = useState('admin@example.com');
   const [reviewNote, setReviewNote] = useState('');
   const [loading, setLoading] = useState(true);
@@ -199,7 +227,14 @@ function App() {
       } else if (page === 'rules') {
         setRulesPage(await fetchRules());
       } else if (page === 'projects') {
-        setProjectsPage(await fetchProjects());
+        const [projects, engineConfigs, rules] = await Promise.all([
+          fetchProjects(),
+          fetchEngineConfigs(),
+          fetchRules(),
+        ]);
+        setProjectsPage(projects);
+        setEngineConfigsPage(engineConfigs);
+        setRulesPage(rules);
       } else if (page === 'reviews') {
         setReviewRecordsPage(await fetchReviewRecords());
       } else if (page === 'findings') {
@@ -333,6 +368,45 @@ function App() {
       setProjectForm(initialProjectForm);
       setProjectsPage(await fetchProjects());
       setMessage('GitLab 项目已创建。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
+  async function handleCreateRule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setMessage(null);
+    try {
+      if (!ruleForm.rule_id.trim() || !ruleForm.title.trim() || !ruleForm.prompt_snippet.trim()) {
+        throw new Error('规则 ID、标题和提示片段不能为空。');
+      }
+      await createRule(ruleForm);
+      setRuleForm(initialRuleForm);
+      setRulesPage(await fetchRules());
+      setMessage('审查规则已创建。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
+  async function handleSaveBlockPolicies(projectId: string, policies: BlockPolicyPayload[]) {
+    setError(null);
+    setMessage(null);
+    try {
+      if (policies.some((policy) => !policy.branch_pattern.trim())) {
+        throw new Error('每条策略的分支匹配不能为空。');
+      }
+      const updated = await updateProject(projectId, { block_policies: policies });
+      setProjectsPage((prev) =>
+        prev
+          ? {
+              ...prev,
+              items: prev.items.map((project) => (project.id === updated.id ? updated : project)),
+            }
+          : prev,
+      );
+      setMessage('阻断策略已保存。');
     } catch (caught) {
       handleCaughtError(caught);
     }
@@ -529,9 +603,20 @@ function App() {
   function renderRules() {
     return (
       <section className="grid">
+        <div className="card span-5">
+          <h2>新增审查规则</h2>
+          <form className="form-grid single" onSubmit={handleCreateRule}>
+            <TextInput label="规则 ID" value={ruleForm.rule_id} onChange={(value) => setRuleForm({ ...ruleForm, rule_id: value })} />
+            <TextInput label="规则标题" value={ruleForm.title} onChange={(value) => setRuleForm({ ...ruleForm, title: value })} />
+            <TextAreaInput label="提示片段" value={ruleForm.prompt_snippet} onChange={(value) => setRuleForm({ ...ruleForm, prompt_snippet: value })} />
+            <SelectInput label="默认严重级别" value={ruleForm.severity_default} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setRuleForm({ ...ruleForm, severity_default: value as RuleFormPayload['severity_default'] })} />
+            <CheckboxInput label="启用规则" checked={ruleForm.enabled} onChange={(value) => setRuleForm({ ...ruleForm, enabled: value })} />
+            <div className="form-actions"><button type="submit">保存规则</button></div>
+          </form>
+        </div>
         <ListCard title="审查规则" empty="暂无审查规则">
           {(rulesPage?.items ?? []).map((rule) => (
-            <DataRow key={rule.id} title={`${rule.rule_id} · ${rule.title}`} meta={rule.description ?? '暂无描述'} status={rule.severity} ok={rule.enabled} />
+            <DataRow key={rule.id} title={`${rule.rule_id} · ${rule.title}`} meta={`${rule.severity_default} · ${truncate(rule.prompt_snippet)}`} status={rule.enabled ? '启用' : '停用'} ok={rule.enabled} />
           ))}
         </ListCard>
       </section>
@@ -539,6 +624,10 @@ function App() {
   }
 
   function renderProjects() {
+    const engineOptions: SelectOption[] = [
+      { value: '', label: '不指定' },
+      ...(engineConfigsPage?.items ?? []).map((engine) => ({ value: engine.id, label: engine.name })),
+    ];
     return (
       <section className="grid">
         <div className="card span-5">
@@ -548,15 +637,30 @@ function App() {
             <TextInput label="GitLab Project ID" value={projectForm.gitlab_project_id} onChange={(value) => setProjectForm({ ...projectForm, gitlab_project_id: value })} />
             <TextInput label="GitLab Access Token" type="password" value={projectForm.gitlab_access_token} onChange={(value) => setProjectForm({ ...projectForm, gitlab_access_token: value })} />
             <TextInput label="Webhook Secret" type="password" value={projectForm.webhook_secret} onChange={(value) => setProjectForm({ ...projectForm, webhook_secret: value })} />
+            <SelectInput label="默认审查引擎" value={projectForm.engine_id} options={engineOptions} onChange={(value) => setProjectForm({ ...projectForm, engine_id: value })} />
             <TextInput label="超时秒数" value={String(projectForm.timeout_seconds)} onChange={(value) => setProjectForm({ ...projectForm, timeout_seconds: Number(value) || 0 })} />
             <TextInput label="最大文件数" value={String(projectForm.max_files)} onChange={(value) => setProjectForm({ ...projectForm, max_files: Number(value) || 0 })} />
-            <SelectInput label="默认阻断级别" value={projectForm.default_block_severity} options={['INFO', 'WARNING', 'BLOCKER']} onChange={(value) => setProjectForm({ ...projectForm, default_block_severity: value as ProjectFormPayload['default_block_severity'] })} />
+            <SelectInput label="默认阻断级别" value={projectForm.default_block_severity} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setProjectForm({ ...projectForm, default_block_severity: value as ProjectFormPayload['default_block_severity'] })} />
+            <fieldset className="rule-checklist">
+              <legend>启用规则</legend>
+              {(rulesPage?.items ?? []).length === 0 ? <div className="muted">暂无规则，请先到“审查规则”页面创建。</div> : null}
+              {(rulesPage?.items ?? []).map((rule) => (
+                <label key={rule.id} className="rule-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={projectForm.rules.some((selected) => selected.rule_id === rule.id)}
+                    onChange={(event) => setProjectForm((prev) => ({ ...prev, rules: toggleRuleSelection(prev.rules, rule.id, event.target.checked) }))}
+                  />
+                  <span>{rule.rule_id} · {rule.title}</span>
+                </label>
+              ))}
+            </fieldset>
             <div className="form-actions"><button type="submit">保存项目</button></div>
           </form>
         </div>
         <ListCard title="GitLab 项目列表" empty="暂无 GitLab 项目">
           {(projectsPage?.items ?? []).map((project) => (
-            <DataRow key={project.id} title={project.name} meta={`GitLab ID ${project.gitlab_project_id} · ${project.default_block_severity}`} status={project.enabled ? '启用' : '停用'} ok={project.enabled} />
+            <ProjectCard key={project.id} project={project} onSavePolicies={handleSaveBlockPolicies} />
           ))}
         </ListCard>
       </section>
@@ -568,7 +672,7 @@ function App() {
       <section className="grid">
         <ListCard title="审查记录" empty="暂无审查记录">
           {(reviewRecordsPage?.items ?? []).map((review) => (
-            <DataRow key={review.id} title={`MR !${review.mr_iid} · ${review.source_branch} → ${review.target_branch}`} meta={`${review.status} · ${review.finding_count} 个问题 · ${review.commit_sha}`} status={review.has_blocker ? '阻断' : '通过'} ok={!review.has_blocker} />
+            <ReviewRecordRow key={review.id} review={review} onError={handleCaughtError} />
           ))}
         </ListCard>
         <RecentReviewsCard reviews={reviews} />
@@ -661,20 +765,55 @@ function TextInput({ label, value, type = 'text', onChange }: TextInputProps) {
   );
 }
 
+type SelectOption = string | { value: string; label: string };
+
 type SelectInputProps = {
   label: string;
   value: string;
-  options: string[];
+  options: readonly SelectOption[];
   onChange: (value: string) => void;
 };
 
 function SelectInput({ label, value, options, onChange }: SelectInputProps) {
+  const normalized = options.map((option) =>
+    typeof option === 'string' ? { value: option, label: option } : option,
+  );
   return (
     <label>
       {label}
       <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        {normalized.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
+    </label>
+  );
+}
+
+type TextAreaInputProps = {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+};
+
+function TextAreaInput({ label, value, onChange }: TextAreaInputProps) {
+  return (
+    <label>
+      {label}
+      <textarea value={value} rows={4} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
+type CheckboxInputProps = {
+  label: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+};
+
+function CheckboxInput({ label, checked, onChange }: CheckboxInputProps) {
+  return (
+    <label className="checkbox-label">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span>{label}</span>
     </label>
   );
 }
@@ -777,6 +916,280 @@ function NegativeExamplesCard({ examples }: { examples: NegativeExample[] }) {
       ))}
     </div>
   );
+}
+
+type ProjectCardProps = {
+  project: ProjectConfig;
+  onSavePolicies: (projectId: string, policies: BlockPolicyPayload[]) => Promise<void>;
+};
+
+function ProjectCard({ project, onSavePolicies }: ProjectCardProps) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <article className="project-card">
+      <div className="review-row">
+        <div>
+          <div className="review-title">{project.name}</div>
+          <div className="review-meta">
+            GitLab ID {project.gitlab_project_id} · {project.default_block_severity} · {project.block_policies.length} 条阻断策略
+          </div>
+        </div>
+        <div className="row-actions">
+          <Badge ok={project.enabled}>{project.enabled ? '启用' : '停用'}</Badge>
+          <button className="secondary" type="button" onClick={() => setExpanded((prev) => !prev)}>
+            {expanded ? '收起策略' : '展开策略'}
+          </button>
+        </div>
+      </div>
+      {expanded ? (
+        <BlockPolicyTable projectId={project.id} policies={project.block_policies} onSave={onSavePolicies} />
+      ) : null}
+    </article>
+  );
+}
+
+type EditableBlockPolicy = {
+  key: string;
+  branch_pattern: string;
+  block_severity: BlockPolicySeverity;
+  block_on_engine_error: boolean;
+  require_all_resolved: boolean;
+};
+
+let blockPolicyKeySeed = 0;
+
+function toEditablePolicy(policy: BlockPolicy): EditableBlockPolicy {
+  return {
+    key: policy.id,
+    branch_pattern: policy.branch_pattern,
+    block_severity: policy.block_severity,
+    block_on_engine_error: policy.block_on_engine_error,
+    require_all_resolved: policy.require_all_resolved,
+  };
+}
+
+type BlockPolicyTableProps = {
+  projectId: string;
+  policies: BlockPolicy[];
+  onSave: (projectId: string, policies: BlockPolicyPayload[]) => Promise<void>;
+};
+
+function BlockPolicyTable({ projectId, policies, onSave }: BlockPolicyTableProps) {
+  const [items, setItems] = useState<EditableBlockPolicy[]>(() => policies.map(toEditablePolicy));
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setItems(policies.map(toEditablePolicy));
+  }, [policies]);
+
+  function updateItem(index: number, patch: Partial<EditableBlockPolicy>) {
+    setItems((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)));
+  }
+
+  function addPolicy() {
+    blockPolicyKeySeed += 1;
+    setItems((prev) => [
+      ...prev,
+      {
+        key: `new-policy-${blockPolicyKeySeed}`,
+        branch_pattern: '',
+        block_severity: 'WARNING',
+        block_on_engine_error: false,
+        require_all_resolved: false,
+      },
+    ]);
+  }
+
+  function removePolicy(index: number) {
+    setItems((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function handleDragStart(index: number) {
+    setDragIndex(index);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+  }
+
+  function handleDrop(index: number) {
+    if (dragIndex === null || dragIndex === index) {
+      setDragIndex(null);
+      return;
+    }
+    setItems((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(dragIndex, 1);
+      next.splice(index, 0, moved);
+      return next;
+    });
+    setDragIndex(null);
+  }
+
+  async function handleSave() {
+    if (saving) {
+      return;
+    }
+    const payload: BlockPolicyPayload[] = items.map((item, index) => ({
+      branch_pattern: item.branch_pattern,
+      block_severity: item.block_severity,
+      block_on_engine_error: item.block_on_engine_error,
+      require_all_resolved: item.require_all_resolved,
+      priority: index + 1,
+    }));
+    try {
+      setSaving(true);
+      await onSave(projectId, payload);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="policy-editor">
+      <div className="policy-head muted">
+        <span />
+        <span>序号</span>
+        <span>分支匹配</span>
+        <span>阻断级别</span>
+        <span>引擎错误阻断</span>
+        <span>操作</span>
+      </div>
+      {items.length === 0 ? <div className="empty">暂无阻断策略，点击下方按钮添加。</div> : null}
+      {items.map((item, index) => (
+        <div
+          key={item.key}
+          className={`policy-row${dragIndex === index ? ' dragging' : ''}`}
+          onDragOver={handleDragOver}
+          onDrop={() => handleDrop(index)}
+        >
+          <span
+            className="drag-handle"
+            draggable
+            aria-label="拖动排序"
+            onDragStart={() => handleDragStart(index)}
+            onDragEnd={() => setDragIndex(null)}
+          >
+            ⠿
+          </span>
+          <span className="priority">{index + 1}</span>
+          <input
+            className="branch-pattern"
+            value={item.branch_pattern}
+            placeholder="如 master 或 release/*"
+            onChange={(event) => updateItem(index, { branch_pattern: event.target.value })}
+          />
+          <select
+            className="severity-select"
+            value={item.block_severity}
+            onChange={(event) => updateItem(index, { block_severity: event.target.value as BlockPolicySeverity })}
+          >
+            {BLOCK_POLICY_SEVERITY_OPTIONS.map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+          <input
+            type="checkbox"
+            checked={item.block_on_engine_error}
+            aria-label="引擎错误时阻断"
+            onChange={(event) => updateItem(index, { block_on_engine_error: event.target.checked })}
+          />
+          <button className="secondary policy-remove" type="button" onClick={() => removePolicy(index)}>删除</button>
+        </div>
+      ))}
+      <div className="policy-actions">
+        <button className="secondary" type="button" onClick={addPolicy}>添加策略</button>
+        <button type="button" disabled={saving} onClick={() => void handleSave()}>
+          {saving ? '保存中…' : '保存策略'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+type ReviewRecordRowProps = {
+  review: ReviewRecord;
+  onError: (caught: unknown) => void;
+};
+
+function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
+  const [expanded, setExpanded] = useState(false);
+  const [findings, setFindings] = useState<FindingRecord[] | null>(null);
+  const [loadingFindings, setLoadingFindings] = useState(false);
+
+  async function toggleExpand() {
+    if (expanded) {
+      setExpanded(false);
+      return;
+    }
+    setExpanded(true);
+    if (findings !== null) {
+      return;
+    }
+    setLoadingFindings(true);
+    try {
+      setFindings(await fetchReviewFindings(review.id));
+    } catch (caught) {
+      onError(caught);
+      setFindings(null);
+    } finally {
+      setLoadingFindings(false);
+    }
+  }
+
+  return (
+    <article className="review-card">
+      <div className="review-row">
+        <div>
+          <div className="review-title">MR !{review.mr_iid} · {review.source_branch} → {review.target_branch}</div>
+          <div className="review-meta">{review.status} · {review.finding_count} 个问题 · {review.commit_sha}</div>
+        </div>
+        <div className="row-actions">
+          <Badge ok={!review.has_blocker}>{review.has_blocker ? '阻断' : '通过'}</Badge>
+          <button className="secondary" type="button" onClick={() => void toggleExpand()}>
+            {expanded ? '收起问题' : '查看问题'}
+          </button>
+        </div>
+      </div>
+      {expanded ? (
+        <div className="finding-list">
+          {loadingFindings ? <div className="muted">加载中…</div> : null}
+          {!loadingFindings && findings === null ? <div className="muted">加载失败，请收起后重新展开。</div> : null}
+          {!loadingFindings && findings !== null && findings.length === 0 ? <div className="empty">暂无问题</div> : null}
+          {(findings ?? []).map((finding) => (
+            <article className="review-row" key={finding.id}>
+              <div>
+                <div className="review-title">{finding.title}</div>
+                <div className="review-meta">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id} · {finding.fp_status}</div>
+              </div>
+              <Badge ok={finding.severity !== 'BLOCKER'}>{finding.severity}</Badge>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function toggleRuleSelection(
+  rules: ProjectRuleFormPayload[],
+  ruleId: string,
+  enabled: boolean,
+): ProjectRuleFormPayload[] {
+  const exists = rules.some((rule) => rule.rule_id === ruleId);
+  if (enabled && !exists) {
+    return [...rules, { rule_id: ruleId, enabled: true }];
+  }
+  if (!enabled && exists) {
+    return rules.filter((rule) => rule.rule_id !== ruleId);
+  }
+  return rules;
+}
+
+function truncate(text: string, limit = 80): string {
+  const trimmed = text.trim();
+  return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
 }
 
 function parsePositiveInteger(value: string, label: string): number {
