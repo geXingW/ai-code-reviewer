@@ -74,10 +74,63 @@ export type RuleConfig = {
   id: string;
   rule_id: string;
   title: string;
-  description?: string | null;
-  severity: string;
+  prompt_snippet: string;
+  severity_default: string;
+  languages: unknown[];
+  path_patterns: unknown[];
   enabled: boolean;
+  grace_period_until?: string | null;
   created_at?: string;
+  updated_at?: string;
+};
+
+export type RuleFormPayload = {
+  rule_id: string;
+  title: string;
+  prompt_snippet: string;
+  severity_default: 'INFO' | 'WARNING' | 'BLOCKER';
+  enabled: boolean;
+};
+
+export type BlockPolicySeverity =
+  | 'NONE'
+  | 'INFO'
+  | 'WARNING'
+  | 'BLOCKER'
+  | 'ENGINE_ERROR_ONLY';
+
+export type BlockPolicy = {
+  id: string;
+  project_id: string | null;
+  branch_pattern: string;
+  block_severity: BlockPolicySeverity;
+  block_on_engine_error: boolean;
+  require_all_resolved: boolean;
+  priority: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type BlockPolicyPayload = {
+  branch_pattern: string;
+  block_severity: BlockPolicySeverity;
+  block_on_engine_error: boolean;
+  require_all_resolved: boolean;
+  priority: number;
+};
+
+export type ProjectRuleConfig = {
+  project_id: string;
+  rule_id: string;
+  enabled: boolean;
+  severity_override: 'INFO' | 'WARNING' | 'BLOCKER' | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type ProjectRuleFormPayload = {
+  rule_id: string;
+  enabled: boolean;
 };
 
 export type ProjectConfig = {
@@ -86,11 +139,17 @@ export type ProjectConfig = {
   gitlab_project_id: string;
   gitlab_access_token: string;
   webhook_secret: string;
+  engine_id: string | null;
+  provider_id: string | null;
   enabled: boolean;
   default_block_severity: string;
   timeout_seconds: number;
   max_files: number;
+  ignore_paths: unknown[] | null;
+  rules: ProjectRuleConfig[];
+  block_policies: BlockPolicy[];
   created_at?: string;
+  updated_at?: string;
 };
 
 export type ReviewRecord = {
@@ -161,10 +220,22 @@ export type ProjectFormPayload = {
   gitlab_project_id: string;
   gitlab_access_token: string;
   webhook_secret: string;
+  engine_id: string;
   enabled: boolean;
   timeout_seconds: number;
   max_files: number;
   default_block_severity: 'INFO' | 'WARNING' | 'BLOCKER';
+  rules: ProjectRuleFormPayload[];
+};
+
+export type ProjectUpdatePayload = {
+  name?: string;
+  gitlab_project_id?: string;
+  enabled?: boolean;
+  default_block_severity?: 'INFO' | 'WARNING' | 'BLOCKER';
+  engine_id?: string | null;
+  rules?: ProjectRuleFormPayload[];
+  block_policies?: BlockPolicyPayload[];
 };
 
 export type FalsePositiveMarkPayload = {
@@ -317,14 +388,49 @@ export async function fetchRules(): Promise<Page<RuleConfig>> {
   return parseJsonResponse<Page<RuleConfig>>(response, true);
 }
 
+export async function createRule(payload: RuleFormPayload): Promise<RuleConfig> {
+  const response = await adminFetch('/api/rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<RuleConfig>(response, true);
+}
+
 export async function fetchProjects(): Promise<Page<ProjectConfig>> {
   const response = await adminFetch('/api/projects');
   return parseJsonResponse<Page<ProjectConfig>>(response, true);
 }
 
 export async function createProject(payload: ProjectFormPayload): Promise<ProjectConfig> {
+  const body: Record<string, unknown> = {
+    name: payload.name,
+    gitlab_project_id: payload.gitlab_project_id,
+    gitlab_access_token: payload.gitlab_access_token,
+    webhook_secret: payload.webhook_secret,
+    enabled: payload.enabled,
+    timeout_seconds: payload.timeout_seconds,
+    max_files: payload.max_files,
+    default_block_severity: payload.default_block_severity,
+    rules: payload.rules,
+  };
+  if (payload.engine_id) {
+    body.engine_id = payload.engine_id;
+  }
   const response = await adminFetch('/api/projects', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return parseJsonResponse<ProjectConfig>(response, true);
+}
+
+export async function updateProject(
+  projectId: string,
+  payload: ProjectUpdatePayload,
+): Promise<ProjectConfig> {
+  const response = await adminFetch(`/api/projects/${projectId}`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
@@ -340,6 +446,13 @@ export async function fetchFindings(fpStatus?: string): Promise<Page<FindingReco
   const suffix = fpStatus ? `?fp_status=${encodeURIComponent(fpStatus)}` : '';
   const response = await adminFetch(`/api/findings${suffix}`);
   return parseJsonResponse<Page<FindingRecord>>(response, true);
+}
+
+export async function fetchReviewFindings(reviewId: string): Promise<FindingRecord[]> {
+  const suffix = `?review_id=${encodeURIComponent(reviewId)}&limit=100`;
+  const response = await adminFetch(`/api/findings${suffix}`);
+  const page = await parseJsonResponse<Page<FindingRecord>>(response, true);
+  return page.items;
 }
 
 export async function markFalsePositive(
