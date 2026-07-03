@@ -1,0 +1,168 @@
+/**
+ * ai-code-reviewer — Complete Jenkins Pipeline Template
+ *
+ * Stages: Checkout → Build → Test → AI Code Review → Deploy
+ *
+ * Prerequisites:
+ *   1. Jenkins GitLab Plugin installed
+ *   2. Secret text credential "ai-reviewer-internal-token" configured
+ *   3. Pipeline triggers on Merge Request events
+ *
+ * Usage:
+ *   - Copy to your repo root as Jenkinsfile and adjust environment variables
+ *   - Or reference via "Pipeline script from SCM" in Jenkins job config
+ */
+
+pipeline {
+    agent any
+
+    environment {
+        // Backend service URL (no trailing slash)
+        AI_REVIEWER_URL = 'http://ai-reviewer.example.com'
+
+        // Stage timeout for AI review (large MRs can take a while)
+        AI_REVIEW_TIMEOUT_MINUTES = '15'
+    }
+
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timeout(time: 60, unit: 'MINUTES')
+    }
+
+    triggers {
+        // GitLab MR webhook trigger
+        gitlab(
+            triggerOnMergeRequest: true,
+            triggerOnPush: false,
+            branchFilterType: 'All',
+            secretToken: '${GITLAB_WEBHOOK_SECRET}'
+        )
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh '''
+                    set -euo pipefail
+                    echo "Building project..."
+                    # Add your build commands here, e.g.:
+                    # mvn clean package -DskipTests
+                    # npm ci && npm run build
+                    # pip install -e ".[dev]"
+                '''
+            }
+        }
+
+        stage('Test') {
+            steps {
+                sh '''
+                    set -euo pipefail
+                    echo "Running tests..."
+                    # Add your test commands here, e.g.:
+                    # mvn test
+                    # npm test
+                    # pytest
+                '''
+            }
+        }
+
+        stage('AI Code Review') {
+            steps {
+                withCredentials([string(credentialsId: 'ai-reviewer-internal-token', variable: 'AI_REVIEWER_INTERNAL_TOKEN')]) {
+                    sh '''#!/bin/bash
+                        set -euo pipefail
+
+                        echo "=== AI Code Review ==="
+
+                        # GitLab plugin environment variables (adjust names for your plugin version)
+                        PROJECT_ID="${gitlabMergeRequestTargetProjectId:-}"
+                        MR_IID="${gitlabMergeRequestIid:-}"
+                        TARGET_BRANCH="${gitlabTargetBranch:-}"
+                        SOURCE_BRANCH="${gitlabSourceBranch:-}"
+                        COMMIT_SHA="${GIT_COMMIT:-}"
+                        PROJECT_PATH="${gitlabSourceNamespace}/${gitlabSourceRepoName}"
+                        MR_TITLE="${gitlabMergeRequestTitle:-}"
+                        MR_URL="${gitlabMergeRequestUrl:-}"
+
+                        if [ -z "$PROJECT_ID" ] || [ -z "$MR_IID" ] || [ -z "$COMMIT_SHA" ]; then
+                            echo "ERROR: Missing GitLab MR environment variables."
+                            echo "Available gitlab vars:"
+                            printenv | sort | grep -iE 'gitlab|GIT_' | grep -vi 'token\|password\|secret' || true
+                            exit 1
+                        fi
+
+                        # Call AI Reviewer API
+                        curl -fsS -X POST "$AI_REVIEWER_URL/api/reviews" \
+                            -H "Content-Type: application/json" \
+                            -H "X-Internal-Token: $AI_REVIEWER_INTERNAL_TOKEN" \
+                            -d "{
+                                \"project_id\": $PROJECT_ID,
+                                \"mr_iid\": $MR_IID,
+                                \"target_branch\": \"$TARGET_BRANCH\",
+                                \"source_branch\": \"$SOURCE_BRANCH\",
+                                \"commit_sha\": \"$COMMIT_SHA\",
+                                \"project_path\": \"$PROJECT_PATH\",
+                                \"title\": \"$MR_TITLE\",
+                                \"web_url\": \"$MR_URL\"
+                            }" | tee ai-review-result.json
+
+                        # Parse result and block if needed
+                        python3 - <<'PY'
+import json, sys
+from pathlib import Path
+
+result = json.loads(Path("ai-review-result.json").read_text(encoding="utf-8"))
+has_blocker = result.get("has_blocker", False)
+finding_count = result.get("finding_count", 0)
+blocker_count = result.get("blocker_count", 0)
+policy = result.get("policy_applied", "unknown")
+review_url = result.get("review_url", "")
+
+print(f"Review status: {result.get('status', 'unknown')}")
+print(f"Findings: {finding_count} total, {blocker_count} blockers")
+print(f"Block policy: {policy}")
+if review_url:
+    print(f"Review URL: {review_url}")
+
+if has_blocker:
+    print("\n❌ AI Review FAILED: blocker issues found. Merge is blocked.")
+    sys.exit(1)
+else:
+    print("\n✅ AI Review PASSED: no blocker issues.")
+PY
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy') {
+            when {
+                branch 'master'
+                // Or: expression { env.gitlabTargetBranch == 'master' }
+            }
+            steps {
+                sh '''
+                    set -euo pipefail
+                    echo "Deploying..."
+                    # Add your deploy commands here
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'ai-review-result.json', allowEmptyArchive: true
+        }
+        failure {
+            echo "Pipeline failed. Check AI Review results in archived artifacts."
+        }
+    }
+}
