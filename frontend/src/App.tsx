@@ -47,10 +47,12 @@ import {
   markFalsePositive,
   rejectFalsePositive,
 } from './api';
+import { AlertOctagon, AlertTriangle, Filter, ScrollText, type LucideIcon } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { AppShell } from './components/layout/AppShell';
 import { Badge as UiBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -219,9 +221,13 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePage, adminToken]);
 
-  const blockerReviews = useMemo(
-    () => reviews.filter((review) => review.has_blocker).length,
-    [reviews],
+  const blockerCount = useMemo(
+    () => (reviewRecordsPage?.items ?? []).filter((record) => record.has_blocker).length,
+    [reviewRecordsPage],
+  );
+  const totalFindings = useMemo(
+    () => (reviewRecordsPage?.items ?? []).reduce((sum, record) => sum + record.finding_count, 0),
+    [reviewRecordsPage],
   );
 
   async function loadPage(page: PageKey) {
@@ -254,6 +260,13 @@ function App() {
         setNegativeExamplesPage(negativeExamples);
       } else if (page === 'falsePositives') {
         setPendingFpPage(await fetchPendingFalsePositives());
+      } else if (page === 'dashboard') {
+        const [records, pendingFp] = await Promise.all([
+          fetchReviewRecords(),
+          fetchPendingFalsePositives(),
+        ]);
+        setReviewRecordsPage(records);
+        setPendingFpPage(pendingFp);
       } else if (page === 'engines') {
         setEngineConfigsPage(await fetchEngineConfigs());
       }
@@ -484,57 +497,40 @@ function App() {
 
   function renderDashboard() {
     return (
-      <PanelGrid aria-busy={loading}>
-        <div className="col-span-12 lg:col-span-4">
-          <Card>
-            <CardHeader><CardTitle>服务状态</CardTitle></CardHeader>
-            <CardContent>
-              <StatusRow label="API" value={health?.status === 'ok' ? '服务正常' : '服务异常'} ok={health?.status === 'ok'} />
-              <StatusRow label="数据库" value={health?.db === 'ok' ? '数据库正常' : '数据库异常'} ok={health?.db === 'ok'} />
-              <StatusRow label="Redis" value={health?.redis === 'ok' ? 'Redis 正常' : 'Redis 异常'} ok={health?.redis === 'ok'} />
-              <p className="text-sm text-muted-foreground pt-3">版本：{health?.version ?? '加载中'}</p>
-            </CardContent>
-          </Card>
-        </div>
+      <div className="space-y-6" aria-busy={loading}>
+        {/* KPI 行 */}
+        <section>
+          <div className="grid grid-cols-4 gap-3">
+            <KpiCard label="总审查数" value={reviewRecordsPage?.total ?? '—'} icon={ScrollText} />
+            <KpiCard
+              label="阻断问题"
+              value={blockerCount}
+              icon={AlertOctagon}
+              intent={blockerCount > 0 ? 'danger' : 'neutral'}
+            />
+            <KpiCard label="发现问题" value={totalFindings} icon={AlertTriangle} />
+            <KpiCard label="待处理误报" value={pendingFpPage?.total ?? 0} icon={Filter} hint="待处理" />
+          </div>
+        </section>
 
-        <div className="col-span-12 lg:col-span-4">
-          <Card>
-            <CardHeader><CardTitle>引擎状态</CardTitle></CardHeader>
-            <CardContent>
-              {engines.length === 0 ? <div className="text-sm text-muted-foreground py-4 text-center">暂无已注册引擎</div> : null}
-              {engines.map((engine) => (
-                <div className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={engine.name}>
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium text-sm">{engine.name}</div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      {engine.requires_repo_clone ? '需要克隆仓库' : '无需克隆仓库'} ·
-                      {engine.supports_feedback ? ' 支持反馈' : ' 暂不支持反馈'}
-                    </div>
-                  </div>
-                  <Badge ok={engine.healthy}>{engine.health_status}</Badge>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </div>
+        {/* 系统状态 + 最近审查 */}
+        <section className="grid grid-cols-3 gap-4">
+          <SystemStatusCard health={health} engines={engines} />
+          <RecentReviewsPanel reviews={reviews} onViewAll={() => setActivePage('reviews')} />
+        </section>
 
-        <div className="col-span-12 lg:col-span-4">
+        {/* 手动触发 MR 审查 */}
+        <section>
           <Card>
-            <CardHeader><CardTitle>审查概览</CardTitle></CardHeader>
-            <CardContent>
-              <StatusRow label="最近审查" value={`${reviews.length} 次`} ok />
-              <StatusRow label="存在阻断" value={`${blockerReviews} 次`} ok={blockerReviews === 0} />
-              <StatusRow label="可手动触发" value="已启用" ok />
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="col-span-12">
-          <Card>
-            <CardHeader><CardTitle>手动触发 MR 审查</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <form className="grid gap-3 md:grid-cols-2" onSubmit={handleSubmit}>
-                <TextInput label="内部调用 Token" value={form.internalToken} type="password" onChange={(value) => setForm({ ...form, internalToken: value })} />
+            <CardHeader>
+              <div>
+                <CardTitle>手动触发 MR 审查</CardTitle>
+                <CardDescription>填写 GitLab MR 参数触发一次审查</CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <form className="grid grid-cols-2 gap-3" onSubmit={handleSubmit}>
+                <TextInput label="内部调用 Token" type="password" value={form.internalToken} onChange={(value) => setForm({ ...form, internalToken: value })} />
                 <TextInput label="GitLab 项目 ID" value={form.projectId} onChange={(value) => setForm({ ...form, projectId: value })} />
                 <TextInput label="MR IID" value={form.mrIid} onChange={(value) => setForm({ ...form, mrIid: value })} />
                 <TextInput label="目标分支" value={form.targetBranch} onChange={(value) => setForm({ ...form, targetBranch: value })} />
@@ -543,24 +539,28 @@ function App() {
                 <TextInput label="项目路径（可选）" value={form.projectPath} onChange={(value) => setForm({ ...form, projectPath: value })} />
                 <TextInput label="MR 标题（可选）" value={form.title} onChange={(value) => setForm({ ...form, title: value })} />
                 <TextInput label="MR URL（可选）" value={form.webUrl} onChange={(value) => setForm({ ...form, webUrl: value })} />
-                <div className="flex items-center gap-2 flex-wrap md:col-span-2">
-                  <Button disabled={submitting} type="submit">{submitting ? '审查中…' : '触发审查'}</Button>
-                  <Button disabled={submitting} type="button" variant="outline" onClick={handleRefreshReviews}>刷新最近审查</Button>
-                  <span className="text-sm text-muted-foreground">Token 只在本次请求中使用，不会保存到前端状态之外。</span>
+                <div className="col-span-2 mt-4 flex items-center justify-between border-t border-zinc-100 pt-4">
+                  <span className="text-[12px] text-zinc-500">Token 只在本次请求中使用，不会保存到前端状态之外</span>
+                  <div className="flex items-center gap-2">
+                    <Button variant="secondary" type="button" disabled={submitting} onClick={handleRefreshReviews}>刷新最近审查</Button>
+                    <Button type="submit" disabled={submitting}>{submitting ? '审查中…' : '触发审查'}</Button>
+                  </div>
                 </div>
               </form>
               {submitResult ? (
-                <div className={submitResult.has_blocker ? 'rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive' : 'rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary'}>
-                  {submitResult.has_blocker ? '审查完成，发现阻断问题。' : '审查完成，未发现阻断问题。'}
-                  {submitResult.review_url ? <> <a href={submitResult.review_url} className="text-primary hover:underline">查看结果</a></> : null}
+                <div className="flex items-center gap-2">
+                  <UiBadge variant={submitResult.has_blocker ? 'destructive' : 'success'}>
+                    {submitResult.has_blocker ? '审查完成，发现阻断问题。' : '审查完成，未发现阻断问题。'}
+                  </UiBadge>
+                  {submitResult.review_url ? (
+                    <a href={submitResult.review_url} className="text-[12px] font-medium text-brand hover:underline">查看结果 →</a>
+                  ) : null}
                 </div>
               ) : null}
             </CardContent>
           </Card>
-        </div>
-
-        <RecentReviewsCard reviews={reviews} />
-      </PanelGrid>
+        </section>
+      </div>
     );
   }
 
@@ -955,6 +955,174 @@ function NegativeExamplesCard({ examples }: { examples: NegativeExample[] }) {
   );
 }
 
+type KpiCardProps = {
+  label: string;
+  value: number | string;
+  icon: LucideIcon;
+  hint?: string;
+  intent?: 'neutral' | 'danger';
+};
+
+function KpiCard({ label, value, icon: Icon, hint, intent = 'neutral' }: KpiCardProps) {
+  const danger = intent === 'danger' && Number(value) > 0;
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-[12px] text-zinc-500">{label}</span>
+          <Icon size={14} strokeWidth={1.75} className="text-zinc-400" />
+        </div>
+        <div className="mt-2 flex items-baseline gap-2">
+          <span
+            className={cn(
+              'text-[24px] font-semibold leading-none tracking-tight',
+              danger ? 'text-rose-600' : 'text-zinc-900',
+            )}
+          >
+            {value}
+          </span>
+          {hint ? <span className="text-[12px] font-medium text-zinc-500">{hint}</span> : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+type SystemStatusCardProps = {
+  health: HealthStatus | null;
+  engines: EngineSummary[];
+};
+
+function SystemStatusCard({ health, engines }: SystemStatusCardProps) {
+  const apiOk = health?.status === 'ok';
+  const dbOk = health?.db === 'ok';
+  const redisOk = health?.redis === 'ok';
+  const healthyEngineCount = engines.filter((engine) => engine.healthy).length;
+  const enginesAllHealthy = engines.length > 0 && healthyEngineCount === engines.length;
+  const enginesAllDown = engines.length > 0 && healthyEngineCount === 0;
+  const engineDotClass = engines.length === 0
+    ? 'bg-zinc-300'
+    : enginesAllHealthy
+      ? 'bg-emerald-500'
+      : enginesAllDown
+        ? 'bg-rose-500'
+        : 'bg-amber-500';
+  const allOk = apiOk && dbOk && redisOk && (engines.length === 0 || enginesAllHealthy);
+
+  const rows: Array<{ label: string; ok: boolean; value: string; version?: string }> = [
+    { label: 'API 服务', ok: apiOk, value: apiOk ? '服务正常' : '服务异常', version: health?.version },
+    { label: '数据库', ok: dbOk, value: dbOk ? '数据库正常' : '数据库异常' },
+    { label: 'Redis', ok: redisOk, value: redisOk ? 'Redis 正常' : 'Redis 异常' },
+  ];
+
+  return (
+    <Card className="col-span-1">
+      <CardHeader>
+        <div>
+          <CardTitle>系统状态</CardTitle>
+          <CardDescription>实时组件健康度</CardDescription>
+        </div>
+        <UiBadge variant={allOk ? 'success' : 'destructive'}>
+          <span className={cn('size-1.5 rounded-full', allOk ? 'bg-emerald-500' : 'bg-rose-500')} />
+          {allOk ? '正常' : '异常'}
+        </UiBadge>
+      </CardHeader>
+      <CardContent className="p-0">
+        {rows.map((row, index) => (
+          <div
+            key={row.label}
+            className={cn(
+              'flex items-center justify-between px-4 py-2',
+              index < rows.length - 1 && 'border-b border-zinc-100',
+            )}
+          >
+            <div className="flex items-center gap-2">
+              <span className={cn('size-1.5 rounded-full', row.ok ? 'bg-emerald-500' : 'bg-rose-500')} />
+              <span className="text-[13px] text-zinc-700">{row.label}</span>
+            </div>
+            {row.version ? (
+              <div className="flex items-baseline gap-2">
+                <span className={cn('text-[11px]', row.ok ? 'text-zinc-500' : 'text-rose-600')}>{row.value}</span>
+                <span className="font-mono text-[11px] text-zinc-400">v{row.version}</span>
+              </div>
+            ) : (
+              <span className={cn('text-[11px]', row.ok ? 'text-zinc-500' : 'text-rose-600')}>{row.value}</span>
+            )}
+          </div>
+        ))}
+        <div className="flex items-center justify-between px-4 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className={cn('size-1.5 shrink-0 rounded-full', engineDotClass)} />
+            <span className="shrink-0 text-[13px] text-zinc-700">引擎</span>
+            <span className="truncate text-[13px] text-zinc-700">
+              {engines.length > 0 ? engines.map((engine) => engine.name).join(' / ') : '—'}
+            </span>
+          </div>
+          <span className="ml-2 shrink-0 font-mono text-[11px] text-zinc-500">
+            {healthyEngineCount}/{engines.length}
+          </span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+type RecentReviewsPanelProps = {
+  reviews: RecentReview[];
+  onViewAll: () => void;
+};
+
+function RecentReviewsPanel({ reviews, onViewAll }: RecentReviewsPanelProps) {
+  const items = reviews.slice(0, 5);
+  return (
+    <Card className="col-span-2">
+      <CardHeader>
+        <div>
+          <CardTitle>最近审查</CardTitle>
+          <CardDescription>最近 5 条 MR 审查记录</CardDescription>
+        </div>
+        <button
+          type="button"
+          onClick={onViewAll}
+          className="text-[12px] font-medium text-zinc-500 transition-colors hover:text-zinc-900"
+        >
+          查看全部 →
+        </button>
+      </CardHeader>
+      {items.length === 0 ? (
+        <div className="p-6 text-center text-[13px] text-zinc-500">暂无审查记录</div>
+      ) : (
+        <div>
+          {items.map((review) => (
+            <div
+              key={`${review.review_id ?? review.project_id}-${review.mr_iid}`}
+              className="flex items-center gap-3 border-b border-zinc-100 px-4 py-2.5 last:border-b-0 hover:bg-[#FAFAFA]"
+            >
+              <span className={cn('size-1.5 shrink-0 rounded-full', review.has_blocker ? 'bg-rose-500' : 'bg-emerald-500')} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-[13px] font-medium text-zinc-900">
+                    {review.title || `MR !${review.mr_iid}`}
+                  </span>
+                  <UiBadge variant="default" className="h-4 px-1.5 text-[10px]">
+                    !{review.mr_iid}
+                  </UiBadge>
+                </div>
+                <div className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">
+                  {review.project_path} · {relativeTime(review.created_at)}
+                </div>
+              </div>
+              <UiBadge variant={review.has_blocker ? 'destructive' : 'success'}>
+                {review.has_blocker ? '阻断' : '通过'}
+              </UiBadge>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 type ProjectCardProps = {
   project: ProjectConfig;
   onSavePolicies: (projectId: string, policies: BlockPolicyPayload[]) => Promise<void>;
@@ -1227,6 +1395,36 @@ function toggleRuleSelection(
 function truncate(text: string, limit = 80): string {
   const trimmed = text.trim();
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
+}
+
+function relativeTime(iso?: string): string {
+  if (!iso) {
+    return '';
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  const diffSeconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (diffSeconds < 60) {
+    return '刚刚';
+  }
+  const minutes = Math.floor(diffSeconds / 60);
+  if (minutes < 60) {
+    return `${minutes} 分钟前`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours} 小时前`;
+  }
+  const days = Math.floor(hours / 24);
+  if (days < 30) {
+    return `${days} 天前`;
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function parsePositiveInteger(value: string, label: string): number {
