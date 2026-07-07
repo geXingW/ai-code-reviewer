@@ -616,29 +616,66 @@ function App() {
   }
 
   function renderRules() {
+    const items = rulesPage?.items ?? [];
+    const enabledCount = items.filter((rule) => rule.enabled).length;
     return (
-      <PanelGrid>
-        <div className="col-span-12 lg:col-span-5">
-          <Card>
-            <CardHeader><CardTitle>新增审查规则</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <form className="grid gap-3" onSubmit={handleCreateRule}>
-                <TextInput label="规则 ID" value={ruleForm.rule_id} onChange={(value) => setRuleForm({ ...ruleForm, rule_id: value })} />
-                <TextInput label="规则标题" value={ruleForm.title} onChange={(value) => setRuleForm({ ...ruleForm, title: value })} />
-                <TextAreaInput label="提示片段" value={ruleForm.prompt_snippet} onChange={(value) => setRuleForm({ ...ruleForm, prompt_snippet: value })} />
-                <SelectInput label="默认严重级别" value={ruleForm.severity_default} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setRuleForm({ ...ruleForm, severity_default: value as RuleFormPayload['severity_default'] })} />
-                <CheckboxInput label="启用规则" checked={ruleForm.enabled} onChange={(value) => setRuleForm({ ...ruleForm, enabled: value })} />
-                <div className="flex items-center gap-2 flex-wrap"><Button type="submit">保存规则</Button></div>
-              </form>
-            </CardContent>
-          </Card>
-        </div>
-        <ListCard title="审查规则" empty="暂无审查规则">
-          {(rulesPage?.items ?? []).map((rule) => (
-            <DataRow key={rule.id} title={`${rule.rule_id} · ${rule.title}`} meta={`${rule.severity_default} · ${truncate(rule.prompt_snippet)}`} status={rule.enabled ? '启用' : '停用'} ok={rule.enabled} />
-          ))}
-        </ListCard>
-      </PanelGrid>
+      <div className="grid grid-cols-5 gap-4">
+        {/* 左：表单卡 */}
+        <Card className="col-span-2">
+          <CardHeader>
+            <div>
+              <CardTitle>新增审查规则</CardTitle>
+              <CardDescription>定义 AI 审查依据的规则模板</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <form className="space-y-3" onSubmit={handleCreateRule}>
+              <TextInput label="规则 ID" value={ruleForm.rule_id} onChange={(value) => setRuleForm({ ...ruleForm, rule_id: value })} />
+              <TextInput label="标题" value={ruleForm.title} onChange={(value) => setRuleForm({ ...ruleForm, title: value })} />
+              <TextAreaInput label="提示片段" value={ruleForm.prompt_snippet} onChange={(value) => setRuleForm({ ...ruleForm, prompt_snippet: value })} />
+              <SelectInput label="默认严重级别" value={ruleForm.severity_default} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setRuleForm({ ...ruleForm, severity_default: value as RuleFormPayload['severity_default'] })} />
+              <CheckboxInput label="启用规则" checked={ruleForm.enabled} onChange={(value) => setRuleForm({ ...ruleForm, enabled: value })} />
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-zinc-100 mt-4">
+                <Button type="button" variant="secondary" onClick={() => setRuleForm(initialRuleForm)}>重置</Button>
+                <Button type="submit">保存规则</Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+
+        {/* 右：列表卡 */}
+        <Card className="col-span-3">
+          <CardHeader>
+            <div>
+              <CardTitle>审查规则</CardTitle>
+              <CardDescription>{items.length} 条规则 · {enabledCount} 启用</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            {items.length === 0 ? (
+              <div className="p-6 text-center text-[13px] text-zinc-500">暂无审查规则</div>
+            ) : (
+              items.map((rule) => (
+                <div key={rule.id} className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-zinc-900 truncate">
+                      {rule.rule_id}<span className="font-normal text-zinc-600"> {rule.title}</span>
+                    </div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{rule.severity_default} · {truncate(rule.prompt_snippet, 60)}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <UiBadge {...severityBadgeProps(rule.severity_default)}>{rule.severity_default}</UiBadge>
+                    <UiBadge variant={rule.enabled ? 'success' : 'default'}>
+                      <span className={cn('w-1.5 h-1.5 rounded-full', rule.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
+                      {rule.enabled ? '启用' : '停用'}
+                    </UiBadge>
+                  </div>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
@@ -722,101 +759,195 @@ function App() {
   }
 
   function renderReviewRecords() {
+    const items = reviewRecordsPage?.items ?? [];
     return (
-      <PanelGrid>
-        <ListCard title="审查记录" empty="暂无审查记录">
-          {(reviewRecordsPage?.items ?? []).map((review) => (
-            <ReviewRecordRow key={review.id} review={review} onError={handleCaughtError} />
-          ))}
-        </ListCard>
-        <RecentReviewsCard reviews={reviews} />
-      </PanelGrid>
+      <div className="space-y-4">
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>审查记录</CardTitle>
+              <CardDescription>{items.length} 条历史审查</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            {items.length === 0 ? (
+              <div className="p-6 text-center text-[13px] text-zinc-500">暂无审查记录</div>
+            ) : (
+              items.map((review) => (
+                <ReviewRecordRow key={review.id} review={review} onError={handleCaughtError} />
+              ))
+            )}
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
   function renderFindings() {
+    const items = findingsPage?.items ?? [];
+    const negativeExamples = negativeExamplesPage?.items ?? [];
     return (
-      <PanelGrid>
-        <div className="col-span-12">
-          <Card>
-            <CardHeader><CardTitle>问题与误报</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex flex-wrap items-end gap-3 mb-4">
-                <TextInput label="操作人" value={operator} onChange={setOperator} />
-                <TextInput label="处理说明" value={reviewNote} onChange={setReviewNote} />
-              </div>
-              {(findingsPage?.items ?? []).length === 0 ? <div className="text-sm text-muted-foreground py-4 text-center">暂无问题记录</div> : null}
-              {(findingsPage?.items ?? []).map((finding) => (
-                <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={finding.id}>
+      <div className="space-y-4">
+        <Card>
+          <CardContent className="p-4">
+            <div className="grid grid-cols-2 gap-3">
+              <TextInput label="操作人" value={operator} onChange={setOperator} />
+              <TextInput label="处理说明" value={reviewNote} onChange={setReviewNote} />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>问题与误报</CardTitle>
+              <CardDescription>{items.length} 条问题记录</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            {items.length === 0 ? (
+              <div className="p-6 text-center text-[13px] text-zinc-500">暂无问题记录</div>
+            ) : (
+              items.map((finding) => (
+                <div key={finding.id} className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
                   <div className="min-w-0 flex-1">
-                    <div className="font-medium text-sm">{finding.title}</div>
-                    <div className="text-xs text-muted-foreground mt-0.5">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id} · {finding.fp_status}</div>
+                    <div className="text-[13px] font-medium text-zinc-900 truncate">{finding.title}</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id} · {finding.fp_status}</div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Badge ok={finding.severity !== 'BLOCKER'}>{finding.severity}</Badge>
-                    <Button type="button" onClick={() => void handleMarkFalsePositive(finding)}>标记误报</Button>
+                    <UiBadge {...severityBadgeProps(finding.severity)}>{finding.severity}</UiBadge>
+                    <Button variant="ghost" size="sm" type="button" onClick={() => void handleMarkFalsePositive(finding)}>标记误报</Button>
                   </div>
-                </article>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+
+        {negativeExamples.length > 0 ? (
+          <Card>
+            <CardHeader>
+              <div>
+                <CardTitle>负样本</CardTitle>
+                <CardDescription>{negativeExamples.length} 条已批准</CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {negativeExamples.map((example) => (
+                <div key={example.id} className="px-4 py-3 border-b border-zinc-100 last:border-b-0">
+                  <div className="text-[12px] font-mono bg-zinc-50 rounded p-2 mb-2 whitespace-pre-wrap break-all">
+                    {example.code_snippet}
+                  </div>
+                  {example.explanation ? <div className="text-[12px] text-zinc-600">{example.explanation}</div> : null}
+                </div>
               ))}
             </CardContent>
           </Card>
-        </div>
-        <NegativeExamplesCard examples={negativeExamplesPage?.items ?? []} />
-      </PanelGrid>
+        ) : null}
+      </div>
     );
   }
 
   function renderFalsePositives() {
+    const items = pendingFpPage?.items ?? [];
+    const negativeExamples = negativeExamplesPage?.items ?? [];
     return (
-      <PanelGrid>
-        <div className="col-span-12">
-          <Card>
-            <CardHeader><CardTitle>误报队列</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex flex-wrap items-end gap-3 mb-4">
-                <TextInput label="审核人" value={operator} onChange={setOperator} />
-                <TextInput label="审核备注" value={reviewNote} onChange={setReviewNote} />
-              </div>
-              {(pendingFpPage?.items ?? []).length === 0 ? <div className="text-sm text-muted-foreground py-4 text-center">暂无待确认误报</div> : null}
-              {(pendingFpPage?.items ?? []).map((finding) => (
-                <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={finding.id}>
+      <div className="space-y-4">
+        <Card>
+          <CardContent className="p-4">
+            <div className="grid grid-cols-2 gap-3">
+              <TextInput label="审核人" value={operator} onChange={setOperator} />
+              <TextInput label="审核备注" value={reviewNote} onChange={setReviewNote} />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>误报队列</CardTitle>
+              <CardDescription>{items.length} 条待审核</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            {items.length === 0 ? (
+              <div className="p-6 text-center text-[13px] text-zinc-500">暂无待确认误报</div>
+            ) : (
+              items.map((finding) => (
+                <div key={finding.id} className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
                   <div className="min-w-0 flex-1">
-                    <div className="font-medium text-sm">{finding.title}</div>
-                    <div className="text-xs text-muted-foreground mt-0.5">{finding.file_path}:{finding.line_number ?? '-'} · {finding.fp_marked_by ?? '未知提交人'} · {finding.fp_marked_reason ?? '无原因'}</div>
+                    <div className="text-[13px] font-medium text-zinc-900 truncate">{finding.title}</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{finding.file_path}:{finding.line_number ?? '-'} · 提交人 {finding.fp_marked_by ?? '未知'} · {finding.fp_marked_reason ?? '无原因'}</div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Button type="button" onClick={() => void handleReviewFalsePositive(finding, 'confirm')}>确认误报</Button>
-                    <Button variant="outline" type="button" onClick={() => void handleReviewFalsePositive(finding, 'reject')}>驳回</Button>
+                    <Button size="sm" type="button" onClick={() => void handleReviewFalsePositive(finding, 'confirm')}>确认误报</Button>
+                    <Button variant="secondary" size="sm" type="button" onClick={() => void handleReviewFalsePositive(finding, 'reject')}>驳回</Button>
                   </div>
-                </article>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+
+        {negativeExamples.length > 0 ? (
+          <Card>
+            <CardHeader>
+              <div>
+                <CardTitle>负样本</CardTitle>
+                <CardDescription>{negativeExamples.length} 条已批准</CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {negativeExamples.map((example) => (
+                <div key={example.id} className="px-4 py-3 border-b border-zinc-100 last:border-b-0">
+                  <div className="text-[12px] font-mono bg-zinc-50 rounded p-2 mb-2 whitespace-pre-wrap break-all">
+                    {example.code_snippet}
+                  </div>
+                  {example.explanation ? <div className="text-[12px] text-zinc-600">{example.explanation}</div> : null}
+                </div>
               ))}
             </CardContent>
           </Card>
-        </div>
-        <NegativeExamplesCard examples={negativeExamplesPage?.items ?? []} />
-      </PanelGrid>
+        ) : null}
+      </div>
     );
   }
 
   function renderEngineConfigs() {
+    const items = engineConfigsPage?.items ?? [];
     return (
-      <PanelGrid>
-        <ListCard title="引擎配置" empty="暂无引擎配置">
-          {(engineConfigsPage?.items ?? []).map((engine) => (
-            <DataRow key={engine.id} title={engine.name} meta={engine.description ?? '暂无描述'} status={engine.enabled ? '启用' : '停用'} ok={engine.enabled} />
-          ))}
-        </ListCard>
-      </PanelGrid>
+      <div className="space-y-4">
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>引擎配置</CardTitle>
+              <CardDescription>{items.length} 个引擎</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            {items.length === 0 ? (
+              <div className="p-6 text-center text-[13px] text-zinc-500">暂无引擎配置</div>
+            ) : (
+              items.map((engine) => (
+                <div key={engine.id} className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-zinc-900 truncate">{engine.name}</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5 truncate">{engine.description ?? '暂无描述'}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <UiBadge variant={engine.enabled ? 'success' : 'default'}>
+                      <span className={cn('w-1.5 h-1.5 rounded-full', engine.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
+                      {engine.enabled ? '启用' : '停用'}
+                    </UiBadge>
+                  </div>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      </div>
     );
   }
-}
-
-function PanelGrid({ children, ...props }: React.HTMLAttributes<HTMLElement>) {
-  return (
-    <section className="grid grid-cols-12 gap-4" {...props}>
-      {children}
-    </section>
-  );
 }
 
 type TextInputProps = {
@@ -918,94 +1049,6 @@ type BadgeProps = {
 
 function Badge({ ok, children }: BadgeProps) {
   return <UiBadge variant={ok ? 'success' : 'destructive'}>{children}</UiBadge>;
-}
-
-type ListCardProps = {
-  title: string;
-  empty: string;
-  children: React.ReactNode;
-};
-
-function ListCard({ title, empty, children }: ListCardProps) {
-  const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children);
-  return (
-    <div className="col-span-12 lg:col-span-7">
-      <Card>
-        <CardHeader><CardTitle>{title}</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          {hasChildren ? children : <div className="text-sm text-muted-foreground">{empty}</div>}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-type DataRowProps = {
-  title: string;
-  meta: string;
-  status: string;
-  ok: boolean;
-};
-
-function DataRow({ title, meta, status, ok }: DataRowProps) {
-  return (
-    <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0">
-      <div className="min-w-0 flex-1">
-        <div className="font-medium text-sm">{title}</div>
-        <div className="text-xs text-muted-foreground mt-0.5 truncate">{meta}</div>
-      </div>
-      <Badge ok={ok}>{status}</Badge>
-    </article>
-  );
-}
-
-function RecentReviewsCard({ reviews }: { reviews: RecentReview[] }) {
-  return (
-    <div className="col-span-12">
-      <Card>
-        <CardHeader><CardTitle>最近审查记录</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          {reviews.length === 0 ? <div className="text-sm text-muted-foreground">暂无审查记录</div> : null}
-          {reviews.map((review) => (
-            <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={`${review.review_id ?? review.project_id}-${review.mr_iid}`}>
-              <div className="min-w-0 flex-1">
-                <div className="font-medium text-sm">{review.title}</div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  {review.project_path} !{review.mr_iid} · {review.status} · {review.finding_count} 个问题
-                </div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <Badge ok={!review.has_blocker}>{review.has_blocker ? '阻断' : '通过'}</Badge>
-                {review.review_url ? <a href={review.review_url} className="text-xs text-primary hover:underline">结果</a> : null}
-              </div>
-            </article>
-          ))}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function NegativeExamplesCard({ examples }: { examples: NegativeExample[] }) {
-  return (
-    <div className="col-span-12">
-      <Card>
-        <CardHeader><CardTitle>负例库</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          {examples.length === 0 ? <div className="text-sm text-muted-foreground">暂无负例</div> : null}
-          {examples.map((example) => (
-            <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={example.id}>
-              <div className="min-w-0 flex-1">
-                <div className="font-medium text-sm">{example.rule_id}</div>
-                <div className="text-xs text-muted-foreground mt-0.5">{example.code_snippet}</div>
-              </div>
-              <Badge ok>{example.approved_by ?? '已确认'}</Badge>
-            </article>
-          ))}
-        </CardContent>
-      </Card>
-    </div>
-  );
 }
 
 type KpiCardProps = {
@@ -1440,36 +1483,45 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
   }
 
   return (
-    <article>
-      <div className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0">
-        <div className="min-w-0 flex-1">
-          <div className="font-medium text-sm">MR !{review.mr_iid} · {review.source_branch} → {review.target_branch}</div>
-          <div className="text-xs text-muted-foreground mt-0.5">{review.status} · {review.finding_count} 个问题 · {review.commit_sha}</div>
+    <div className="border-b border-zinc-100 last:border-b-0">
+      <div className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', review.has_blocker ? 'bg-rose-500' : 'bg-emerald-500')} />
+          <div className="min-w-0">
+            <div className="text-[13px] font-medium text-zinc-900 truncate">
+              MR !{review.mr_iid} <span className="text-zinc-500">{review.source_branch} → {review.target_branch}</span>
+            </div>
+            <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">
+              {review.status} · {review.finding_count} 个问题 · {review.commit_sha.slice(0, 7)}
+            </div>
+          </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <Badge ok={!review.has_blocker}>{review.has_blocker ? '阻断' : '通过'}</Badge>
+          <UiBadge variant={review.has_blocker ? 'destructive' : 'success'}>
+            {review.has_blocker ? '阻断' : '通过'}
+          </UiBadge>
           <Button variant="ghost" size="sm" type="button" onClick={() => void toggleExpand()}>
             {expanded ? '收起问题' : '查看问题'}
           </Button>
         </div>
       </div>
       {expanded ? (
-        <div className="mt-2 space-y-2">
-          {loadingFindings ? <div className="text-sm text-muted-foreground">加载中…</div> : null}
-          {!loadingFindings && findings === null ? <div className="text-sm text-muted-foreground">加载失败，请收起后重新展开。</div> : null}
-          {!loadingFindings && findings !== null && findings.length === 0 ? <div className="text-sm text-muted-foreground py-4 text-center">暂无问题</div> : null}
+        <div className="bg-zinc-50 border-t border-zinc-100 px-4 pb-4">
+          {loadingFindings ? <div className="py-3 text-[13px] text-zinc-500">加载中…</div> : null}
+          {!loadingFindings && findings === null ? <div className="py-3 text-[13px] text-zinc-500">加载失败，请收起后重新展开。</div> : null}
+          {!loadingFindings && findings !== null && findings.length === 0 ? <div className="py-3 text-[13px] text-zinc-500 text-center">暂无问题</div> : null}
           {(findings ?? []).map((finding) => (
-            <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={finding.id}>
+            <div key={finding.id} className="flex items-start justify-between gap-3 py-3 border-b border-zinc-100 last:border-b-0">
               <div className="min-w-0 flex-1">
-                <div className="font-medium text-sm">{finding.title}</div>
-                <div className="text-xs text-muted-foreground mt-0.5">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id} · {finding.fp_status}</div>
+                <div className="text-[13px] font-medium text-zinc-900">{finding.title}</div>
+                <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id} · {finding.fp_status}</div>
               </div>
-              <Badge ok={finding.severity !== 'BLOCKER'}>{finding.severity}</Badge>
-            </article>
+              <UiBadge {...severityBadgeProps(finding.severity)}>{finding.severity}</UiBadge>
+            </div>
           ))}
         </div>
       ) : null}
-    </article>
+    </div>
   );
 }
 
@@ -1491,6 +1543,17 @@ function toggleRuleSelection(
 function truncate(text: string, limit = 80): string {
   const trimmed = text.trim();
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}…` : trimmed;
+}
+
+/**
+ * 严重级别 → UiBadge props。BLOCKER=rose(destructive)、WARNING=amber、INFO=neutral(default)。
+ * `warning` 变体不存在（见 ui/badge.tsx），故 WARNING 用 className 覆盖为 amber，
+ * 与 DESIGN.md 的 warning token (#F59E0B = amber-500) 对齐。
+ */
+function severityBadgeProps(severity: string): { variant: 'destructive' | 'default'; className?: string } {
+  if (severity === 'BLOCKER') return { variant: 'destructive' };
+  if (severity === 'WARNING') return { variant: 'default', className: 'border-amber-100 bg-amber-50 text-amber-700' };
+  return { variant: 'default' };
 }
 
 function relativeTime(iso?: string): string {
