@@ -1,0 +1,107 @@
+/*
+ * Design tokens for AI Code Reviewer 前端
+ * -----------------------------------------------------------
+ * 使用 Tailwind CSS v4 的 @theme 指令注入自定义 tokens。
+ * 主色：Indigo；字体：Inter (sans) + JetBrains Mono (mono)；
+ * 圆角/阴影/间距沿用 shadcn/ui 惯例，保持与生态兼容。
+ */
+
+@import "tailwindcss";
+
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+/* shadcn/ui 语义色 tokens：CSS 变量层，供 @theme 引用。
+ * 浅色模式为默认，深色模式后续再加。 */
+:root {
+  /* Base surfaces */
+  --background: oklch(0.99 0.003 264);
+  --foreground: oklch(0.145 0.02 264);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0.02 264);
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0.02 264);
+
+  /* Primary = Indigo 600 */
+  --primary: oklch(0.545 0.203 275);
+  --primary-foreground: oklch(0.985 0.005 264);
+
+  /* Secondary / muted greys */
+  --secondary: oklch(0.965 0.008 264);
+  --secondary-foreground: oklch(0.205 0.02 264);
+
+  --muted: oklch(0.965 0.008 264);
+  --muted-foreground: oklch(0.556 0.02 264);
+
+  --accent: oklch(0.945 0.02 275);
+  --accent-foreground: oklch(0.205 0.02 264);
+
+  /* Destructive = Red 600 */
+  --destructive: oklch(0.577 0.245 27);
+  --destructive-foreground: oklch(0.985 0.005 264);
+
+  /* Borders / inputs / ring */
+  --border: oklch(0.922 0.01 264);
+  --input: oklch(0.922 0.01 264);
+  --ring: oklch(0.545 0.203 275 / 40%);
+
+  --radius: 0.5rem;
+}
+
+@theme inline {
+  /* Colors → 让 Tailwind 生成 bg-primary / text-foreground 等 utility */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Fonts */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,
+    "Cascadia Mono", Consolas, monospace;
+
+  /* Radii */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* 基础排版重置，让新组件在旧 styles.css 覆盖下依然干净。
+ * 只作用于挂 `data-ui="new"` 的容器，避免污染旧页面。 */
+[data-ui="new"] {
+  color-scheme: light;
+  color: var(--foreground);
+  background-color: var(--background);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+[data-ui="new"] *,
+[data-ui="new"] *::before,
+[data-ui="new"] *::after {
+  border-color: var(--border);
+}
