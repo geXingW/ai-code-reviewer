@@ -15,7 +15,7 @@ from app.api.engines import router as engines_router
 from app.api.gitlab_webhook import router as gitlab_webhook_router
 from app.api.health import router as health_router
 from app.api.reviews import router as reviews_router
-from app.core.config import get_settings
+from app.core.config import get_settings, validate_secret_key
 from app.core.db import engine
 from app.core.logging import configure_logging
 from app.core.redis import close_redis
@@ -33,6 +33,8 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     """
 
     settings = get_settings()
+    # 启动即校验 SECRET_KEY：缺失或非法时直接拒绝启动，避免运行时加密才报错。
+    validate_secret_key(settings)
     configure_logging(settings)
     load_builtin_engines()
     logger.info("Starting %s %s", settings.app_name, settings.app_version)

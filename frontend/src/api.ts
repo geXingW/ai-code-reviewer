@@ -221,6 +221,7 @@ export type ProjectFormPayload = {
   gitlab_access_token: string;
   webhook_secret: string;
   engine_id: string;
+  provider_id: string;
   enabled: boolean;
   timeout_seconds: number;
   max_files: number;
@@ -234,6 +235,7 @@ export type ProjectUpdatePayload = {
   enabled?: boolean;
   default_block_severity?: 'INFO' | 'WARNING' | 'BLOCKER';
   engine_id?: string | null;
+  provider_id?: string | null;
   rules?: ProjectRuleFormPayload[];
   block_policies?: BlockPolicyPayload[];
 };
@@ -397,6 +399,24 @@ export async function createRule(payload: RuleFormPayload): Promise<RuleConfig> 
   return parseJsonResponse<RuleConfig>(response, true);
 }
 
+export type RuleUpdatePayload = Partial<RuleFormPayload>;
+
+export async function updateRule(id: string, payload: RuleUpdatePayload): Promise<RuleConfig> {
+  const response = await adminFetch(`/api/rules/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<RuleConfig>(response, true);
+}
+
+export async function deleteRule(id: string): Promise<void> {
+  const response = await adminFetch(`/api/rules/${id}`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`删除规则失败：HTTP ${response.status}`);
+  }
+}
+
 export async function fetchProjects(): Promise<Page<ProjectConfig>> {
   const response = await adminFetch('/api/projects');
   return parseJsonResponse<Page<ProjectConfig>>(response, true);
@@ -416,6 +436,9 @@ export async function createProject(payload: ProjectFormPayload): Promise<Projec
   };
   if (payload.engine_id) {
     body.engine_id = payload.engine_id;
+  }
+  if (payload.provider_id) {
+    body.provider_id = payload.provider_id;
   }
   const response = await adminFetch('/api/projects', {
     method: 'POST',

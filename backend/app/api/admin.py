@@ -668,7 +668,12 @@ async def _get_or_404(
 
 
 async def _commit_or_400(db: AsyncSession, detail: str) -> None:
-    """Commit database changes and map expected persistence failures to HTTP errors."""
+    """提交数据库变更，并把持久化失败映射到语义清晰的 HTTP 错误。
+
+    - IntegrityError：唯一约束 / 外键冲突 → 409 Conflict，保留传入的 detail（这就是重名/外键冲突）。
+    - 其他 SQLAlchemyError（如加密失败包成的 StatementError）→ 500 Internal Server Error，
+      detail 附带根本异常类名与摘要，便于排查，而不是误报成"已存在"。
+    """
 
     try:
         await db.commit()
@@ -677,7 +682,17 @@ async def _commit_or_400(db: AsyncSession, detail: str) -> None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
     except SQLAlchemyError as exc:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
+        # DBAPIError 有 orig 属性指向底层驱动异常；其它 SQLAlchemyError 没有 orig。
+        # 用 getattr 兼容两种情况，并对 mypy 友好。
+        orig = getattr(exc, "orig", None)
+        internal_detail = (
+            f"{detail} (internal error: {exc.__class__.__name__}: "
+            f"{str(orig or exc)[:200]})"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=internal_detail,
+        ) from exc
 
 
 def _apply_sort(stmt: Select[tuple[ModelT]], sort_group: str, sort: str) -> Select[tuple[ModelT]]:
