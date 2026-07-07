@@ -27,6 +27,8 @@ import {
   createProvider,
   createReview,
   createRule,
+  deleteRule,
+  updateRule,
   updateProject,
   fetchEngineConfigs,
   fetchEngines,
@@ -119,6 +121,7 @@ const initialProjectForm: ProjectFormPayload = {
   gitlab_access_token: '',
   webhook_secret: '',
   engine_id: '',
+  provider_id: '',
   enabled: true,
   timeout_seconds: 300,
   max_files: 50,
@@ -172,6 +175,9 @@ function App() {
   const [providerForm, setProviderForm] = useState<ProviderFormPayload>(initialProviderForm);
   const [projectForm, setProjectForm] = useState<ProjectFormPayload>(initialProjectForm);
   const [ruleForm, setRuleForm] = useState<RuleFormPayload>(initialRuleForm);
+  // 每条规则的编辑态：rule.id → 编辑表单数据（null/缺省表示未进入编辑）。
+  // 用 Record 而非单值，避免多条规则互相踩。
+  const [ruleEdits, setRuleEdits] = useState<Record<string, RuleFormPayload | null>>({});
   const [operator, setOperator] = useState('admin@example.com');
   const [reviewNote, setReviewNote] = useState('');
   const [loading, setLoading] = useState(true);
@@ -249,6 +255,12 @@ function App() {
         setProjectsPage(projects);
         setEngineConfigsPage(engineConfigs);
         setRulesPage(rules);
+        // 供应商下拉为可选项：尽力加载一次，失败时退化为仅"默认"项，不阻断项目页加载。
+        if (!providersPage) {
+          void fetchProviders()
+            .then((nextProviders) => setProvidersPage(nextProviders))
+            .catch(() => {});
+        }
       } else if (page === 'reviews') {
         setReviewRecordsPage(await fetchReviewRecords());
       } else if (page === 'findings') {
@@ -406,6 +418,82 @@ function App() {
       setRuleForm(initialRuleForm);
       setRulesPage(await fetchRules());
       setMessage('审查规则已创建。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
+  function startEditRule(rule: RuleConfig) {
+    setRuleEdits((prev) => ({
+      ...prev,
+      [rule.id]: {
+        rule_id: rule.rule_id,
+        title: rule.title,
+        prompt_snippet: rule.prompt_snippet,
+        severity_default: rule.severity_default as RuleFormPayload['severity_default'],
+        enabled: rule.enabled,
+      },
+    }));
+  }
+
+  function cancelEditRule(id: string) {
+    setRuleEdits((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
+
+  function updateEditRule(id: string, patch: Partial<RuleFormPayload>) {
+    setRuleEdits((prev) => {
+      const current = prev[id];
+      if (!current) {
+        return prev;
+      }
+      return { ...prev, [id]: { ...current, ...patch } };
+    });
+  }
+
+  async function handleUpdateRule(id: string) {
+    const form = ruleEdits[id];
+    if (!form) {
+      return;
+    }
+    setError(null);
+    setMessage(null);
+    try {
+      if (!form.title.trim() || !form.prompt_snippet.trim()) {
+        throw new Error('规则标题和提示片段不能为空。');
+      }
+      // rule_id 只读，不随更新提交，避免误改业务标识。
+      await updateRule(id, {
+        title: form.title,
+        prompt_snippet: form.prompt_snippet,
+        severity_default: form.severity_default,
+        enabled: form.enabled,
+      });
+      setRuleEdits((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setRulesPage(await fetchRules());
+      setMessage('审查规则已更新。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
+  async function handleDeleteRule(rule: RuleConfig) {
+    if (!window.confirm(`确定删除规则「${rule.rule_id}」？该操作不可撤销。`)) {
+      return;
+    }
+    setError(null);
+    setMessage(null);
+    try {
+      await deleteRule(rule.id);
+      setRulesPage(await fetchRules());
+      setMessage('审查规则已删除。');
     } catch (caught) {
       handleCaughtError(caught);
     }
@@ -655,23 +743,48 @@ function App() {
             {items.length === 0 ? (
               <div className="p-6 text-center text-[13px] text-zinc-500">暂无审查规则</div>
             ) : (
-              items.map((rule) => (
-                <div key={rule.id} className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-zinc-900 truncate">
-                      {rule.rule_id}<span className="font-normal text-zinc-600"> {rule.title}</span>
+              items.map((rule) => {
+                const editForm = ruleEdits[rule.id] ?? null;
+                return (
+                  <div key={rule.id} className="border-b border-zinc-100 last:border-b-0">
+                    <div className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-medium text-zinc-900 truncate">
+                          <span className="font-mono">{rule.rule_id}</span><span className="font-normal text-zinc-600"> {rule.title}</span>
+                        </div>
+                        <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{rule.severity_default} · {truncate(rule.prompt_snippet, 60)}</div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <UiBadge {...severityBadgeProps(rule.severity_default)}>{rule.severity_default}</UiBadge>
+                        <UiBadge variant={rule.enabled ? 'success' : 'default'}>
+                          <span className={cn('w-1.5 h-1.5 rounded-full', rule.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
+                          {rule.enabled ? '启用' : '停用'}
+                        </UiBadge>
+                        <Button variant="ghost" size="sm" type="button" onClick={() => startEditRule(rule)}>编辑</Button>
+                        <Button variant="destructive" size="sm" type="button" onClick={() => void handleDeleteRule(rule)}>删除</Button>
+                      </div>
                     </div>
-                    <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{rule.severity_default} · {truncate(rule.prompt_snippet, 60)}</div>
+                    {editForm ? (
+                      <div className="space-y-3 border-t border-zinc-100 bg-zinc-50 px-4 pb-4 pt-3">
+                        <div className="space-y-1.5">
+                          <span className="block text-[12px] font-medium text-zinc-600">规则 ID（只读）</span>
+                          <div className="flex h-9 w-full items-center rounded-md border border-input bg-zinc-100 px-3 py-1 font-mono text-[13px] text-zinc-500">
+                            {editForm.rule_id}
+                          </div>
+                        </div>
+                        <TextInput label="标题" value={editForm.title} onChange={(value) => updateEditRule(rule.id, { title: value })} />
+                        <TextAreaInput label="提示片段" value={editForm.prompt_snippet} onChange={(value) => updateEditRule(rule.id, { prompt_snippet: value })} />
+                        <SelectInput label="默认严重级别" value={editForm.severity_default} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => updateEditRule(rule.id, { severity_default: value as RuleFormPayload['severity_default'] })} />
+                        <CheckboxInput label="启用规则" checked={editForm.enabled} onChange={(value) => updateEditRule(rule.id, { enabled: value })} />
+                        <div className="flex items-center justify-end gap-2 pt-1">
+                          <Button variant="secondary" size="sm" type="button" onClick={() => cancelEditRule(rule.id)}>取消</Button>
+                          <Button size="sm" type="button" onClick={() => void handleUpdateRule(rule.id)}>保存</Button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <UiBadge {...severityBadgeProps(rule.severity_default)}>{rule.severity_default}</UiBadge>
-                    <UiBadge variant={rule.enabled ? 'success' : 'default'}>
-                      <span className={cn('w-1.5 h-1.5 rounded-full', rule.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
-                      {rule.enabled ? '启用' : '停用'}
-                    </UiBadge>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </CardContent>
         </Card>
@@ -683,6 +796,10 @@ function App() {
     const engineOptions: SelectOption[] = [
       { value: '', label: '不指定' },
       ...(engineConfigsPage?.items ?? []).map((engine) => ({ value: engine.id, label: engine.name })),
+    ];
+    const providerOptions: SelectOption[] = [
+      { value: '', label: '（不选择，使用默认）' },
+      ...(providersPage?.items ?? []).map((provider) => ({ value: provider.id, label: provider.name })),
     ];
     return (
       <div className="grid grid-cols-5 gap-4">
@@ -701,6 +818,7 @@ function App() {
               <TextInput label="GitLab Access Token" type="password" value={projectForm.gitlab_access_token} onChange={(value) => setProjectForm({ ...projectForm, gitlab_access_token: value })} />
               <TextInput label="Webhook Secret" type="password" value={projectForm.webhook_secret} onChange={(value) => setProjectForm({ ...projectForm, webhook_secret: value })} />
               <SelectInput label="默认审查引擎" value={projectForm.engine_id} options={engineOptions} onChange={(value) => setProjectForm({ ...projectForm, engine_id: value })} />
+              <SelectInput label="AI 供应商" value={projectForm.provider_id} options={providerOptions} onChange={(value) => setProjectForm({ ...projectForm, provider_id: value })} />
               <div className="grid grid-cols-2 gap-3">
                 <TextInput label="超时秒数" value={String(projectForm.timeout_seconds)} onChange={(value) => setProjectForm({ ...projectForm, timeout_seconds: Number(value) || 0 })} />
                 <TextInput label="最大文件数" value={String(projectForm.max_files)} onChange={(value) => setProjectForm({ ...projectForm, max_files: Number(value) || 0 })} />
