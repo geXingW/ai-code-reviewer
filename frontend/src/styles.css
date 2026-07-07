@@ -46,36 +46,6 @@ button:disabled {
   cursor: not-allowed;
 }
 
-.app-shell {
-  margin: 0 auto;
-  max-width: 1180px;
-  padding: 32px 20px 56px;
-}
-
-.hero {
-  align-items: center;
-  background: linear-gradient(135deg, #1d4ed8, #0f172a);
-  border-radius: 24px;
-  box-shadow: 0 24px 70px rgb(15 23 42 / 16%);
-  color: #fff;
-  display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 24px;
-  padding: 28px;
-}
-
-.hero h1 {
-  font-size: clamp(28px, 5vw, 48px);
-  line-height: 1;
-  margin: 0 0 12px;
-}
-
-.hero p {
-  color: #dbeafe;
-  margin: 0;
-}
-
 .grid {
   display: grid;
   gap: 20px;
@@ -383,7 +353,6 @@ button.secondary {
 }
 
 @media (max-width: 860px) {
-  .hero,
   .status-row,
   .engine-row,
   .review-row {
