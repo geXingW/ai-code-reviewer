@@ -1,9 +1,9 @@
 /*
- * Design tokens for AI Code Reviewer 前端
+ * Design tokens for AI Code Reviewer 前端（Linear 风格 v1）
  * -----------------------------------------------------------
- * 使用 Tailwind CSS v4 的 @theme 指令注入自定义 tokens。
- * 主色：Indigo；字体：Inter (sans) + JetBrains Mono (mono)；
- * 圆角/阴影/间距沿用 shadcn/ui 惯例，保持与生态兼容。
+ * 唯一事实源：docs/design/DESIGN.md。灰阶为主视觉，Indigo 仅作激活/链接点缀；
+ * 主 CTA 为黑色 #18181B（非 Indigo）。Tailwind v4 @theme 注入 tokens，
+ * 保留 shadcn/ui 语义名以兼容生态。
  */
 
 @import "tailwindcss";
@@ -15,43 +15,48 @@
 @import "@fontsource/jetbrains-mono/400.css";
 @import "@fontsource/jetbrains-mono/500.css";
 
-/* shadcn/ui 语义色 tokens：CSS 变量层，供 @theme 引用。
+/* shadcn/ui 语义色 tokens：Linear 灰阶 + Indigo 点缀（focus ring / 链接 / 激活态）。
  * 浅色模式为默认，深色模式后续再加。 */
 :root {
   /* Base surfaces */
-  --background: oklch(0.99 0.003 264);
-  --foreground: oklch(0.145 0.02 264);
+  --background: #FAFAFA;
+  --foreground: #18181B;
 
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0.02 264);
+  --card: #FFFFFF;
+  --card-foreground: #18181B;
 
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0.02 264);
+  --popover: #FFFFFF;
+  --popover-foreground: #18181B;
 
-  /* Primary = Indigo 600 */
-  --primary: oklch(0.545 0.203 275);
-  --primary-foreground: oklch(0.985 0.005 264);
+  /* Primary = 主 CTA 黑（非 Indigo） */
+  --primary: #18181B;
+  --primary-foreground: #FFFFFF;
 
-  /* Secondary / muted greys */
-  --secondary: oklch(0.965 0.008 264);
-  --secondary-foreground: oklch(0.205 0.02 264);
+  /* Secondary = 次按钮白底 */
+  --secondary: #FFFFFF;
+  --secondary-foreground: #18181B;
 
-  --muted: oklch(0.965 0.008 264);
-  --muted-foreground: oklch(0.556 0.02 264);
+  --muted: #F4F4F5;
+  --muted-foreground: #71717A;
 
-  --accent: oklch(0.945 0.02 275);
-  --accent-foreground: oklch(0.205 0.02 264);
+  --accent: #F4F4F5;
+  --accent-foreground: #18181B;
 
-  /* Destructive = Red 600 */
-  --destructive: oklch(0.577 0.245 27);
-  --destructive-foreground: oklch(0.985 0.005 264);
+  /* Destructive = Red 500 */
+  --destructive: #EF4444;
+  --destructive-foreground: #FFFFFF;
 
   /* Borders / inputs / ring */
-  --border: oklch(0.922 0.01 264);
-  --input: oklch(0.922 0.01 264);
-  --ring: oklch(0.545 0.203 275 / 40%);
+  --border: #E4E4E7;
+  --input: #E4E4E7;
+  --ring: rgba(99, 102, 241, 0.15);
 
   --radius: 0.5rem;
+
+  /* Indigo 品牌色 utility（激活态/链接，不做 primary） */
+  --brand: #4F46E5;
+  --brand-subtle: #EEF2FF;
+  --brand-foreground: #4338CA;
 }
 
 @theme inline {
@@ -76,6 +81,11 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
+  /* Indigo 品牌色 utility：bg-brand / bg-brand-subtle / text-brand-foreground */
+  --color-brand: var(--brand);
+  --color-brand-subtle: var(--brand-subtle);
+  --color-brand-foreground: var(--brand-foreground);
+
   /* Fonts */
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -89,19 +99,20 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* 基础排版重置，让新组件在旧 styles.css 覆盖下依然干净。
- * 只作用于挂 `data-ui="new"` 的容器，避免污染旧页面。 */
-[data-ui="new"] {
+/* 基础排版重置：Linear 风格全局作用于 body（不再 scoped 到 [data-ui="new"]）。 */
+body {
   color-scheme: light;
   color: var(--foreground);
   background-color: var(--background);
   font-family: var(--font-sans);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-[data-ui="new"] *,
-[data-ui="new"] *::before,
-[data-ui="new"] *::after {
+/* 默认边框色统一为 Linear 弱边框 #E4E4E7；显式 utility 仍可覆盖。 */
+*,
+*::before,
+*::after {
   border-color: var(--border);
 }
