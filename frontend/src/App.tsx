@@ -47,6 +47,8 @@ import {
   markFalsePositive,
   rejectFalsePositive,
 } from './api';
+import { AppShell } from './components/layout/AppShell';
+import { LoginPage } from './pages/LoginPage';
 
 type PageKey =
   | 'dashboard'
@@ -446,69 +448,33 @@ function App() {
     }
   }
 
-  return (
-    <main className="app-shell">
-      <section className="hero">
-        <div>
-          <h1>AI Code Reviewer</h1>
-          <p>GitLab MR AI 审查 MVP 管理台：看状态、配项目、审误报、沉淀负例。</p>
-        </div>
-        <div className="badge ok">MVP</div>
-      </section>
-
-      {!adminToken ? renderLogin() : null}
-
-      {adminToken ? (
-        <div className="form-actions">
-          <span className="muted">管理台已登录</span>
-          <button className="secondary" type="button" onClick={handleLogout}>退出登录</button>
-        </div>
-      ) : null}
-
-      {adminToken ? <nav className="nav-tabs" aria-label="管理页面导航">
-        {navItems.map((item) => (
-          <button
-            className={activePage === item.key ? 'active' : ''}
-            key={item.key}
-            onClick={() => setActivePage(item.key)}
-            type="button"
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav> : null}
-
-      {error ? <div className="alert error" role="alert">{error}</div> : null}
-      {message ? <div className="alert ok">{message}</div> : null}
-
-      {adminToken && activePage === 'dashboard' ? renderDashboard() : null}
-      {adminToken && activePage === 'providers' ? renderProviders() : null}
-      {adminToken && activePage === 'rules' ? renderRules() : null}
-      {adminToken && activePage === 'projects' ? renderProjects() : null}
-      {adminToken && activePage === 'reviews' ? renderReviewRecords() : null}
-      {adminToken && activePage === 'findings' ? renderFindings() : null}
-      {adminToken && activePage === 'falsePositives' ? renderFalsePositives() : null}
-      {adminToken && activePage === 'engines' ? renderEngineConfigs() : null}
-    </main>
-  );
-
-  function renderLogin() {
+  if (!adminToken) {
     return (
-      <section className="grid">
-        <div className="card span-5">
-          <h2>管理台登录</h2>
-          <form className="form-grid single" onSubmit={handleLogin}>
-            <TextInput label="管理员账号" value={loginForm.username} onChange={(value) => setLoginForm({ ...loginForm, username: value })} />
-            <TextInput label="管理员密码" type="password" value={loginForm.password} onChange={(value) => setLoginForm({ ...loginForm, password: value })} />
-            <div className="form-actions">
-              <button disabled={submitting} type="submit">{submitting ? '登录中…' : '登录'}</button>
-            </div>
-          </form>
-          <p className="muted">登录成功后，管理 API 会统一携带 Authorization Bearer Token。</p>
-        </div>
-      </section>
+      <LoginPage
+        form={loginForm}
+        onChange={(patch) => setLoginForm({ ...loginForm, ...patch })}
+        onSubmit={handleLogin}
+        submitting={submitting}
+        error={error}
+        message={message}
+      />
     );
   }
+
+  return (
+    <AppShell activePage={activePage} onNavigate={setActivePage} health={health} onLogout={handleLogout}>
+      {error ? <div className="alert error" role="alert">{error}</div> : null}
+      {message ? <div className="alert ok">{message}</div> : null}
+      {activePage === 'dashboard' ? renderDashboard() : null}
+      {activePage === 'providers' ? renderProviders() : null}
+      {activePage === 'rules' ? renderRules() : null}
+      {activePage === 'projects' ? renderProjects() : null}
+      {activePage === 'reviews' ? renderReviewRecords() : null}
+      {activePage === 'findings' ? renderFindings() : null}
+      {activePage === 'falsePositives' ? renderFalsePositives() : null}
+      {activePage === 'engines' ? renderEngineConfigs() : null}
+    </AppShell>
+  );
 
   function renderDashboard() {
     return (
