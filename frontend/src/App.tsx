@@ -565,30 +565,53 @@ function App() {
   }
 
   function renderProviders() {
+    const items = providersPage?.items ?? [];
+    const enabledCount = items.filter((provider) => provider.enabled).length;
     return (
-      <PanelGrid>
-        <div className="col-span-12 lg:col-span-5">
-          <Card>
-            <CardHeader><CardTitle>新增模型供应商</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <form className="grid gap-3" onSubmit={handleCreateProvider}>
-                <TextInput label="供应商名称" value={providerForm.name} onChange={(value) => setProviderForm({ ...providerForm, name: value })} />
-                <SelectInput label="协议" value={providerForm.protocol} options={['openai_compatible', 'anthropic', 'custom']} onChange={(value) => setProviderForm({ ...providerForm, protocol: value as ProviderFormPayload['protocol'] })} />
-                <TextInput label="Base URL" value={providerForm.base_url} onChange={(value) => setProviderForm({ ...providerForm, base_url: value })} />
-                <TextInput label="API Key" type="password" value={providerForm.api_key} onChange={(value) => setProviderForm({ ...providerForm, api_key: value })} />
-                <TextInput label="模型名" value={providerForm.model} onChange={(value) => setProviderForm({ ...providerForm, model: value })} />
-                <TextInput label="最大 Token" value={String(providerForm.max_tokens)} onChange={(value) => setProviderForm({ ...providerForm, max_tokens: Number(value) || 0 })} />
-                <div className="flex items-center gap-2 flex-wrap"><Button type="submit">保存供应商</Button></div>
-              </form>
-            </CardContent>
-          </Card>
-        </div>
-        <ListCard title="模型供应商列表" empty="暂无模型供应商">
-          {(providersPage?.items ?? []).map((provider) => (
-            <DataRow key={provider.id} title={provider.name} meta={`${provider.protocol} · ${provider.model} · ${provider.base_url}`} status={provider.enabled ? '启用' : '停用'} ok={provider.enabled} />
-          ))}
-        </ListCard>
-      </PanelGrid>
+      <div className="grid grid-cols-5 gap-4">
+        {/* 左：表单卡 */}
+        <Card className="col-span-2">
+          <CardHeader>
+            <div>
+              <CardTitle>新增供应商</CardTitle>
+              <CardDescription>目前支持 OpenAI 兼容、Anthropic、Custom 协议</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <form onSubmit={handleCreateProvider} className="space-y-3">
+              <TextInput label="名称" value={providerForm.name} onChange={(value) => setProviderForm({ ...providerForm, name: value })} />
+              <SelectInput label="协议" value={providerForm.protocol} options={['openai_compatible', 'anthropic', 'custom']} onChange={(value) => setProviderForm({ ...providerForm, protocol: value as ProviderFormPayload['protocol'] })} />
+              <TextInput label="Base URL" value={providerForm.base_url} onChange={(value) => setProviderForm({ ...providerForm, base_url: value })} />
+              <TextInput label="API Key" type="password" value={providerForm.api_key} onChange={(value) => setProviderForm({ ...providerForm, api_key: value })} />
+              <div className="grid grid-cols-2 gap-3">
+                <TextInput label="模型" value={providerForm.model} onChange={(value) => setProviderForm({ ...providerForm, model: value })} />
+                <TextInput label="Max Tokens" value={String(providerForm.max_tokens)} onChange={(value) => setProviderForm({ ...providerForm, max_tokens: Number(value) || 0 })} />
+              </div>
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-zinc-100 mt-4">
+                <Button type="button" variant="secondary" onClick={() => setProviderForm(initialProviderForm)}>重置</Button>
+                <Button type="submit">保存供应商</Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+
+        {/* 右：列表卡 */}
+        <Card className="col-span-3">
+          <CardHeader>
+            <div>
+              <CardTitle>已配置供应商</CardTitle>
+              <CardDescription>{items.length} 个，其中 {enabledCount} 个已启用</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            {items.length === 0 ? (
+              <div className="p-6 text-center text-[13px] text-zinc-500">暂无模型供应商</div>
+            ) : (
+              items.map((provider) => <ProviderListItem key={provider.id} provider={provider} />)
+            )}
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
@@ -1064,6 +1087,38 @@ function SystemStatusCard({ health, engines }: SystemStatusCardProps) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+type ProviderListItemProps = {
+  provider: ProviderConfig;
+};
+
+function ProviderListItem({ provider }: ProviderListItemProps) {
+  const letter = provider.name.charAt(0).toUpperCase();
+  const baseUrlShort = provider.base_url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  return (
+    <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="w-8 h-8 rounded-md bg-zinc-100 flex items-center justify-center shrink-0">
+          <span className="text-[13px] font-semibold text-zinc-700">{letter}</span>
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-medium text-zinc-900 truncate">{provider.name}</span>
+          </div>
+          <div className="text-[11px] text-zinc-500 mt-0.5 truncate font-mono">
+            {provider.protocol} · {provider.model} · {baseUrlShort}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <UiBadge variant={provider.enabled ? 'success' : 'default'}>
+          <span className={cn('w-1.5 h-1.5 rounded-full', provider.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
+          {provider.enabled ? '已启用' : '已停用'}
+        </UiBadge>
+      </div>
+    </div>
   );
 }
 
