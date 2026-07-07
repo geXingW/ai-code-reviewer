@@ -1,4 +1,4 @@
-import { FormEvent, DragEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, DragEvent, useEffect, useId, useMemo, useState } from 'react';
 
 import {
   BlockPolicy,
@@ -48,6 +48,12 @@ import {
   rejectFalsePositive,
 } from './api';
 import { AppShell } from './components/layout/AppShell';
+import { Badge as UiBadge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { LoginPage } from './pages/LoginPage';
 
 type PageKey =
@@ -463,8 +469,8 @@ function App() {
 
   return (
     <AppShell activePage={activePage} onNavigate={setActivePage} health={health} onLogout={handleLogout}>
-      {error ? <div className="alert error" role="alert">{error}</div> : null}
-      {message ? <div className="alert ok">{message}</div> : null}
+      {error ? <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">{error}</div> : null}
+      {message ? <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary">{message}</div> : null}
       {activePage === 'dashboard' ? renderDashboard() : null}
       {activePage === 'providers' ? renderProviders() : null}
       {activePage === 'rules' ? renderRules() : null}
@@ -478,114 +484,138 @@ function App() {
 
   function renderDashboard() {
     return (
-      <section className="grid" aria-busy={loading}>
-        <div className="card span-4">
-          <h2>服务状态</h2>
-          <StatusRow label="API" value={health?.status === 'ok' ? '服务正常' : '服务异常'} ok={health?.status === 'ok'} />
-          <StatusRow label="数据库" value={health?.db === 'ok' ? '数据库正常' : '数据库异常'} ok={health?.db === 'ok'} />
-          <StatusRow label="Redis" value={health?.redis === 'ok' ? 'Redis 正常' : 'Redis 异常'} ok={health?.redis === 'ok'} />
-          <p className="muted">版本：{health?.version ?? '加载中'}</p>
+      <PanelGrid aria-busy={loading}>
+        <div className="col-span-12 lg:col-span-4">
+          <Card>
+            <CardHeader><CardTitle>服务状态</CardTitle></CardHeader>
+            <CardContent>
+              <StatusRow label="API" value={health?.status === 'ok' ? '服务正常' : '服务异常'} ok={health?.status === 'ok'} />
+              <StatusRow label="数据库" value={health?.db === 'ok' ? '数据库正常' : '数据库异常'} ok={health?.db === 'ok'} />
+              <StatusRow label="Redis" value={health?.redis === 'ok' ? 'Redis 正常' : 'Redis 异常'} ok={health?.redis === 'ok'} />
+              <p className="text-sm text-muted-foreground pt-3">版本：{health?.version ?? '加载中'}</p>
+            </CardContent>
+          </Card>
         </div>
 
-        <div className="card span-4">
-          <h2>引擎状态</h2>
-          {engines.length === 0 ? <div className="empty">暂无已注册引擎</div> : null}
-          {engines.map((engine) => (
-            <div className="engine-row" key={engine.name}>
-              <div>
-                <strong>{engine.name}</strong>
-                <div className="muted">
-                  {engine.requires_repo_clone ? '需要克隆仓库' : '无需克隆仓库'} ·
-                  {engine.supports_feedback ? ' 支持反馈' : ' 暂不支持反馈'}
+        <div className="col-span-12 lg:col-span-4">
+          <Card>
+            <CardHeader><CardTitle>引擎状态</CardTitle></CardHeader>
+            <CardContent>
+              {engines.length === 0 ? <div className="text-sm text-muted-foreground py-4 text-center">暂无已注册引擎</div> : null}
+              {engines.map((engine) => (
+                <div className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={engine.name}>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-sm">{engine.name}</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      {engine.requires_repo_clone ? '需要克隆仓库' : '无需克隆仓库'} ·
+                      {engine.supports_feedback ? ' 支持反馈' : ' 暂不支持反馈'}
+                    </div>
+                  </div>
+                  <Badge ok={engine.healthy}>{engine.health_status}</Badge>
                 </div>
-              </div>
-              <Badge ok={engine.healthy}>{engine.health_status}</Badge>
-            </div>
-          ))}
+              ))}
+            </CardContent>
+          </Card>
         </div>
 
-        <div className="card span-4">
-          <h2>审查概览</h2>
-          <StatusRow label="最近审查" value={`${reviews.length} 次`} ok />
-          <StatusRow label="存在阻断" value={`${blockerReviews} 次`} ok={blockerReviews === 0} />
-          <StatusRow label="可手动触发" value="已启用" ok />
+        <div className="col-span-12 lg:col-span-4">
+          <Card>
+            <CardHeader><CardTitle>审查概览</CardTitle></CardHeader>
+            <CardContent>
+              <StatusRow label="最近审查" value={`${reviews.length} 次`} ok />
+              <StatusRow label="存在阻断" value={`${blockerReviews} 次`} ok={blockerReviews === 0} />
+              <StatusRow label="可手动触发" value="已启用" ok />
+            </CardContent>
+          </Card>
         </div>
 
-        <div className="card span-12">
-          <h2>手动触发 MR 审查</h2>
-          <form className="form-grid" onSubmit={handleSubmit}>
-            <TextInput label="内部调用 Token" value={form.internalToken} type="password" onChange={(value) => setForm({ ...form, internalToken: value })} />
-            <TextInput label="GitLab 项目 ID" value={form.projectId} onChange={(value) => setForm({ ...form, projectId: value })} />
-            <TextInput label="MR IID" value={form.mrIid} onChange={(value) => setForm({ ...form, mrIid: value })} />
-            <TextInput label="目标分支" value={form.targetBranch} onChange={(value) => setForm({ ...form, targetBranch: value })} />
-            <TextInput label="源分支" value={form.sourceBranch} onChange={(value) => setForm({ ...form, sourceBranch: value })} />
-            <TextInput label="Commit SHA" value={form.commitSha} onChange={(value) => setForm({ ...form, commitSha: value })} />
-            <TextInput label="项目路径（可选）" value={form.projectPath} onChange={(value) => setForm({ ...form, projectPath: value })} />
-            <TextInput label="MR 标题（可选）" value={form.title} onChange={(value) => setForm({ ...form, title: value })} />
-            <TextInput label="MR URL（可选）" value={form.webUrl} onChange={(value) => setForm({ ...form, webUrl: value })} />
-            <div className="form-actions">
-              <button disabled={submitting} type="submit">{submitting ? '审查中…' : '触发审查'}</button>
-              <button disabled={submitting} type="button" onClick={handleRefreshReviews}>刷新最近审查</button>
-              <span className="muted">Token 只在本次请求中使用，不会保存到前端状态之外。</span>
-            </div>
-          </form>
-          {submitResult ? (
-            <div className={submitResult.has_blocker ? 'alert error' : 'alert ok'}>
-              {submitResult.has_blocker ? '审查完成，发现阻断问题。' : '审查完成，未发现阻断问题。'}
-              {submitResult.review_url ? <> <a href={submitResult.review_url}>查看结果</a></> : null}
-            </div>
-          ) : null}
+        <div className="col-span-12">
+          <Card>
+            <CardHeader><CardTitle>手动触发 MR 审查</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <form className="grid gap-3 md:grid-cols-2" onSubmit={handleSubmit}>
+                <TextInput label="内部调用 Token" value={form.internalToken} type="password" onChange={(value) => setForm({ ...form, internalToken: value })} />
+                <TextInput label="GitLab 项目 ID" value={form.projectId} onChange={(value) => setForm({ ...form, projectId: value })} />
+                <TextInput label="MR IID" value={form.mrIid} onChange={(value) => setForm({ ...form, mrIid: value })} />
+                <TextInput label="目标分支" value={form.targetBranch} onChange={(value) => setForm({ ...form, targetBranch: value })} />
+                <TextInput label="源分支" value={form.sourceBranch} onChange={(value) => setForm({ ...form, sourceBranch: value })} />
+                <TextInput label="Commit SHA" value={form.commitSha} onChange={(value) => setForm({ ...form, commitSha: value })} />
+                <TextInput label="项目路径（可选）" value={form.projectPath} onChange={(value) => setForm({ ...form, projectPath: value })} />
+                <TextInput label="MR 标题（可选）" value={form.title} onChange={(value) => setForm({ ...form, title: value })} />
+                <TextInput label="MR URL（可选）" value={form.webUrl} onChange={(value) => setForm({ ...form, webUrl: value })} />
+                <div className="flex items-center gap-2 flex-wrap md:col-span-2">
+                  <Button disabled={submitting} type="submit">{submitting ? '审查中…' : '触发审查'}</Button>
+                  <Button disabled={submitting} type="button" variant="outline" onClick={handleRefreshReviews}>刷新最近审查</Button>
+                  <span className="text-sm text-muted-foreground">Token 只在本次请求中使用，不会保存到前端状态之外。</span>
+                </div>
+              </form>
+              {submitResult ? (
+                <div className={submitResult.has_blocker ? 'rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive' : 'rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary'}>
+                  {submitResult.has_blocker ? '审查完成，发现阻断问题。' : '审查完成，未发现阻断问题。'}
+                  {submitResult.review_url ? <> <a href={submitResult.review_url} className="text-primary hover:underline">查看结果</a></> : null}
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
         </div>
 
         <RecentReviewsCard reviews={reviews} />
-      </section>
+      </PanelGrid>
     );
   }
 
   function renderProviders() {
     return (
-      <section className="grid">
-        <div className="card span-5">
-          <h2>新增模型供应商</h2>
-          <form className="form-grid single" onSubmit={handleCreateProvider}>
-            <TextInput label="供应商名称" value={providerForm.name} onChange={(value) => setProviderForm({ ...providerForm, name: value })} />
-            <SelectInput label="协议" value={providerForm.protocol} options={['openai_compatible', 'anthropic', 'custom']} onChange={(value) => setProviderForm({ ...providerForm, protocol: value as ProviderFormPayload['protocol'] })} />
-            <TextInput label="Base URL" value={providerForm.base_url} onChange={(value) => setProviderForm({ ...providerForm, base_url: value })} />
-            <TextInput label="API Key" type="password" value={providerForm.api_key} onChange={(value) => setProviderForm({ ...providerForm, api_key: value })} />
-            <TextInput label="模型名" value={providerForm.model} onChange={(value) => setProviderForm({ ...providerForm, model: value })} />
-            <TextInput label="最大 Token" value={String(providerForm.max_tokens)} onChange={(value) => setProviderForm({ ...providerForm, max_tokens: Number(value) || 0 })} />
-            <div className="form-actions"><button type="submit">保存供应商</button></div>
-          </form>
+      <PanelGrid>
+        <div className="col-span-12 lg:col-span-5">
+          <Card>
+            <CardHeader><CardTitle>新增模型供应商</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <form className="grid gap-3" onSubmit={handleCreateProvider}>
+                <TextInput label="供应商名称" value={providerForm.name} onChange={(value) => setProviderForm({ ...providerForm, name: value })} />
+                <SelectInput label="协议" value={providerForm.protocol} options={['openai_compatible', 'anthropic', 'custom']} onChange={(value) => setProviderForm({ ...providerForm, protocol: value as ProviderFormPayload['protocol'] })} />
+                <TextInput label="Base URL" value={providerForm.base_url} onChange={(value) => setProviderForm({ ...providerForm, base_url: value })} />
+                <TextInput label="API Key" type="password" value={providerForm.api_key} onChange={(value) => setProviderForm({ ...providerForm, api_key: value })} />
+                <TextInput label="模型名" value={providerForm.model} onChange={(value) => setProviderForm({ ...providerForm, model: value })} />
+                <TextInput label="最大 Token" value={String(providerForm.max_tokens)} onChange={(value) => setProviderForm({ ...providerForm, max_tokens: Number(value) || 0 })} />
+                <div className="flex items-center gap-2 flex-wrap"><Button type="submit">保存供应商</Button></div>
+              </form>
+            </CardContent>
+          </Card>
         </div>
         <ListCard title="模型供应商列表" empty="暂无模型供应商">
           {(providersPage?.items ?? []).map((provider) => (
             <DataRow key={provider.id} title={provider.name} meta={`${provider.protocol} · ${provider.model} · ${provider.base_url}`} status={provider.enabled ? '启用' : '停用'} ok={provider.enabled} />
           ))}
         </ListCard>
-      </section>
+      </PanelGrid>
     );
   }
 
   function renderRules() {
     return (
-      <section className="grid">
-        <div className="card span-5">
-          <h2>新增审查规则</h2>
-          <form className="form-grid single" onSubmit={handleCreateRule}>
-            <TextInput label="规则 ID" value={ruleForm.rule_id} onChange={(value) => setRuleForm({ ...ruleForm, rule_id: value })} />
-            <TextInput label="规则标题" value={ruleForm.title} onChange={(value) => setRuleForm({ ...ruleForm, title: value })} />
-            <TextAreaInput label="提示片段" value={ruleForm.prompt_snippet} onChange={(value) => setRuleForm({ ...ruleForm, prompt_snippet: value })} />
-            <SelectInput label="默认严重级别" value={ruleForm.severity_default} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setRuleForm({ ...ruleForm, severity_default: value as RuleFormPayload['severity_default'] })} />
-            <CheckboxInput label="启用规则" checked={ruleForm.enabled} onChange={(value) => setRuleForm({ ...ruleForm, enabled: value })} />
-            <div className="form-actions"><button type="submit">保存规则</button></div>
-          </form>
+      <PanelGrid>
+        <div className="col-span-12 lg:col-span-5">
+          <Card>
+            <CardHeader><CardTitle>新增审查规则</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <form className="grid gap-3" onSubmit={handleCreateRule}>
+                <TextInput label="规则 ID" value={ruleForm.rule_id} onChange={(value) => setRuleForm({ ...ruleForm, rule_id: value })} />
+                <TextInput label="规则标题" value={ruleForm.title} onChange={(value) => setRuleForm({ ...ruleForm, title: value })} />
+                <TextAreaInput label="提示片段" value={ruleForm.prompt_snippet} onChange={(value) => setRuleForm({ ...ruleForm, prompt_snippet: value })} />
+                <SelectInput label="默认严重级别" value={ruleForm.severity_default} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setRuleForm({ ...ruleForm, severity_default: value as RuleFormPayload['severity_default'] })} />
+                <CheckboxInput label="启用规则" checked={ruleForm.enabled} onChange={(value) => setRuleForm({ ...ruleForm, enabled: value })} />
+                <div className="flex items-center gap-2 flex-wrap"><Button type="submit">保存规则</Button></div>
+              </form>
+            </CardContent>
+          </Card>
         </div>
         <ListCard title="审查规则" empty="暂无审查规则">
           {(rulesPage?.items ?? []).map((rule) => (
             <DataRow key={rule.id} title={`${rule.rule_id} · ${rule.title}`} meta={`${rule.severity_default} · ${truncate(rule.prompt_snippet)}`} status={rule.enabled ? '启用' : '停用'} ok={rule.enabled} />
           ))}
         </ListCard>
-      </section>
+      </PanelGrid>
     );
   }
 
@@ -595,124 +625,145 @@ function App() {
       ...(engineConfigsPage?.items ?? []).map((engine) => ({ value: engine.id, label: engine.name })),
     ];
     return (
-      <section className="grid">
-        <div className="card span-5">
-          <h2>新增 GitLab 项目</h2>
-          <form className="form-grid single" onSubmit={handleCreateProject}>
-            <TextInput label="项目名称" value={projectForm.name} onChange={(value) => setProjectForm({ ...projectForm, name: value })} />
-            <TextInput label="GitLab Project ID" value={projectForm.gitlab_project_id} onChange={(value) => setProjectForm({ ...projectForm, gitlab_project_id: value })} />
-            <TextInput label="GitLab Access Token" type="password" value={projectForm.gitlab_access_token} onChange={(value) => setProjectForm({ ...projectForm, gitlab_access_token: value })} />
-            <TextInput label="Webhook Secret" type="password" value={projectForm.webhook_secret} onChange={(value) => setProjectForm({ ...projectForm, webhook_secret: value })} />
-            <SelectInput label="默认审查引擎" value={projectForm.engine_id} options={engineOptions} onChange={(value) => setProjectForm({ ...projectForm, engine_id: value })} />
-            <TextInput label="超时秒数" value={String(projectForm.timeout_seconds)} onChange={(value) => setProjectForm({ ...projectForm, timeout_seconds: Number(value) || 0 })} />
-            <TextInput label="最大文件数" value={String(projectForm.max_files)} onChange={(value) => setProjectForm({ ...projectForm, max_files: Number(value) || 0 })} />
-            <SelectInput label="默认阻断级别" value={projectForm.default_block_severity} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setProjectForm({ ...projectForm, default_block_severity: value as ProjectFormPayload['default_block_severity'] })} />
-            <fieldset className="rule-checklist">
-              <legend>启用规则</legend>
-              {(rulesPage?.items ?? []).length === 0 ? <div className="muted">暂无规则，请先到“审查规则”页面创建。</div> : null}
-              {(rulesPage?.items ?? []).map((rule) => (
-                <label key={rule.id} className="rule-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={projectForm.rules.some((selected) => selected.rule_id === rule.id)}
-                    onChange={(event) => setProjectForm((prev) => ({ ...prev, rules: toggleRuleSelection(prev.rules, rule.id, event.target.checked) }))}
-                  />
-                  <span>{rule.rule_id} · {rule.title}</span>
-                </label>
-              ))}
-            </fieldset>
-            <div className="form-actions"><button type="submit">保存项目</button></div>
-          </form>
+      <PanelGrid>
+        <div className="col-span-12 lg:col-span-5">
+          <Card>
+            <CardHeader><CardTitle>新增 GitLab 项目</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <form className="grid gap-3" onSubmit={handleCreateProject}>
+                <TextInput label="项目名称" value={projectForm.name} onChange={(value) => setProjectForm({ ...projectForm, name: value })} />
+                <TextInput label="GitLab Project ID" value={projectForm.gitlab_project_id} onChange={(value) => setProjectForm({ ...projectForm, gitlab_project_id: value })} />
+                <TextInput label="GitLab Access Token" type="password" value={projectForm.gitlab_access_token} onChange={(value) => setProjectForm({ ...projectForm, gitlab_access_token: value })} />
+                <TextInput label="Webhook Secret" type="password" value={projectForm.webhook_secret} onChange={(value) => setProjectForm({ ...projectForm, webhook_secret: value })} />
+                <SelectInput label="默认审查引擎" value={projectForm.engine_id} options={engineOptions} onChange={(value) => setProjectForm({ ...projectForm, engine_id: value })} />
+                <TextInput label="超时秒数" value={String(projectForm.timeout_seconds)} onChange={(value) => setProjectForm({ ...projectForm, timeout_seconds: Number(value) || 0 })} />
+                <TextInput label="最大文件数" value={String(projectForm.max_files)} onChange={(value) => setProjectForm({ ...projectForm, max_files: Number(value) || 0 })} />
+                <SelectInput label="默认阻断级别" value={projectForm.default_block_severity} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setProjectForm({ ...projectForm, default_block_severity: value as ProjectFormPayload['default_block_severity'] })} />
+                <fieldset className="rounded-md border border-input p-3 space-y-2">
+                  <legend className="text-sm font-medium px-1">启用规则</legend>
+                  {(rulesPage?.items ?? []).length === 0 ? <div className="text-sm text-muted-foreground">暂无规则，请先到“审查规则”页面创建。</div> : null}
+                  {(rulesPage?.items ?? []).map((rule) => (
+                    <label key={rule.id} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="size-4 rounded border-input accent-primary"
+                        checked={projectForm.rules.some((selected) => selected.rule_id === rule.id)}
+                        onChange={(event) => setProjectForm((prev) => ({ ...prev, rules: toggleRuleSelection(prev.rules, rule.id, event.target.checked) }))}
+                      />
+                      <span>{rule.rule_id} · {rule.title}</span>
+                    </label>
+                  ))}
+                </fieldset>
+                <div className="flex items-center gap-2 flex-wrap"><Button type="submit">保存项目</Button></div>
+              </form>
+            </CardContent>
+          </Card>
         </div>
         <ListCard title="GitLab 项目列表" empty="暂无 GitLab 项目">
           {(projectsPage?.items ?? []).map((project) => (
             <ProjectCard key={project.id} project={project} onSavePolicies={handleSaveBlockPolicies} />
           ))}
         </ListCard>
-      </section>
+      </PanelGrid>
     );
   }
 
   function renderReviewRecords() {
     return (
-      <section className="grid">
+      <PanelGrid>
         <ListCard title="审查记录" empty="暂无审查记录">
           {(reviewRecordsPage?.items ?? []).map((review) => (
             <ReviewRecordRow key={review.id} review={review} onError={handleCaughtError} />
           ))}
         </ListCard>
         <RecentReviewsCard reviews={reviews} />
-      </section>
+      </PanelGrid>
     );
   }
 
   function renderFindings() {
     return (
-      <section className="grid">
-        <div className="card span-12">
-          <h2>问题与误报</h2>
-          <div className="toolbar">
-            <TextInput label="操作人" value={operator} onChange={setOperator} />
-            <TextInput label="处理说明" value={reviewNote} onChange={setReviewNote} />
-          </div>
-          {(findingsPage?.items ?? []).length === 0 ? <div className="empty">暂无问题记录</div> : null}
-          {(findingsPage?.items ?? []).map((finding) => (
-            <article className="review-row" key={finding.id}>
-              <div>
-                <div className="review-title">{finding.title}</div>
-                <div className="review-meta">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id} · {finding.fp_status}</div>
+      <PanelGrid>
+        <div className="col-span-12">
+          <Card>
+            <CardHeader><CardTitle>问题与误报</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap items-end gap-3 mb-4">
+                <TextInput label="操作人" value={operator} onChange={setOperator} />
+                <TextInput label="处理说明" value={reviewNote} onChange={setReviewNote} />
               </div>
-              <div className="row-actions">
-                <Badge ok={finding.severity !== 'BLOCKER'}>{finding.severity}</Badge>
-                <button type="button" onClick={() => void handleMarkFalsePositive(finding)}>标记误报</button>
-              </div>
-            </article>
-          ))}
+              {(findingsPage?.items ?? []).length === 0 ? <div className="text-sm text-muted-foreground py-4 text-center">暂无问题记录</div> : null}
+              {(findingsPage?.items ?? []).map((finding) => (
+                <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={finding.id}>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-sm">{finding.title}</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id} · {finding.fp_status}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Badge ok={finding.severity !== 'BLOCKER'}>{finding.severity}</Badge>
+                    <Button type="button" onClick={() => void handleMarkFalsePositive(finding)}>标记误报</Button>
+                  </div>
+                </article>
+              ))}
+            </CardContent>
+          </Card>
         </div>
         <NegativeExamplesCard examples={negativeExamplesPage?.items ?? []} />
-      </section>
+      </PanelGrid>
     );
   }
 
   function renderFalsePositives() {
     return (
-      <section className="grid">
-        <div className="card span-12">
-          <h2>误报队列</h2>
-          <div className="toolbar">
-            <TextInput label="审核人" value={operator} onChange={setOperator} />
-            <TextInput label="审核备注" value={reviewNote} onChange={setReviewNote} />
-          </div>
-          {(pendingFpPage?.items ?? []).length === 0 ? <div className="empty">暂无待确认误报</div> : null}
-          {(pendingFpPage?.items ?? []).map((finding) => (
-            <article className="review-row" key={finding.id}>
-              <div>
-                <div className="review-title">{finding.title}</div>
-                <div className="review-meta">{finding.file_path}:{finding.line_number ?? '-'} · {finding.fp_marked_by ?? '未知提交人'} · {finding.fp_marked_reason ?? '无原因'}</div>
+      <PanelGrid>
+        <div className="col-span-12">
+          <Card>
+            <CardHeader><CardTitle>误报队列</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap items-end gap-3 mb-4">
+                <TextInput label="审核人" value={operator} onChange={setOperator} />
+                <TextInput label="审核备注" value={reviewNote} onChange={setReviewNote} />
               </div>
-              <div className="row-actions">
-                <button type="button" onClick={() => void handleReviewFalsePositive(finding, 'confirm')}>确认误报</button>
-                <button className="secondary" type="button" onClick={() => void handleReviewFalsePositive(finding, 'reject')}>驳回</button>
-              </div>
-            </article>
-          ))}
+              {(pendingFpPage?.items ?? []).length === 0 ? <div className="text-sm text-muted-foreground py-4 text-center">暂无待确认误报</div> : null}
+              {(pendingFpPage?.items ?? []).map((finding) => (
+                <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={finding.id}>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-sm">{finding.title}</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">{finding.file_path}:{finding.line_number ?? '-'} · {finding.fp_marked_by ?? '未知提交人'} · {finding.fp_marked_reason ?? '无原因'}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Button type="button" onClick={() => void handleReviewFalsePositive(finding, 'confirm')}>确认误报</Button>
+                    <Button variant="outline" type="button" onClick={() => void handleReviewFalsePositive(finding, 'reject')}>驳回</Button>
+                  </div>
+                </article>
+              ))}
+            </CardContent>
+          </Card>
         </div>
         <NegativeExamplesCard examples={negativeExamplesPage?.items ?? []} />
-      </section>
+      </PanelGrid>
     );
   }
 
   function renderEngineConfigs() {
     return (
-      <section className="grid">
+      <PanelGrid>
         <ListCard title="引擎配置" empty="暂无引擎配置">
           {(engineConfigsPage?.items ?? []).map((engine) => (
             <DataRow key={engine.id} title={engine.name} meta={engine.description ?? '暂无描述'} status={engine.enabled ? '启用' : '停用'} ok={engine.enabled} />
           ))}
         </ListCard>
-      </section>
+      </PanelGrid>
     );
   }
+}
+
+function PanelGrid({ children, ...props }: React.HTMLAttributes<HTMLElement>) {
+  return (
+    <section className="grid grid-cols-12 gap-4" {...props}>
+      {children}
+    </section>
+  );
 }
 
 type TextInputProps = {
@@ -723,11 +774,12 @@ type TextInputProps = {
 };
 
 function TextInput({ label, value, type = 'text', onChange }: TextInputProps) {
+  const id = useId();
   return (
-    <label>
-      {label}
-      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} />
-    </label>
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <Input id={id} type={type} value={value} onChange={(event) => onChange(event.target.value)} />
+    </div>
   );
 }
 
@@ -741,16 +793,22 @@ type SelectInputProps = {
 };
 
 function SelectInput({ label, value, options, onChange }: SelectInputProps) {
+  const id = useId();
   const normalized = options.map((option) =>
     typeof option === 'string' ? { value: option, label: option } : option,
   );
   return (
-    <label>
-      {label}
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <select
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+      >
         {normalized.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
-    </label>
+    </div>
   );
 }
 
@@ -761,11 +819,12 @@ type TextAreaInputProps = {
 };
 
 function TextAreaInput({ label, value, onChange }: TextAreaInputProps) {
+  const id = useId();
   return (
-    <label>
-      {label}
-      <textarea value={value} rows={4} onChange={(event) => onChange(event.target.value)} />
-    </label>
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <Textarea id={id} rows={4} value={value} onChange={(event) => onChange(event.target.value)} />
+    </div>
   );
 }
 
@@ -777,8 +836,8 @@ type CheckboxInputProps = {
 
 function CheckboxInput({ label, checked, onChange }: CheckboxInputProps) {
   return (
-    <label className="checkbox-label">
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    <label className="flex items-center gap-2 text-sm">
+      <input type="checkbox" className="size-4 rounded border-input accent-primary" checked={checked} onChange={(event) => onChange(event.target.checked)} />
       <span>{label}</span>
     </label>
   );
@@ -792,8 +851,8 @@ type StatusRowProps = {
 
 function StatusRow({ label, value, ok }: StatusRowProps) {
   return (
-    <div className="status-row">
-      <span className="muted">{label}</span>
+    <div className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0">
+      <span className="text-sm text-muted-foreground">{label}</span>
       <Badge ok={ok}>{value}</Badge>
     </div>
   );
@@ -805,7 +864,7 @@ type BadgeProps = {
 };
 
 function Badge({ ok, children }: BadgeProps) {
-  return <span className={ok ? 'badge ok' : 'badge error'}>{children}</span>;
+  return <UiBadge variant={ok ? 'success' : 'destructive'}>{children}</UiBadge>;
 }
 
 type ListCardProps = {
@@ -817,9 +876,13 @@ type ListCardProps = {
 function ListCard({ title, empty, children }: ListCardProps) {
   const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children);
   return (
-    <div className="card span-7 list-card">
-      <h2>{title}</h2>
-      {hasChildren ? children : <div className="empty">{empty}</div>}
+    <div className="col-span-12 lg:col-span-7">
+      <Card>
+        <CardHeader><CardTitle>{title}</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          {hasChildren ? children : <div className="text-sm text-muted-foreground">{empty}</div>}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -833,10 +896,10 @@ type DataRowProps = {
 
 function DataRow({ title, meta, status, ok }: DataRowProps) {
   return (
-    <article className="review-row">
-      <div>
-        <div className="review-title">{title}</div>
-        <div className="review-meta">{meta}</div>
+    <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0">
+      <div className="min-w-0 flex-1">
+        <div className="font-medium text-sm">{title}</div>
+        <div className="text-xs text-muted-foreground mt-0.5 truncate">{meta}</div>
       </div>
       <Badge ok={ok}>{status}</Badge>
     </article>
@@ -845,41 +908,49 @@ function DataRow({ title, meta, status, ok }: DataRowProps) {
 
 function RecentReviewsCard({ reviews }: { reviews: RecentReview[] }) {
   return (
-    <div className="card span-12">
-      <h2>最近审查记录</h2>
-      {reviews.length === 0 ? <div className="empty">暂无审查记录</div> : null}
-      {reviews.map((review) => (
-        <article className="review-row" key={`${review.review_id ?? review.project_id}-${review.mr_iid}`}>
-          <div>
-            <div className="review-title">{review.title}</div>
-            <div className="review-meta">
-              {review.project_path} !{review.mr_iid} · {review.status} · {review.finding_count} 个问题
-            </div>
-          </div>
-          <div>
-            <Badge ok={!review.has_blocker}>{review.has_blocker ? '阻断' : '通过'}</Badge>
-            {review.review_url ? <> <a href={review.review_url}>结果</a></> : null}
-          </div>
-        </article>
-      ))}
+    <div className="col-span-12">
+      <Card>
+        <CardHeader><CardTitle>最近审查记录</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          {reviews.length === 0 ? <div className="text-sm text-muted-foreground">暂无审查记录</div> : null}
+          {reviews.map((review) => (
+            <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={`${review.review_id ?? review.project_id}-${review.mr_iid}`}>
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-sm">{review.title}</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  {review.project_path} !{review.mr_iid} · {review.status} · {review.finding_count} 个问题
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Badge ok={!review.has_blocker}>{review.has_blocker ? '阻断' : '通过'}</Badge>
+                {review.review_url ? <a href={review.review_url} className="text-xs text-primary hover:underline">结果</a> : null}
+              </div>
+            </article>
+          ))}
+        </CardContent>
+      </Card>
     </div>
   );
 }
 
 function NegativeExamplesCard({ examples }: { examples: NegativeExample[] }) {
   return (
-    <div className="card span-12">
-      <h2>负例库</h2>
-      {examples.length === 0 ? <div className="empty">暂无负例</div> : null}
-      {examples.map((example) => (
-        <article className="review-row" key={example.id}>
-          <div>
-            <div className="review-title">{example.rule_id}</div>
-            <div className="review-meta">{example.code_snippet}</div>
-          </div>
-          <Badge ok>{example.approved_by ?? '已确认'}</Badge>
-        </article>
-      ))}
+    <div className="col-span-12">
+      <Card>
+        <CardHeader><CardTitle>负例库</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          {examples.length === 0 ? <div className="text-sm text-muted-foreground">暂无负例</div> : null}
+          {examples.map((example) => (
+            <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={example.id}>
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-sm">{example.rule_id}</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{example.code_snippet}</div>
+              </div>
+              <Badge ok>{example.approved_by ?? '已确认'}</Badge>
+            </article>
+          ))}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -892,25 +963,25 @@ type ProjectCardProps = {
 function ProjectCard({ project, onSavePolicies }: ProjectCardProps) {
   const [expanded, setExpanded] = useState(false);
   return (
-    <article className="project-card">
-      <div className="review-row">
-        <div>
-          <div className="review-title">{project.name}</div>
-          <div className="review-meta">
+    <div className="rounded-lg border border-border p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-sm">{project.name}</div>
+          <div className="text-xs text-muted-foreground mt-0.5">
             GitLab ID {project.gitlab_project_id} · {project.default_block_severity} · {project.block_policies.length} 条阻断策略
           </div>
         </div>
-        <div className="row-actions">
+        <div className="flex items-center gap-2 shrink-0">
           <Badge ok={project.enabled}>{project.enabled ? '启用' : '停用'}</Badge>
-          <button className="secondary" type="button" onClick={() => setExpanded((prev) => !prev)}>
+          <Button variant="ghost" size="sm" type="button" onClick={() => setExpanded((prev) => !prev)}>
             {expanded ? '收起策略' : '展开策略'}
-          </button>
+          </Button>
         </div>
       </div>
       {expanded ? (
         <BlockPolicyTable projectId={project.id} policies={project.block_policies} onSave={onSavePolicies} />
       ) : null}
-    </article>
+    </div>
   );
 }
 
@@ -1061,14 +1132,14 @@ function BlockPolicyTable({ projectId, policies, onSave }: BlockPolicyTableProps
             aria-label="引擎错误时阻断"
             onChange={(event) => updateItem(index, { block_on_engine_error: event.target.checked })}
           />
-          <button className="secondary policy-remove" type="button" onClick={() => removePolicy(index)}>删除</button>
+          <Button variant="destructive" type="button" onClick={() => removePolicy(index)}>删除</Button>
         </div>
       ))}
       <div className="policy-actions">
-        <button className="secondary" type="button" onClick={addPolicy}>添加策略</button>
-        <button type="button" disabled={saving} onClick={() => void handleSave()}>
+        <Button variant="outline" type="button" onClick={addPolicy}>添加策略</Button>
+        <Button type="button" disabled={saving} onClick={() => void handleSave()}>
           {saving ? '保存中…' : '保存策略'}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -1105,29 +1176,29 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
   }
 
   return (
-    <article className="review-card">
-      <div className="review-row">
-        <div>
-          <div className="review-title">MR !{review.mr_iid} · {review.source_branch} → {review.target_branch}</div>
-          <div className="review-meta">{review.status} · {review.finding_count} 个问题 · {review.commit_sha}</div>
+    <article>
+      <div className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-sm">MR !{review.mr_iid} · {review.source_branch} → {review.target_branch}</div>
+          <div className="text-xs text-muted-foreground mt-0.5">{review.status} · {review.finding_count} 个问题 · {review.commit_sha}</div>
         </div>
-        <div className="row-actions">
+        <div className="flex items-center gap-2 shrink-0">
           <Badge ok={!review.has_blocker}>{review.has_blocker ? '阻断' : '通过'}</Badge>
-          <button className="secondary" type="button" onClick={() => void toggleExpand()}>
+          <Button variant="ghost" size="sm" type="button" onClick={() => void toggleExpand()}>
             {expanded ? '收起问题' : '查看问题'}
-          </button>
+          </Button>
         </div>
       </div>
       {expanded ? (
-        <div className="finding-list">
-          {loadingFindings ? <div className="muted">加载中…</div> : null}
-          {!loadingFindings && findings === null ? <div className="muted">加载失败，请收起后重新展开。</div> : null}
-          {!loadingFindings && findings !== null && findings.length === 0 ? <div className="empty">暂无问题</div> : null}
+        <div className="mt-2 space-y-2">
+          {loadingFindings ? <div className="text-sm text-muted-foreground">加载中…</div> : null}
+          {!loadingFindings && findings === null ? <div className="text-sm text-muted-foreground">加载失败，请收起后重新展开。</div> : null}
+          {!loadingFindings && findings !== null && findings.length === 0 ? <div className="text-sm text-muted-foreground py-4 text-center">暂无问题</div> : null}
           {(findings ?? []).map((finding) => (
-            <article className="review-row" key={finding.id}>
-              <div>
-                <div className="review-title">{finding.title}</div>
-                <div className="review-meta">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id} · {finding.fp_status}</div>
+            <article className="flex items-start justify-between gap-3 border-b border-border py-3 last:border-b-0" key={finding.id}>
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-sm">{finding.title}</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id} · {finding.fp_status}</div>
               </div>
               <Badge ok={finding.severity !== 'BLOCKER'}>{finding.severity}</Badge>
             </article>
