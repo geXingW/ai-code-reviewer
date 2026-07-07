@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Code Reviewer — Linear-style Mockup</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  }
+  html, body {
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: #FAFAFA;
+    color: #18181B;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .mono { font-family: var(--font-mono); }
+  /* focus ring 极细 */
+  input:focus, select:focus, textarea:focus, button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    border-color: #6366F1;
+  }
+  /* 输入框统一 */
+  .field {
+    height: 32px;
+    padding: 0 10px;
+    font-size: 13px;
+    background: #FFFFFF;
+    border: 1px solid #E4E4E7;
+    border-radius: 6px;
+    color: #18181B;
+    transition: border-color 120ms, box-shadow 120ms;
+  }
+  .field:hover { border-color: #D4D4D8; }
+  .field::placeholder { color: #A1A1AA; }
+  textarea.field { height: auto; padding: 8px 10px; line-height: 1.5; }
+  /* 主按钮 */
+  .btn-primary {
+    height: 30px;
+    padding: 0 12px;
+    background: #18181B;
+    color: #FFFFFF;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 120ms;
+  }
+  .btn-primary:hover { background: #27272A; }
+  .btn-secondary {
+    height: 30px;
+    padding: 0 12px;
+    background: #FFFFFF;
+    color: #18181B;
+    border: 1px solid #E4E4E7;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 120ms;
+  }
+  .btn-secondary:hover { background: #FAFAFA; }
+  /* 侧栏 nav item */
+  .nav-item {
+    height: 28px;
+    padding: 0 8px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #52525B;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    transition: background 100ms, color 100ms;
+  }
+  .nav-item:hover { background: rgba(0,0,0,0.04); color: #18181B; }
+  .nav-item.active { background: rgba(0,0,0,0.06); color: #18181B; font-weight: 500; }
+  .nav-item svg { width: 14px; height: 14px; stroke-width: 1.75; opacity: 0.7; }
+  .nav-item.active svg { opacity: 1; color: #4F46E5; }
+  /* 顶栏 */
+  .topbar {
+    height: 44px;
+    border-bottom: 1px solid #E4E4E7;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+    background: #FFFFFF;
+  }
+  /* 卡片 */
+  .card {
+    background: #FFFFFF;
+    border: 1px solid #E4E4E7;
+    border-radius: 8px;
+  }
+  .card-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid #F4F4F5;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .card-body { padding: 16px; }
+  .card-title { font-size: 13px; font-weight: 600; color: #18181B; letter-spacing: -0.005em; }
+  .card-subtitle { font-size: 12px; color: #71717A; margin-top: 2px; }
+  /* 标签 */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    padding: 0 8px;
+    font-size: 11px;
+    font-weight: 500;
+    border-radius: 4px;
+    letter-spacing: 0.01em;
+  }
+  .badge-success { background: #F0FDF4; color: #15803D; border: 1px solid #DCFCE7; }
+  .badge-error { background: #FEF2F2; color: #B91C1C; border: 1px solid #FEE2E2; }
+  .badge-neutral { background: #F4F4F5; color: #52525B; border: 1px solid #E4E4E7; }
+  .badge-indigo { background: #EEF2FF; color: #4338CA; border: 1px solid #E0E7FF; }
+  /* 页头 */
+  .page-header {
+    padding: 20px 24px 16px 24px;
+    border-bottom: 1px solid #E4E4E7;
+    background: #FFFFFF;
+  }
+  .page-title { font-size: 18px; font-weight: 600; color: #18181B; letter-spacing: -0.015em; }
+  .page-desc { font-size: 13px; color: #71717A; margin-top: 4px; }
+  /* section 标题 */
+  .section-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: #A1A1AA;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 8px;
+  }
+  /* 状态点 */
+  .dot { width: 6px; height: 6px; border-radius: 999px; display: inline-block; }
+  /* KPI 数字 */
+  .kpi-value { font-size: 24px; font-weight: 600; color: #18181B; letter-spacing: -0.02em; line-height: 1.1; }
+  .kpi-label { font-size: 12px; color: #71717A; margin-top: 4px; }
+  /* label */
+  label.form-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: #52525B;
+    margin-bottom: 4px;
+  }
+  /* tab 切换 */
+  .tab-switch {
+    display: inline-flex;
+    background: #F4F4F5;
+    padding: 3px;
+    border-radius: 8px;
+    gap: 2px;
+  }
+  .tab-switch button {
+    height: 26px;
+    padding: 0 10px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #71717A;
+    border-radius: 5px;
+    transition: all 120ms;
+  }
+  .tab-switch button.active {
+    background: #FFFFFF;
+    color: #18181B;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  /* 表格 */
+  table.data-table { width: 100%; border-collapse: collapse; }
+  table.data-table th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 500;
+    color: #A1A1AA;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 10px 16px;
+    border-bottom: 1px solid #E4E4E7;
+    background: #FAFAFA;
+  }
+  table.data-table td {
+    padding: 12px 16px;
+    font-size: 13px;
+    color: #27272A;
+    border-bottom: 1px solid #F4F4F5;
+  }
+  table.data-table tr:hover td { background: #FAFAFA; }
+  table.data-table tr:last-child td { border-bottom: none; }
+  /* MR item */
+  .mr-item {
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid #F4F4F5;
+    cursor: pointer;
+    transition: background 100ms;
+  }
+  .mr-item:hover { background: #FAFAFA; }
+  .mr-item:last-child { border-bottom: none; }
+  /* 分割线 hint */
+  kbd {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 1px 5px;
+    background: #F4F4F5;
+    border: 1px solid #E4E4E7;
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    color: #52525B;
+  }
+  /* provider list item */
+  .provider-item {
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #F4F4F5;
+    transition: background 100ms;
+  }
+  .provider-item:hover { background: #FAFAFA; }
+  .provider-item:last-child { border-bottom: none; }
+  /* icon button */
+  .icon-btn {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    color: #71717A;
+    transition: all 120ms;
+    cursor: pointer;
+  }
+  .icon-btn:hover { background: #F4F4F5; color: #18181B; }
+</style>
+</head>
+<body>
+
+<div class="flex h-screen overflow-hidden">
+
+  <!-- ═══════════════ 侧栏 ═══════════════ -->
+  <aside class="w-56 bg-white border-r border-zinc-200 flex flex-col shrink-0">
+    <!-- Workspace switcher -->
+    <div class="h-11 px-3 flex items-center gap-2 border-b border-zinc-200">
+      <div class="w-6 h-6 rounded-md bg-gradient-to-br from-indigo-500 to-indigo-700 flex items-center justify-center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" class="w-3.5 h-3.5">
+          <path d="M8 3v3M12 3v3M16 3v3M4 8h16M6 8v11a2 2 0 002 2h8a2 2 0 002-2V8" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="text-[13px] font-semibold text-zinc-900 truncate leading-tight">AI Code Reviewer</div>
+        <div class="text-[11px] text-zinc-500 leading-tight">production · v1.0</div>
+      </div>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5 text-zinc-400">
+        <path d="M8 9l4-4 4 4M8 15l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+
+    <!-- Nav -->
+    <nav class="flex-1 overflow-y-auto py-3 px-2 space-y-4">
+      <div>
+        <div class="section-label px-2">工作台</div>
+        <div class="space-y-0.5">
+          <a class="nav-item active">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12l2-2m0 0l7-7 7 7m-9 2v6a1 1 0 001 1h4a1 1 0 001-1v-6m-6 0h6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            仪表盘
+          </a>
+          <a class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            审查记录
+          </a>
+          <a class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            误报队列
+            <span class="ml-auto badge badge-neutral !h-4 !text-[10px] !px-1.5">3</span>
+          </a>
+          <a class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            问题与误报
+          </a>
+        </div>
+      </div>
+
+      <div>
+        <div class="section-label px-2">配置</div>
+        <div class="space-y-0.5">
+          <a class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M13 10V3L4 14h7v7l9-11h-7z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            模型供应商
+          </a>
+          <a class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            审查规则
+          </a>
+          <a class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            GitLab 项目
+          </a>
+          <a class="nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            引擎配置
+          </a>
+        </div>
+      </div>
+    </nav>
+
+    <!-- User -->
+    <div class="border-t border-zinc-200 p-2">
+      <div class="flex items-center gap-2 p-1.5 rounded-md hover:bg-zinc-50 cursor-pointer">
+        <div class="w-6 h-6 rounded-full bg-indigo-500 text-white text-[11px] font-medium flex items-center justify-center">A</div>
+        <div class="flex-1 min-w-0">
+          <div class="text-[12px] font-medium text-zinc-900 truncate leading-tight">admin</div>
+          <div class="text-[11px] text-zinc-500 leading-tight">Bearer Token</div>
+        </div>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5 text-zinc-400">
+          <path d="M12 6v.01M12 12v.01M12 18v.01" stroke-linecap="round"/>
+        </svg>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ═══════════════ 主区 ═══════════════ -->
+  <main class="flex-1 flex flex-col overflow-hidden">
+
+    <!-- 顶栏 -->
+    <header class="topbar">
+      <!-- 面包屑 -->
+      <div class="flex items-center gap-1.5 text-[13px]">
+        <span class="text-zinc-500">工作台</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5 text-zinc-300"><path d="M9 5l7 7-7 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="text-zinc-900 font-medium">仪表盘</span>
+      </div>
+
+      <div class="flex-1"></div>
+
+      <!-- 搜索 -->
+      <div class="relative">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-400"><path d="M21 21l-4.35-4.35M17 10a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <input class="field !w-56 !pl-8 !pr-16" placeholder="搜索…">
+        <kbd class="absolute right-2 top-1/2 -translate-y-1/2">⌘K</kbd>
+      </div>
+
+      <button class="btn-secondary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5"><path d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </header>
+
+    <!-- 内容滚动区 -->
+    <div class="flex-1 overflow-y-auto">
+
+      <!-- 页头 -->
+      <div class="page-header">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h1 class="page-title">仪表盘</h1>
+            <p class="page-desc">GitLab MR AI 审查系统的运行概览与快速触发入口</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button class="btn-secondary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              刷新
+            </button>
+            <button class="btn-primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5"><path d="M12 4v16m8-8H4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              触发审查
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="p-6 space-y-6">
+
+        <!-- KPI 行 -->
+        <section>
+          <div class="grid grid-cols-4 gap-3">
+            <div class="card p-4">
+              <div class="flex items-center justify-between">
+                <span class="text-[12px] text-zinc-500">今日审查</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5 text-zinc-400"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+              <div class="mt-2 flex items-baseline gap-2">
+                <span class="kpi-value">128</span>
+                <span class="text-[12px] text-emerald-600 font-medium">+12%</span>
+              </div>
+            </div>
+
+            <div class="card p-4">
+              <div class="flex items-center justify-between">
+                <span class="text-[12px] text-zinc-500">平均耗时</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5 text-zinc-400"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+              <div class="mt-2 flex items-baseline gap-2">
+                <span class="kpi-value">4.2<span class="text-[15px] text-zinc-500 font-medium ml-0.5">s</span></span>
+                <span class="text-[12px] text-emerald-600 font-medium">-0.8s</span>
+              </div>
+            </div>
+
+            <div class="card p-4">
+              <div class="flex items-center justify-between">
+                <span class="text-[12px] text-zinc-500">发现问题</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5 text-zinc-400"><path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+              <div class="mt-2 flex items-baseline gap-2">
+                <span class="kpi-value">47</span>
+                <span class="text-[12px] text-rose-600 font-medium">+8</span>
+              </div>
+            </div>
+
+            <div class="card p-4">
+              <div class="flex items-center justify-between">
+                <span class="text-[12px] text-zinc-500">误报队列</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5 text-zinc-400"><path d="M4 6h16M4 10h16M4 14h16M4 18h16" stroke-linecap="round"/></svg>
+              </div>
+              <div class="mt-2 flex items-baseline gap-2">
+                <span class="kpi-value">3</span>
+                <span class="text-[12px] text-zinc-500 font-medium">待处理</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 两栏：系统状态 + 最近审查 -->
+        <section class="grid grid-cols-3 gap-4">
+          <!-- 系统状态 -->
+          <div class="card col-span-1">
+            <div class="card-header">
+              <div>
+                <div class="card-title">系统状态</div>
+                <div class="card-subtitle">实时组件健康度</div>
+              </div>
+              <span class="badge badge-success"><span class="dot bg-emerald-500"></span>正常</span>
+            </div>
+            <div class="card-body !py-2">
+              <div class="space-y-1">
+                <div class="flex items-center justify-between py-2 border-b border-zinc-100">
+                  <div class="flex items-center gap-2">
+                    <span class="dot bg-emerald-500"></span>
+                    <span class="text-[13px]">API 服务</span>
+                  </div>
+                  <span class="mono text-[11px] text-zinc-500">v1.0.3</span>
+                </div>
+                <div class="flex items-center justify-between py-2 border-b border-zinc-100">
+                  <div class="flex items-center gap-2">
+                    <span class="dot bg-emerald-500"></span>
+                    <span class="text-[13px]">Redis</span>
+                  </div>
+                  <span class="mono text-[11px] text-zinc-500">7.2.4</span>
+                </div>
+                <div class="flex items-center justify-between py-2 border-b border-zinc-100">
+                  <div class="flex items-center gap-2">
+                    <span class="dot bg-emerald-500"></span>
+                    <span class="text-[13px]">MR Reviewer</span>
+                  </div>
+                  <span class="mono text-[11px] text-zinc-500">ready</span>
+                </div>
+                <div class="flex items-center justify-between py-2">
+                  <div class="flex items-center gap-2">
+                    <span class="dot bg-amber-500"></span>
+                    <span class="text-[13px]">Static Linter</span>
+                  </div>
+                  <span class="mono text-[11px] text-amber-600">degraded</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 最近审查 -->
+          <div class="card col-span-2">
+            <div class="card-header">
+              <div>
+                <div class="card-title">最近审查</div>
+                <div class="card-subtitle">最近 5 条 MR 审查记录</div>
+              </div>
+              <a class="text-[12px] text-indigo-600 hover:text-indigo-700 font-medium cursor-pointer">查看全部 →</a>
+            </div>
+            <div>
+              <div class="mr-item">
+                <span class="dot bg-emerald-500 shrink-0"></span>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] font-medium text-zinc-900 truncate">feat: 增加订单批量导出接口</span>
+                    <span class="badge badge-neutral !h-4 !text-[10px]">!1892</span>
+                  </div>
+                  <div class="text-[11px] text-zinc-500 mt-0.5 mono">backend-service · alice · 2 分钟前</div>
+                </div>
+                <span class="badge badge-success">通过</span>
+              </div>
+              <div class="mr-item">
+                <span class="dot bg-rose-500 shrink-0"></span>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] font-medium text-zinc-900 truncate">fix: 修复用户登录 session 泄漏</span>
+                    <span class="badge badge-neutral !h-4 !text-[10px]">!1891</span>
+                  </div>
+                  <div class="text-[11px] text-zinc-500 mt-0.5 mono">auth-service · bob · 8 分钟前</div>
+                </div>
+                <span class="badge badge-error">4 issues</span>
+              </div>
+              <div class="mr-item">
+                <span class="dot bg-emerald-500 shrink-0"></span>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] font-medium text-zinc-900 truncate">refactor: 抽取通用分页 helper</span>
+                    <span class="badge badge-neutral !h-4 !text-[10px]">!1890</span>
+                  </div>
+                  <div class="text-[11px] text-zinc-500 mt-0.5 mono">common-utils · carol · 21 分钟前</div>
+                </div>
+                <span class="badge badge-success">通过</span>
+              </div>
+              <div class="mr-item">
+                <span class="dot bg-amber-500 shrink-0"></span>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] font-medium text-zinc-900 truncate">chore: 升级 spring-boot 到 3.2</span>
+                    <span class="badge badge-neutral !h-4 !text-[10px]">!1889</span>
+                  </div>
+                  <div class="text-[11px] text-zinc-500 mt-0.5 mono">infra · dave · 1 小时前</div>
+                </div>
+                <span class="badge badge-neutral">1 warning</span>
+              </div>
+              <div class="mr-item">
+                <span class="dot bg-emerald-500 shrink-0"></span>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] font-medium text-zinc-900 truncate">feat: 支持导出 xlsx 格式</span>
+                    <span class="badge badge-neutral !h-4 !text-[10px]">!1888</span>
+                  </div>
+                  <div class="text-[11px] text-zinc-500 mt-0.5 mono">report-service · eve · 2 小时前</div>
+                </div>
+                <span class="badge badge-success">通过</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 触发审查 -->
+        <section>
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">手动触发 MR 审查</div>
+                <div class="card-subtitle">粘贴 GitLab MR URL 或填写 project/iid 立即审查</div>
+              </div>
+              <div class="tab-switch">
+                <button class="active">URL 模式</button>
+                <button>字段模式</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="grid grid-cols-12 gap-3">
+                <div class="col-span-8">
+                  <label class="form-label">GitLab MR URL</label>
+                  <input class="field w-full mono" placeholder="https://gitlab.example.com/group/project/-/merge_requests/1234" value="https://gitlab.example.com/backend/order-service/-/merge_requests/1892">
+                </div>
+                <div class="col-span-4">
+                  <label class="form-label">Commit SHA <span class="text-zinc-400 font-normal">(可选)</span></label>
+                  <input class="field w-full mono" placeholder="留空使用最新 head" value="a3f4c8d">
+                </div>
+              </div>
+              <div class="mt-4 flex items-center justify-between">
+                <div class="text-[12px] text-zinc-500 flex items-center gap-2">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5"><path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  审查完成后将在 <span class="text-zinc-700 font-medium">最近审查</span> 中显示
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="btn-secondary">清空</button>
+                  <button class="btn-primary">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-3.5 h-3.5"><path d="M13 10V3L4 14h7v7l9-11h-7z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    开始审查
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 模型供应商 preview 区（第二个页面预览） -->
+        <section class="pt-4 border-t border-zinc-200">
+          <div class="flex items-center justify-between mb-3">
+            <div>
+              <div class="section-label !mb-0">另一页示例 ↓</div>
+              <div class="text-[15px] font-semibold text-zinc-900 mt-1">模型供应商配置</div>
+            </div>
+            <span class="badge badge-indigo">Preview</span>
+          </div>
+
+          <div class="grid grid-cols-5 gap-4">
+            <!-- 左：表单 -->
+            <div class="card col-span-2">
+              <div class="card-header">
+                <div>
+                  <div class="card-title">新增供应商</div>
+                  <div class="card-subtitle">目前支持 OpenAI 兼容与 Anthropic</div>
+                </div>
+              </div>
+              <div class="card-body space-y-3">
+                <div>
+                  <label class="form-label">名称</label>
+                  <input class="field w-full" placeholder="例如 Volcano GLM" value="Volcano GLM">
+                </div>
+                <div>
+                  <label class="form-label">类型</label>
+                  <select class="field w-full">
+                    <option>openai_compatible</option>
+                    <option>anthropic</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="form-label">Base URL</label>
+                  <input class="field w-full mono" placeholder="https://…" value="https://ark.cn-beijing.volces.com/api/v3">
+                </div>
+                <div>
+                  <label class="form-label">API Key</label>
+                  <input class="field w-full mono" type="password" value="sk-••••••••••••••••••••">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="form-label">模型</label>
+                    <input class="field w-full mono" value="glm-5.2">
+                  </div>
+                  <div>
+                    <label class="form-label">Max Tokens</label>
+                    <input class="field w-full mono" value="4096">
+                  </div>
+                </div>
+                <div class="pt-2 flex items-center justify-end gap-2 border-t border-zinc-100 mt-4">
+                  <button class="btn-secondary">重置</button>
+                  <button class="btn-primary">保存供应商</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 右：列表 -->
+            <div class="card col-span-3">
+              <div class="card-header">
+                <div>
+                  <div class="card-title">已配置供应商</div>
+                  <div class="card-subtitle">3 个，其中 1 个为默认</div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <input class="field !w-40" placeholder="过滤…">
+                </div>
+              </div>
+              <div>
+                <div class="provider-item">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-md bg-zinc-100 flex items-center justify-center shrink-0">
+                      <span class="text-[13px] font-semibold text-zinc-700">O</span>
+                    </div>
+                    <div>
+                      <div class="flex items-center gap-2">
+                        <span class="text-[13px] font-medium">OpenAI GPT-4</span>
+                        <span class="badge badge-indigo">默认</span>
+                      </div>
+                      <div class="text-[11px] text-zinc-500 mono mt-0.5">openai_compatible · gpt-4-turbo · api.openai.com/v1</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="badge badge-success"><span class="dot bg-emerald-500"></span>已连通</span>
+                    <div class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5"><path d="M12 6v.01M12 12v.01M12 18v.01" stroke-linecap="round"/></svg></div>
+                  </div>
+                </div>
+
+                <div class="provider-item">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-md bg-indigo-50 flex items-center justify-center shrink-0">
+                      <span class="text-[13px] font-semibold text-indigo-700">V</span>
+                    </div>
+                    <div>
+                      <div class="flex items-center gap-2">
+                        <span class="text-[13px] font-medium">Volcano GLM</span>
+                      </div>
+                      <div class="text-[11px] text-zinc-500 mono mt-0.5">openai_compatible · glm-5.2 · ark.cn-beijing.volces.com</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="badge badge-success"><span class="dot bg-emerald-500"></span>已连通</span>
+                    <div class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5"><path d="M12 6v.01M12 12v.01M12 18v.01" stroke-linecap="round"/></svg></div>
+                  </div>
+                </div>
+
+                <div class="provider-item">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-md bg-zinc-100 flex items-center justify-center shrink-0">
+                      <span class="text-[13px] font-semibold text-zinc-700">A</span>
+                    </div>
+                    <div>
+                      <div class="flex items-center gap-2">
+                        <span class="text-[13px] font-medium">Claude 3.5 Sonnet</span>
+                      </div>
+                      <div class="text-[11px] text-zinc-500 mono mt-0.5">anthropic · claude-3-5-sonnet · api.anthropic.com</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="badge badge-error"><span class="dot bg-rose-500"></span>连接失败</span>
+                    <div class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" class="w-3.5 h-3.5"><path d="M12 6v.01M12 12v.01M12 18v.01" stroke-linecap="round"/></svg></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="h-6"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+</body>
+</html>
