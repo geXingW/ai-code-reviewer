@@ -648,46 +648,76 @@ function App() {
       ...(engineConfigsPage?.items ?? []).map((engine) => ({ value: engine.id, label: engine.name })),
     ];
     return (
-      <PanelGrid>
-        <div className="col-span-12 lg:col-span-5">
-          <Card>
-            <CardHeader><CardTitle>新增 GitLab 项目</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <form className="grid gap-3" onSubmit={handleCreateProject}>
-                <TextInput label="项目名称" value={projectForm.name} onChange={(value) => setProjectForm({ ...projectForm, name: value })} />
-                <TextInput label="GitLab Project ID" value={projectForm.gitlab_project_id} onChange={(value) => setProjectForm({ ...projectForm, gitlab_project_id: value })} />
-                <TextInput label="GitLab Access Token" type="password" value={projectForm.gitlab_access_token} onChange={(value) => setProjectForm({ ...projectForm, gitlab_access_token: value })} />
-                <TextInput label="Webhook Secret" type="password" value={projectForm.webhook_secret} onChange={(value) => setProjectForm({ ...projectForm, webhook_secret: value })} />
-                <SelectInput label="默认审查引擎" value={projectForm.engine_id} options={engineOptions} onChange={(value) => setProjectForm({ ...projectForm, engine_id: value })} />
+      <div className="grid grid-cols-5 gap-4">
+        {/* 左：表单卡 col-span-2 */}
+        <Card className="col-span-2">
+          <CardHeader>
+            <div>
+              <CardTitle>新增 GitLab 项目</CardTitle>
+              <CardDescription>接入项目后可通过 Webhook 自动触发 MR 审查</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <form onSubmit={handleCreateProject} className="space-y-3">
+              <TextInput label="项目名称" value={projectForm.name} onChange={(value) => setProjectForm({ ...projectForm, name: value })} />
+              <TextInput label="GitLab Project ID" value={projectForm.gitlab_project_id} onChange={(value) => setProjectForm({ ...projectForm, gitlab_project_id: value })} />
+              <TextInput label="GitLab Access Token" type="password" value={projectForm.gitlab_access_token} onChange={(value) => setProjectForm({ ...projectForm, gitlab_access_token: value })} />
+              <TextInput label="Webhook Secret" type="password" value={projectForm.webhook_secret} onChange={(value) => setProjectForm({ ...projectForm, webhook_secret: value })} />
+              <SelectInput label="默认审查引擎" value={projectForm.engine_id} options={engineOptions} onChange={(value) => setProjectForm({ ...projectForm, engine_id: value })} />
+              <div className="grid grid-cols-2 gap-3">
                 <TextInput label="超时秒数" value={String(projectForm.timeout_seconds)} onChange={(value) => setProjectForm({ ...projectForm, timeout_seconds: Number(value) || 0 })} />
                 <TextInput label="最大文件数" value={String(projectForm.max_files)} onChange={(value) => setProjectForm({ ...projectForm, max_files: Number(value) || 0 })} />
-                <SelectInput label="默认阻断级别" value={projectForm.default_block_severity} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setProjectForm({ ...projectForm, default_block_severity: value as ProjectFormPayload['default_block_severity'] })} />
-                <fieldset className="rounded-md border border-input p-3 space-y-2">
-                  <legend className="text-sm font-medium px-1">启用规则</legend>
-                  {(rulesPage?.items ?? []).length === 0 ? <div className="text-sm text-muted-foreground">暂无规则，请先到“审查规则”页面创建。</div> : null}
-                  {(rulesPage?.items ?? []).map((rule) => (
-                    <label key={rule.id} className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        className="size-4 rounded border-input accent-primary"
-                        checked={projectForm.rules.some((selected) => selected.rule_id === rule.id)}
-                        onChange={(event) => setProjectForm((prev) => ({ ...prev, rules: toggleRuleSelection(prev.rules, rule.id, event.target.checked) }))}
-                      />
-                      <span>{rule.rule_id} · {rule.title}</span>
-                    </label>
-                  ))}
-                </fieldset>
-                <div className="flex items-center gap-2 flex-wrap"><Button type="submit">保存项目</Button></div>
-              </form>
-            </CardContent>
-          </Card>
-        </div>
-        <ListCard title="GitLab 项目列表" empty="暂无 GitLab 项目">
-          {(projectsPage?.items ?? []).map((project) => (
-            <ProjectCard key={project.id} project={project} onSavePolicies={handleSaveBlockPolicies} />
-          ))}
-        </ListCard>
-      </PanelGrid>
+              </div>
+              <SelectInput label="默认阻断级别" value={projectForm.default_block_severity} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setProjectForm({ ...projectForm, default_block_severity: value as ProjectFormPayload['default_block_severity'] })} />
+              <div>
+                <label className="text-[12px] font-medium text-zinc-600 mb-2 block">启用规则</label>
+                <div className="rounded-md border border-zinc-200 max-h-48 overflow-y-auto">
+                  {(rulesPage?.items ?? []).length === 0 ? (
+                    <div className="p-3 text-[12px] text-zinc-500">暂无规则，请先到"审查规则"页面创建。</div>
+                  ) : (
+                    (rulesPage?.items ?? []).map((rule) => (
+                      <label key={rule.id} className="flex items-center gap-2 px-3 py-2 border-b border-zinc-100 last:border-b-0 text-[13px] cursor-pointer hover:bg-zinc-50">
+                        <input
+                          type="checkbox"
+                          className="size-4 rounded border-zinc-300 accent-indigo-600"
+                          checked={projectForm.rules.some((selected) => selected.rule_id === rule.id)}
+                          onChange={(event) => setProjectForm((prev) => ({ ...prev, rules: toggleRuleSelection(prev.rules, rule.id, event.target.checked) }))}
+                        />
+                        <span className="text-zinc-900">{rule.rule_id}</span>
+                        <span className="text-zinc-500">·</span>
+                        <span className="text-zinc-600 truncate">{rule.title}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+              </div>
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-zinc-100 mt-4">
+                <Button type="button" variant="secondary" onClick={() => setProjectForm(initialProjectForm)}>重置</Button>
+                <Button type="submit">保存项目</Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+
+        {/* 右：项目列表 col-span-3 */}
+        <Card className="col-span-3">
+          <CardHeader>
+            <div>
+              <CardTitle>已接入项目</CardTitle>
+              <CardDescription>{projectsPage?.items?.length ?? 0} 个项目 · {(projectsPage?.items ?? []).filter((p) => p.enabled).length} 启用</CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            {(projectsPage?.items ?? []).length === 0 ? (
+              <div className="p-6 text-center text-[13px] text-zinc-500">暂无 GitLab 项目</div>
+            ) : (
+              (projectsPage?.items ?? []).map((project) => (
+                <ProjectCard key={project.id} project={project} onSavePolicies={handleSaveBlockPolicies} />
+              ))
+            )}
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
@@ -1185,24 +1215,35 @@ type ProjectCardProps = {
 
 function ProjectCard({ project, onSavePolicies }: ProjectCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const letter = project.name.charAt(0).toUpperCase();
   return (
-    <div className="rounded-lg border border-border p-4 space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="font-medium text-sm">{project.name}</div>
-          <div className="text-xs text-muted-foreground mt-0.5">
-            GitLab ID {project.gitlab_project_id} · {project.default_block_severity} · {project.block_policies.length} 条阻断策略
+    <div className="border-b border-zinc-100 last:border-b-0">
+      <div className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-8 h-8 rounded-md bg-indigo-50 flex items-center justify-center shrink-0">
+            <span className="text-[13px] font-semibold text-indigo-700">{letter}</span>
+          </div>
+          <div className="min-w-0">
+            <div className="text-[13px] font-medium text-zinc-900 truncate">{project.name}</div>
+            <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">
+              GitLab {project.gitlab_project_id} · {project.default_block_severity} · {project.block_policies.length} 条策略
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <Badge ok={project.enabled}>{project.enabled ? '启用' : '停用'}</Badge>
-          <Button variant="ghost" size="sm" type="button" onClick={() => setExpanded((prev) => !prev)}>
+          <UiBadge variant={project.enabled ? 'success' : 'default'}>
+            <span className={cn('w-1.5 h-1.5 rounded-full', project.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
+            {project.enabled ? '启用' : '停用'}
+          </UiBadge>
+          <Button variant="secondary" size="sm" type="button" onClick={() => setExpanded((prev) => !prev)}>
             {expanded ? '收起策略' : '展开策略'}
           </Button>
         </div>
       </div>
       {expanded ? (
-        <BlockPolicyTable projectId={project.id} policies={project.block_policies} onSave={onSavePolicies} />
+        <div className="px-4 pb-4 bg-zinc-50 border-t border-zinc-100">
+          <BlockPolicyTable projectId={project.id} policies={project.block_policies} onSave={onSavePolicies} />
+        </div>
       ) : null}
     </div>
   );
