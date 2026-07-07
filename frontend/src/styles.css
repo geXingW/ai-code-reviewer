@@ -1,11 +1,10 @@
-:root {
-  color: #172033;
-  background: #f5f7fb;
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-}
+/*
+ * 全局基础重置（Linear 风格）。
+ * 设计 tokens 与组件样式均在 globals.css / Tailwind utility 中定义；
+ * 本文件只保留真·全局重置，以及 App.tsx BlockPolicyTable 仍在使用的
+ * 阻断策略编辑器类名（.policy-* / .drag-handle / .priority / .empty / .muted）。
+ * 不新增任何自定义类，新样式一律走 Tailwind utility。
+ */
 
 * {
   box-sizing: border-box;
@@ -17,268 +16,20 @@ body {
   min-height: 100vh;
 }
 
-a {
-  color: #2563eb;
-  text-decoration: none;
-}
-
-a:hover {
-  text-decoration: underline;
-}
-
 button,
 input {
   font: inherit;
 }
 
-button {
-  border: 0;
-  border-radius: 10px;
-  background: #2563eb;
-  color: #fff;
-  cursor: pointer;
-  font-weight: 700;
-  padding: 12px 16px;
-}
-
-button:disabled {
-  background: #94a3b8;
-  cursor: not-allowed;
-}
-
-.grid {
-  display: grid;
-  gap: 20px;
-  grid-template-columns: repeat(12, 1fr);
-}
-
-.card {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 20px;
-  box-shadow: 0 12px 40px rgb(15 23 42 / 8%);
-  padding: 20px;
-}
-
-.card h2 {
-  font-size: 20px;
-  margin: 0 0 16px;
-}
-
-.span-4 {
-  grid-column: span 4;
-}
-
-.span-5 {
-  grid-column: span 5;
-}
-
-.span-7 {
-  grid-column: span 7;
-}
-
-.span-8 {
-  grid-column: span 8;
-}
-
-.span-12 {
-  grid-column: span 12;
-}
-
-.status-row,
-.engine-row,
-.review-row {
-  align-items: center;
-  border-top: 1px solid #eef2f7;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 0;
-}
-
-.status-row:first-of-type,
-.engine-row:first-of-type,
-.review-row:first-of-type {
-  border-top: 0;
-}
+/* ─────────────── 阻断策略编辑器（App.tsx BlockPolicyTable 使用，勿删） ─────────────── */
 
 .muted {
   color: #64748b;
 }
 
-.badge {
-  border-radius: 999px;
-  display: inline-flex;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 6px 10px;
-}
-
-.badge.ok {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.badge.warn {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.badge.error {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.review-title {
-  font-weight: 800;
-  margin-bottom: 4px;
-}
-
-.review-meta {
-  color: #64748b;
-  font-size: 14px;
-}
-
-.form-grid {
-  display: grid;
-  gap: 14px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.form-grid label {
-  color: #334155;
-  display: grid;
-  font-size: 14px;
-  font-weight: 700;
-  gap: 8px;
-}
-
-.form-grid input {
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  color: #172033;
-  padding: 11px 12px;
-}
-
-.form-grid input:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgb(37 99 235 / 18%);
-  outline: none;
-}
-
-.form-grid select,
-.form-grid textarea {
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  color: #172033;
-  padding: 11px 12px;
-}
-
-.form-grid select:focus,
-.form-grid textarea:focus {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgb(37 99 235 / 18%);
-  outline: none;
-}
-
-.form-grid textarea {
-  grid-column: 1 / -1;
-  resize: vertical;
-}
-
-.form-grid input[type="checkbox"] {
-  border: 0;
-  padding: 0;
-  width: auto;
-}
-
-.form-grid .checkbox-label {
-  align-items: center;
-  display: flex;
-  flex-direction: row;
-  gap: 8px;
-}
-
-.form-grid .rule-checklist {
-  border: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  grid-column: 1 / -1;
-  margin: 0;
-  padding: 0;
-}
-
-.form-grid .rule-checklist legend {
-  color: #334155;
-  font-size: 14px;
-  font-weight: 700;
-  margin-bottom: 4px;
-  padding: 0;
-}
-
-.form-grid .rule-checkbox {
-  align-items: center;
-  display: flex;
-  flex-direction: row;
-  gap: 8px;
-}
-
-button.secondary {
-  background: #64748b;
-}
-
-.form-actions {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-  grid-column: 1 / -1;
-  margin-top: 4px;
-}
-
-.alert {
-  border-radius: 12px;
-  font-weight: 700;
-  margin-top: 14px;
-  padding: 12px 14px;
-}
-
-.alert.ok {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.alert.error {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
 .empty {
   color: #64748b;
   padding: 18px 0;
-}
-
-.row-actions {
-  align-items: center;
-  display: flex;
-  gap: 10px;
-}
-
-.project-card,
-.review-card {
-  border-top: 1px solid #eef2f7;
-  padding: 14px 0;
-}
-
-.project-card:first-of-type,
-.review-card:first-of-type {
-  border-top: 0;
-}
-
-.finding-list {
-  border-top: 1px dashed #e2e8f0;
-  margin-top: 10px;
-  padding-top: 6px;
 }
 
 .policy-editor {
@@ -350,24 +101,4 @@ button.secondary {
   display: flex;
   gap: 12px;
   margin-top: 12px;
-}
-
-@media (max-width: 860px) {
-  .status-row,
-  .engine-row,
-  .review-row {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .span-4,
-  .span-5,
-  .span-7,
-  .span-8 {
-    grid-column: span 12;
-  }
-
-  .form-grid {
-    grid-template-columns: 1fr;
-  }
 }
