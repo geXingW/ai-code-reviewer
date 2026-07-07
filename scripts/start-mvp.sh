@@ -14,14 +14,18 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v python >/dev/null 2>&1; then
-  echo "Python is required to initialize .env secrets." >&2
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN=python
+else
+  echo "Python 3 is required to initialize .env secrets (install python3 or python-is-python3)." >&2
   exit 1
 fi
 
 if [ ! -f .env ]; then
   cp .env.example .env
-  python - <<'PY'
+  "$PYTHON_BIN" - <<'PY'
 from pathlib import Path
 import base64
 import os
