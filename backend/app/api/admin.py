@@ -682,9 +682,12 @@ async def _commit_or_400(db: AsyncSession, detail: str) -> None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
     except SQLAlchemyError as exc:
         await db.rollback()
+        # DBAPIError 有 orig 属性指向底层驱动异常；其它 SQLAlchemyError 没有 orig。
+        # 用 getattr 兼容两种情况，并对 mypy 友好。
+        orig = getattr(exc, "orig", None)
         internal_detail = (
             f"{detail} (internal error: {exc.__class__.__name__}: "
-            f"{str(exc.orig or exc)[:200]})"
+            f"{str(orig or exc)[:200]})"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
