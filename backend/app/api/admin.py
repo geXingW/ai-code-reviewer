@@ -675,6 +675,7 @@ async def _get_or_404(
     以复用 eager-load 语句；其它模型走通用 ``BaseRepository.get``。
     """
 
+    model: Base | None
     if model_type is Project and options:
         project_repo = ProjectRepository(db)
         model = await project_repo.get_with_relations(model_id)
