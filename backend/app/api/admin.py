@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
-from app.core.db import DbSession
+from app.core.db import Base, DbSession
 from app.models.engine import Engine
 from app.models.finding import Finding
 from app.models.negative_example import NegativeExample
@@ -27,6 +27,7 @@ from app.models.project_rule import ProjectRule
 from app.models.provider import Provider
 from app.models.review import Review
 from app.models.rule import Rule
+from app.repositories import BaseRepository, ProjectRepository
 from app.schemas.engine import EngineCreate, EngineRead, EngineUpdate
 from app.schemas.finding import FindingCreate, FindingRead, FindingUpdate
 from app.schemas.negative_example import NegativeExampleRead
@@ -37,7 +38,7 @@ from app.schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
 from app.schemas.review import ReviewCreate, ReviewRead, ReviewUpdate
 from app.schemas.rule import RuleCreate, RuleRead, RuleUpdate
 
-ModelT = TypeVar("ModelT")
+ModelT = TypeVar("ModelT", bound=Base)
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 _ALLOWED_SORTS: dict[str, set[str]] = {
@@ -601,7 +602,12 @@ async def _paginate(
     limit: int,
     offset: int,
 ) -> Page:
-    """Apply count, sorting, offset, and limit to a select statement."""
+    """Apply count, sorting, offset, and limit to a select statement.
+
+    分页读取通过 Repository 层完成：``BaseRepository`` 暴露的 ``session`` 与
+    ``execute`` 均可复用；这里保留 ``select`` 语句参数是因为不同接口
+    需要自定义 join / eager-load / where 过滤，不宜在 Repository 里穷举。
+    """
 
     ordered_stmt = _apply_sort(stmt, sort_group, sort)
     total = await db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
@@ -616,9 +622,15 @@ async def _create(
     schema: type[SchemaT],
     error_message: str,
 ) -> SchemaT:
-    """Persist one ORM object and convert it to a response schema."""
+    """Persist one ORM object and convert it to a response schema.
 
-    db.add(model)
+    走 ``BaseRepository.add`` 挂载对象，最终 commit 交给 ``_commit_or_400`` 处理，
+    这样错误映射（IntegrityError→409、其它 SQLAlchemyError→500）保持不变。
+    """
+
+    repo: BaseRepository[ModelT] = BaseRepository(db)
+    repo.model = type(model)
+    await repo.add(model, flush=False)
     await _commit_or_400(db, error_message)
     await db.refresh(model)
     return schema.model_validate(model)
@@ -643,7 +655,9 @@ async def _delete(db: AsyncSession, model_type: type[ModelT], model_id: UUID, la
     """Delete an ORM object by primary key or return 404."""
 
     model = await _get_or_404(db, model_type, model_id, label)
-    await db.delete(model)
+    repo: BaseRepository[ModelT] = BaseRepository(db)
+    repo.model = model_type
+    await repo.delete(model, flush=False)
     await _commit_or_400(db, f"{label} delete failed")
 
 
@@ -655,13 +669,20 @@ async def _get_or_404(
     *,
     options: bool = False,
 ) -> ModelT:
-    """Fetch an ORM object by ID or raise a 404 response."""
+    """Fetch an ORM object by ID or raise a 404 response.
 
+    Project 类型且要求带 relations 时，走 ``ProjectRepository.get_with_relations``
+    以复用 eager-load 语句；其它模型走通用 ``BaseRepository.get``。
+    """
+
+    model: Base | None
     if model_type is Project and options:
-        result = await db.execute(_project_select().where(Project.id == model_id))
-        model = result.scalars().unique().one_or_none()
+        project_repo = ProjectRepository(db)
+        model = await project_repo.get_with_relations(model_id)
     else:
-        model = await db.get(cast(type[Any], model_type), model_id)
+        repo: BaseRepository[ModelT] = BaseRepository(db)
+        repo.model = model_type
+        model = await repo.get(model_id)
     if model is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{label} not found")
     return cast(ModelT, model)
