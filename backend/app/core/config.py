@@ -4,7 +4,7 @@ from functools import lru_cache
 from typing import Annotated, cast
 
 from cryptography.fernet import Fernet
-from pydantic import Field, PostgresDsn, RedisDsn, SecretStr
+from pydantic import Field, RedisDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,13 +21,12 @@ class Settings(BaseSettings):
     app_name: Annotated[str, Field(description="Application name.")] = "ai-code-reviewer"
     app_version: Annotated[str, Field(description="Application semantic version.")] = "0.1.0-dev"
     debug: Annotated[bool, Field(description="Enable debug mode and colorful logs.")] = False
+    # SQLAlchemy 异步连接 URL：默认 PostgreSQL，切换 DATABASE_URL 即可改用 MySQL（mysql+aiomysql://）。
+    # 用 str 而非 PostgresDsn，避免 Pydantic 拒绝带驱动的 MySQL 方案。
     database_url: Annotated[
-        PostgresDsn,
-        Field(description="PostgreSQL async connection URL."),
-    ] = cast(
-        PostgresDsn,
-        "postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer",
-    )
+        str,
+        Field(description="数据库异步连接 URL，支持 PostgreSQL 与 MySQL。"),
+    ] = "postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer"
     redis_url: Annotated[
         RedisDsn,
         Field(description="Redis connection URL."),

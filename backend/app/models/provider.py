@@ -1,11 +1,9 @@
 """SQLAlchemy model for LLM providers."""
 
 from typing import TYPE_CHECKING, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Float, Integer, String, text
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import JSON, Boolean, Float, Integer, String, Uuid, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base, TimestampMixin
@@ -20,10 +18,11 @@ class Provider(Base, TimestampMixin):
 
     __tablename__ = "providers"
 
+    # 主键 UUID 由 Python 层生成，不依赖 PG 的 gen_random_uuid()，保证 MySQL 也可用。
     id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         primary_key=True,
-        server_default=text("gen_random_uuid()"),
+        default=uuid4,
     )
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     protocol: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -33,20 +32,18 @@ class Provider(Base, TimestampMixin):
     temperature: Mapped[float] = mapped_column(
         Float,
         default=0.0,
-        server_default=text("0"),
         nullable=False,
     )
     max_tokens: Mapped[int] = mapped_column(
         Integer,
         default=4096,
-        server_default=text("4096"),
         nullable=False,
     )
-    extra_headers: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    extra_headers: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
-        server_default=text("true"),
+        server_default=true(),
         nullable=False,
     )
 

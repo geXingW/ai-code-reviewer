@@ -3,8 +3,7 @@
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import Boolean, ForeignKey, String, text
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import Boolean, ForeignKey, String, Uuid, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base, TimestampMixin
@@ -20,19 +19,19 @@ class ProjectRule(Base, TimestampMixin):
     __tablename__ = "project_rules"
 
     project_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         ForeignKey("projects.id", ondelete="CASCADE"),
         primary_key=True,
     )
     rule_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         ForeignKey("rules.id", ondelete="CASCADE"),
         primary_key=True,
     )
     enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
-        server_default=text("true"),
+        server_default=true(),
         nullable=False,
     )
     severity_override: Mapped[str | None] = mapped_column(String(20), nullable=True)

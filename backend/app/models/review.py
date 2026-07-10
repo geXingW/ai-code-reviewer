@@ -1,10 +1,9 @@
 """SQLAlchemy model for AI review records."""
 
 from typing import TYPE_CHECKING
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, text
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, Uuid, false, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base, TimestampMixin
@@ -20,13 +19,14 @@ class Review(Base, TimestampMixin):
 
     __tablename__ = "reviews"
 
+    # 主键 UUID 由 Python 层生成，不依赖 PG 的 gen_random_uuid()，保证 MySQL 也可用。
     id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         primary_key=True,
-        server_default=text("gen_random_uuid()"),
+        default=uuid4,
     )
     project_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
     )
@@ -43,20 +43,19 @@ class Review(Base, TimestampMixin):
     engine_used: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider_used: Mapped[str | None] = mapped_column(String(255), nullable=True)
     policy_applied: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         ForeignKey("project_block_policies.id", ondelete="SET NULL"),
         nullable=True,
     )
     has_blocker: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
-        server_default=text("false"),
+        server_default=false(),
         nullable=False,
     )
     finding_count: Mapped[int] = mapped_column(
         Integer,
         default=0,
-        server_default=text("0"),
         nullable=False,
     )
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
