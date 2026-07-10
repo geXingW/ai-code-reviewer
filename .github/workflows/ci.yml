@@ -63,9 +63,9 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql+asyncpg://ai_reviewer:***@localhost:5432/ai_code_reviewer
-      REDIS_URL: redis://localhost:***@v7
-      SECRET_KEY: CHANGE_ME_FERNET_KEY_GENERATE_WITH_Fernet.generate_key
+      DATABASE_URL: postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: P2QaeSd-WxWj1b44aFQc47nYTK0weRp3ZXHBrHapKms=
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -111,9 +111,9 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     env:
-      DATABASE_URL: mysql+aiomysql://ai_reviewer:***@localhost:3306/ai_code_reviewer
-      REDIS_URL: redis://localhost:***@v7
-      SECRET_KEY: CHANGE_ME_FERNET_KEY_GENERATE_WITH_Fernet.generate_key
+      DATABASE_URL: mysql+aiomysql://ai_reviewer:ai_reviewer@localhost:3306/ai_code_reviewer
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: P2QaeSd-WxWj1b44aFQc47nYTK0weRp3ZXHBrHapKms=
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
