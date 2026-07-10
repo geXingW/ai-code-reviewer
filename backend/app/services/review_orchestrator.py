@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.block_policy import (
     BlockPolicyLike,
@@ -30,6 +35,11 @@ from app.core.summary_builder import (
 from app.engines import DiffHunk, Finding, ReviewContext
 from app.engines.registry import EngineRegistry, get_engine_registry
 from app.integrations.gitlab.client import GitLabClient
+from app.models.finding import Finding as FindingRow
+from app.models.review import Review as ReviewRow
+from app.repositories.project import ProjectRepository
+
+SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
 _DIFF_HEADER_RE = re.compile(
     r"@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? "
@@ -105,6 +115,7 @@ class ReviewOrchestrator:
         ignore_paths: Sequence[str] | None = None,
         max_diff_bytes: int = 200_000,
         review_detail_base_url: str | None = None,
+        session_factory: SessionFactory | None = None,
     ) -> None:
         self._gitlab_client = gitlab_client
         self._engine_registry = engine_registry or get_engine_registry()
@@ -117,6 +128,10 @@ class ReviewOrchestrator:
         self._review_detail_base_url = (
             review_detail_base_url.rstrip("/") if review_detail_base_url else None
         )
+        # session_factory 为 None 时跳过持久化，与旧 MVP 行为保持一致；
+        # 传入 async_sessionmaker（或任何返回 AsyncSession 上下文管理器的可调用）时
+        # 每次评审会尝试落库 reviews + review_findings。
+        self._session_factory = session_factory
 
     async def review_merge_request(self, event: GitLabMergeRequestEvent) -> OrchestratorResult:
         """Run the configured review engine for one GitLab MR event.
@@ -128,6 +143,7 @@ class ReviewOrchestrator:
             OrchestratorResult: Aggregate execution summary.
         """
 
+        started_at = time.perf_counter()
         review_id = uuid4()
         block_policy = match_block_policy(
             self._block_policies or build_default_block_policies(event.project_uuid),
@@ -173,6 +189,7 @@ class ReviewOrchestrator:
                 policy_applied=policy_applied,
                 block_policy=block_policy,
                 error=exc,
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
             )
         has_blocker, blocker_count = compute_has_blocker(findings, block_policy)
         await self._post_finding_discussions(event, changes, findings)
@@ -199,6 +216,17 @@ class ReviewOrchestrator:
                 else f"AI Review completed with {len(findings)} finding(s)"
             ),
             target_url=self._build_review_detail_url(review_id),
+        )
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        # 尝试落库；失败不影响主流程返回值。
+        await self._persist_review(
+            event=event,
+            review_id=review_id,
+            findings=findings,
+            has_blocker=has_blocker,
+            status_value="done",
+            duration_ms=duration_ms,
+            engine_used=self._default_engine,
         )
         return OrchestratorResult(
             review_id=review_id,
@@ -284,6 +312,7 @@ class ReviewOrchestrator:
         policy_applied: str,
         block_policy: BlockPolicyLike,
         error: Exception,
+        duration_ms: int = 0,
     ) -> OrchestratorResult:
         """Persist deterministic GitLab feedback when the selected engine fails."""
 
@@ -313,6 +342,16 @@ class ReviewOrchestrator:
             ),
             target_url=self._build_review_detail_url(review_id),
         )
+        # 引擎失败也要落一条 engine_error 记录，方便运营侧统计降级次数。
+        await self._persist_review(
+            event=event,
+            review_id=review_id,
+            findings=[],
+            has_blocker=has_blocker,
+            status_value="engine_error",
+            duration_ms=duration_ms,
+            engine_used=self._default_engine,
+        )
         return OrchestratorResult(
             review_id=review_id,
             project_uuid=event.project_uuid,
@@ -323,6 +362,79 @@ class ReviewOrchestrator:
             policy_applied=policy_applied,
             note_id=_extract_int(note, "id"),
         )
+
+    async def _persist_review(
+        self,
+        *,
+        event: GitLabMergeRequestEvent,
+        review_id: UUID,
+        findings: Sequence[Finding],
+        has_blocker: bool,
+        status_value: str,
+        duration_ms: int,
+        engine_used: str,
+    ) -> None:
+        """Best-effort 落库：写入 ``reviews`` + ``review_findings`` 两张表。
+
+        - ``session_factory`` 为 None：跳过（MVP 兼容路径）。
+        - Project 不存在（GitLab 项目未在管理后台注册）：跳过并记 warning。
+        - 事务失败：rollback + 记 warning，不影响 GitLab 反馈与 API 响应。
+        """
+
+        if self._session_factory is None:
+            return
+        try:
+            async with self._session_factory() as session:
+                project_repo = ProjectRepository(session)
+                project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
+                if project is None:
+                    logger.warning(
+                        "skip review persistence: project not registered",
+                        extra={
+                            "gitlab_project_id": event.project_id,
+                            "review_id": str(review_id),
+                        },
+                    )
+                    return
+                review_row = ReviewRow(
+                    id=review_id,
+                    project_id=project.id,
+                    mr_iid=str(event.mr_iid),
+                    source_branch=event.source_branch,
+                    target_branch=event.target_branch,
+                    commit_sha=event.source_commit_sha,
+                    status=status_value,
+                    engine_used=engine_used,
+                    has_blocker=has_blocker,
+                    finding_count=len(findings),
+                    duration_ms=duration_ms,
+                )
+                session.add(review_row)
+                for finding in findings:
+                    session.add(
+                        FindingRow(
+                            review_id=review_id,
+                            file_path=finding.file_path,
+                            line_number=finding.line_number,
+                            rule_id=finding.rule_id or "unknown",
+                            severity=finding.severity,
+                            title=finding.title,
+                            description=finding.description,
+                            suggestion=finding.suggestion,
+                            existing_code=finding.existing_code,
+                            confidence=float(finding.confidence or 0.0),
+                        )
+                    )
+                await session.commit()
+        except SQLAlchemyError:
+            logger.exception(
+                "failed to persist review",
+                extra={
+                    "gitlab_project_id": event.project_id,
+                    "review_id": str(review_id),
+                    "mr_iid": event.mr_iid,
+                },
+            )
 
     def _build_review_detail_url(self, review_id: UUID) -> str | None:
         """Build an optional browser URL for the persisted review detail page."""

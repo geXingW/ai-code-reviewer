@@ -18,6 +18,7 @@ from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 
 from app.core.config import get_settings
+from app.core.db import AsyncSessionLocal
 from app.engines import load_builtin_engines
 from app.engines.registry import get_engine_registry
 from app.integrations.gitlab.client import GitLabClient
@@ -25,6 +26,7 @@ from app.services.review_orchestrator import (
     GitLabMergeRequestEvent,
     OrchestratorResult,
     ReviewOrchestrator,
+    SessionFactory,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,8 +82,18 @@ async def handle_gitlab_webhook(
     )
 
 
-async def review_merge_request_event(event: GitLabMergeRequestEvent) -> OrchestratorResult:
-    """Build runtime dependencies and run the MR review orchestrator."""
+async def review_merge_request_event(
+    event: GitLabMergeRequestEvent,
+    *,
+    session_factory: SessionFactory | None = None,
+) -> OrchestratorResult:
+    """Build runtime dependencies and run the MR review orchestrator.
+
+    Args:
+        event: 规范化后的 GitLab MR 事件。
+        session_factory: 可选的 sessionmaker 覆盖。测试里可传入 test_engine
+            对应的 factory，避免复用模块级 ``AsyncSessionLocal`` 绑到已关闭的 loop。
+    """
 
     settings = get_settings()
     load_builtin_engines()
@@ -93,6 +105,8 @@ async def review_merge_request_event(event: GitLabMergeRequestEvent) -> Orchestr
         gitlab_client=client,
         engine_registry=get_engine_registry(),
         default_engine=settings.default_review_engine,
+        # 注入应用级 sessionmaker，让 orchestrator 每次评审完成后能落库 review + finding。
+        session_factory=session_factory or AsyncSessionLocal,
     )
     return await orchestrator.review_merge_request(event)
 
