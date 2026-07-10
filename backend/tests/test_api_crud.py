@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -14,7 +15,10 @@ from app.core import config, db
 from app.core.db import Base, get_db
 from app.main import create_app
 
-TEST_DATABASE_URL = "postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer"
+TEST_DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer",
+)
 
 
 @pytest_asyncio.fixture

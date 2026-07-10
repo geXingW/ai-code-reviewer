@@ -39,7 +39,9 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
 
     async with test_engine.begin() as connection:
-        await connection.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))
+        # pgcrypto 扩展仅 PostgreSQL 需要，跨方言时跳过
+        if database_url.startswith("postgresql"):
+            await connection.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))
         await connection.run_sync(Base.metadata.drop_all)
         await connection.run_sync(Base.metadata.create_all)
 
