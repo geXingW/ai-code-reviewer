@@ -141,6 +141,11 @@ async def e2e_client(
         async with session_factory() as session:
             yield session
 
+    # orchestrator 落库走 app.core.db.AsyncSessionLocal，测试里覆盖为绑到本 test loop 的 factory，
+    # 避免跨 test 复用模块级 engine 触发 "attached to a different loop"。
+    monkeypatch.setattr("app.core.db.AsyncSessionLocal", session_factory)
+    monkeypatch.setattr("app.api.gitlab_webhook.AsyncSessionLocal", session_factory)
+
     registry = get_engine_registry()
     registry.unregister(STUB_ENGINE_NAME)
     stub = StubReviewEngine()
