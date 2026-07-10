@@ -27,6 +27,37 @@ class ReviewRepository(BaseRepository[Review]):
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    async def find_completed_by_project_and_commit(
+        self,
+        project_id: UUID,
+        commit_sha: str,
+    ) -> Review | None:
+        """按 ``(project_id, commit_sha)`` 查找**已完成**（done / engine_error）评审。
+
+        用于 commit_sha 去重：同一 commit 多次触发（GitLab 重发、Jenkins 重试等）
+        时复用旧结果，避免重跑引擎与重写 GitLab 评论。
+
+        Args:
+            project_id: DB 中 Project 主键 UUID。
+            commit_sha: MR head commit SHA。
+
+        Returns:
+            匹配的最近一条 Review；若无返回 ``None``。
+        """
+
+        stmt = (
+            select(Review)
+            .where(
+                Review.project_id == project_id,
+                Review.commit_sha == commit_sha,
+                Review.status.in_(("done", "engine_error")),
+            )
+            .order_by(Review.created_at.desc())
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
 
 class FindingRepository(BaseRepository[Finding]):
     """Finding 专用查询。"""

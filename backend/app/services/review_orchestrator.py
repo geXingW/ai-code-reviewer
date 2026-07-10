@@ -38,6 +38,7 @@ from app.integrations.gitlab.client import GitLabClient
 from app.models.finding import Finding as FindingRow
 from app.models.review import Review as ReviewRow
 from app.repositories.project import ProjectRepository
+from app.repositories.review import ReviewRepository
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
@@ -150,6 +151,31 @@ class ReviewOrchestrator:
             event.target_branch,
         )
         policy_applied = f"{block_policy.branch_pattern} -> {block_policy.block_severity}"
+
+        # commit_sha 去重：同 (project, commit_sha) 已有完成态评审时直接复用。
+        # 只对**已在 DB 注册的 Project** 生效；未注册项目走原路径不查库。
+        duplicate = await self._find_completed_review(event)
+        if duplicate is not None:
+            logger.info(
+                "reuse existing review for commit_sha",
+                extra={
+                    "gitlab_project_id": event.project_id,
+                    "mr_iid": event.mr_iid,
+                    "commit_sha": event.source_commit_sha,
+                    "review_id": str(duplicate.id),
+                    "status": duplicate.status,
+                },
+            )
+            return OrchestratorResult(
+                review_id=duplicate.id,
+                project_uuid=event.project_uuid,
+                status=duplicate.status,
+                finding_count=duplicate.finding_count,
+                has_blocker=duplicate.has_blocker,
+                blocker_count=duplicate.finding_count if duplicate.has_blocker else 0,
+                policy_applied=policy_applied,
+                note_id=None,
+            )
         changes = await self._gitlab_client.get_merge_request_changes(
             project_id=event.project_id,
             mr_iid=event.mr_iid,
@@ -362,6 +388,39 @@ class ReviewOrchestrator:
             policy_applied=policy_applied,
             note_id=_extract_int(note, "id"),
         )
+
+    async def _find_completed_review(
+        self,
+        event: GitLabMergeRequestEvent,
+    ) -> ReviewRow | None:
+        """查同 (project, commit_sha) 的历史完成评审，供去重使用。
+
+        当 session_factory 为 None（MVP 兼容路径）或 Project 未在管理后台注册时，
+        直接返回 None 让主流程按常规路径执行。数据库异常吞成 None 记 warning，
+        绝不能因为查重失败阻断主流程。
+        """
+
+        if self._session_factory is None:
+            return None
+        try:
+            async with self._session_factory() as session:
+                project_repo = ProjectRepository(session)
+                project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
+                if project is None:
+                    return None
+                review_repo = ReviewRepository(session)
+                return await review_repo.find_completed_by_project_and_commit(
+                    project.id, event.source_commit_sha,
+                )
+        except SQLAlchemyError:
+            logger.exception(
+                "commit_sha dedup lookup failed",
+                extra={
+                    "gitlab_project_id": event.project_id,
+                    "commit_sha": event.source_commit_sha,
+                },
+            )
+            return None
 
     async def _persist_review(
         self,
