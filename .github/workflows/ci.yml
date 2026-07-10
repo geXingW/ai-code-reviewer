@@ -37,22 +37,42 @@ jobs:
             --verbose
 
   backend-test:
-    name: Backend Tests
+    name: Backend Tests (${{ matrix.db.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db:
+          - name: postgres
+            image: postgres:15-alpine
+            env:
+              POSTGRES_USER: ai_reviewer
+              POSTGRES_PASSWORD: ai_reviewer
+              POSTGRES_DB: ai_code_reviewer
+            port: 5432
+            health_cmd: pg_isready -U ai_reviewer -d ai_code_reviewer
+            dsn: postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer
+          - name: mysql
+            image: mysql:8.0
+            env:
+              MYSQL_ROOT_PASSWORD: ai_reviewer_root
+              MYSQL_DATABASE: ai_code_reviewer
+              MYSQL_USER: ai_reviewer
+              MYSQL_PASSWORD: ai_reviewer
+            port: 3306
+            health_cmd: mysqladmin ping -h localhost -u root -pai_reviewer_root
+            dsn: mysql+aiomysql://ai_reviewer:${{ matrix.db.env.MYSQL_PASSWORD }}@localhost:3306/ai_code_reviewer
     services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: ai_reviewer
-          POSTGRES_PASSWORD: ai_reviewer
-          POSTGRES_DB: ai_code_reviewer
+      db:
+        image: ${{ matrix.db.image }}
+        env: ${{ matrix.db.env }}
         ports:
-          - 5432:5432
+          - ${{ matrix.db.port }}:${{ matrix.db.port }}
         options: >-
-          --health-cmd "pg_isready -U ai_reviewer -d ai_code_reviewer"
+          --health-cmd "${{ matrix.db.health_cmd }}"
           --health-interval 5s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 20
       redis:
         image: redis:7-alpine
         ports:
@@ -63,7 +83,7 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer
+      DATABASE_URL: ${{ matrix.db.dsn }}
       REDIS_URL: redis://localhost:6379/0
       SECRET_KEY: CHANGE_ME_FERNET_KEY_GENERATE_WITH_Fernet.generate_key
     steps:
