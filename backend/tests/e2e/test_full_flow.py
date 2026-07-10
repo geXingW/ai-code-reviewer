@@ -27,6 +27,7 @@ in the current MVP.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any
@@ -47,7 +48,10 @@ from app.main import create_app
 from app.models.project_block_policy import ProjectBlockPolicy
 from app.services import review_orchestrator as orchestrator_module
 
-TEST_DATABASE_URL = "postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer"
+TEST_DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer",
+)
 GITLAB_BASE_URL = "http://localhost"
 INTERNAL_TOKEN = "test-internal-token"
 STUB_ENGINE_NAME = "e2e-stub"

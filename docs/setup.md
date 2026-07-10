@@ -8,7 +8,7 @@ MVP Compose 栈包含 4 个服务：
 
 - `frontend`：React/Vite 管理台，Nginx 托管静态资源，并反向代理 `/api`、`/health` 到后端。
 - `backend`：FastAPI 服务，接收 GitLab Webhook、Jenkins 同步触发和管理台请求。
-- `postgres`：保存项目、规则、供应商、评审记录等结构化数据。
+- `postgres`：保存项目、规则、供应商、评审记录等结构化数据（**默认**；亦可切换到 MySQL 8.0，见 [`docs/storage.md`](./storage.md)）。
 - `redis`：保留给运行时缓存/异步任务；当前 `/health` 会检查连通性。
 
 ## 二、前置条件

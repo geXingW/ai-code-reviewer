@@ -11,7 +11,7 @@ jobs:
     name: Lint Markdown
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - name: Check Markdown files exist
         run: |
           ls -la README.md LICENSE CONTRIBUTING.md CHANGELOG.md SECURITY.md CODE_OF_CONDUCT.md
@@ -22,10 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
       - run: npm install --no-save @commitlint/cli @commitlint/config-conventional
@@ -36,8 +36,8 @@ jobs:
             --to HEAD \
             --verbose
 
-  backend-test:
-    name: Backend Tests
+  backend-test-postgres:
+    name: Backend Tests (PostgreSQL)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -65,10 +65,58 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer
       REDIS_URL: redis://localhost:6379/0
-      SECRET_KEY: CHANGE_ME_FERNET_KEY_GENERATE_WITH_Fernet.generate_key
+      SECRET_KEY: P2QaeSd-WxWj1b44aFQc47nYTK0weRp3ZXHBrHapKms=
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: pip install -e "backend[dev]"
+      - name: Lint backend
+        run: ruff check .
+        working-directory: backend
+      - name: Type check backend
+        run: mypy app
+        working-directory: backend
+      - name: Test backend
+        run: pytest
+        working-directory: backend
+
+  backend-test-mysql:
+    name: Backend Tests (MySQL)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ai_reviewer_root
+          MYSQL_DATABASE: ai_code_reviewer
+          MYSQL_USER: ai_reviewer
+          MYSQL_PASSWORD: ai_reviewer
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -u root -pai_reviewer_root"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: mysql+aiomysql://ai_reviewer:ai_reviewer@localhost:3306/ai_code_reviewer
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: P2QaeSd-WxWj1b44aFQc47nYTK0weRp3ZXHBrHapKms=
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install backend dependencies
