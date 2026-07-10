@@ -6,9 +6,18 @@
 
 ### Added
 
-- 项目治理基础设施初始化（LICENSE / README / CI / Issue & PR 模板 / 架构文档 / 贡献指南 / 编辑器配置）
-- 双引擎架构设计文档（ReviewEngine 抽象 + LLMEngine + OcrEngine 路线）
-- 13 个 MVP 阶段 Issue 任务拆解（v0.1.0 Milestone）
+- **前端管理后台（8 个页面 Linear 化）**：Providers / Projects / Rules / ReviewRecords / Findings / FalsePositives / Engines / NegativeExamples 全部按 Linear 风格重构，抽出 DataRow / StatusRow 通用组件（Issue #35 → PR #52）。
+- **误报评审 UI 补齐**：Rules 页新增编辑/删除按钮，Projects 页新增「AI 供应商」下拉；后端补 `updateRule` / `deleteRule` API 与 `test_admin_errors.py` 三分支单测（Issue #54 → PR #55）。
+- **数据存储层跨方言支持**：10 个 model 从 PG-only 改为 `sa.Uuid` / `sa.JSON` 通用类型；UUID 主键改 Python 层 `uuid.uuid4` 生成；`docker-compose` 新增 `mysql:8.0` profile；Alembic 迁移重写为跨方言写法（Issue #56 Part A → PR #57）。
+- **CI 双库矩阵**：GitHub Actions 后端测试同时跑 PostgreSQL 15 与 MySQL 8.0（`backend-test-postgres` + `backend-test-mysql`）；补充 `docs/storage.md` 说明双库切换（Issue #56 Part B → PR #58）。
+- **Repository 层解耦**：新增 `backend/app/repositories/`（`BaseRepository[Model]` 泛型基类 + 10 个具体仓储），将数据访问从 `admin.py` 三个内部 helper 抽出；路由端点签名与错误映射（IntegrityError→409 / SQLAlchemyError→500）零变更（Issue #56 Part C → PR #59）。
+- **Fernet 密钥启动 fail-fast**：`validate_secret_key` 在应用启动时校验 `SECRET_KEY` 合法性，避免运行时才暴露；`_commit_or_400` 明确区分 IntegrityError 与其它 SQLAlchemyError 错误映射。
+- **Dockerfile 使用清华镜像源**：backend/frontend 分别切换 pypi.tuna.tsinghua.edu.cn / npmmirror.com，pip install 从 410s 降到 9.3s（PR #53）。
+
+### Changed
+
+- 后端启动依赖新增 `aiomysql` / `pymysql`（可选，仅当 `DATABASE_URL` 指向 MySQL 时生效）。
+- 数据访问统一走 Repository 层，未来注入 mock repository / 切换存储后端只需实现同一接口。
 
 ## [0.1.0] - TBD
 
@@ -36,7 +45,6 @@ MVP 首版本（Phase 1）。面向 GitLab + Jenkins 内网试运行，覆盖 MR
 
 ### Known Issues
 
-- **前端实际为 React 而非 Vue 3**：`README.md` 技术栈段落误标为 Vue 3 + Element Plus + Pinia；实际前端为 React 19 + Vite + TypeScript（见 `frontend/package.json`、[docs/setup.md](docs/setup.md)）。文档描述待统一修正。
 - **无 RAG 知识库**：评审为 diff-only + 规则 prompt，未接入 pgvector / 检索增强；RAG 计划在 v0.3.0+ 落地。
 - **单账号管理**：MVP 仅支持单一管理员账号（`ADMIN_USERNAME` / `ADMIN_PASSWORD`），无多用户 / 角色 / SSO / 审计日志。
 - **编排器运行时注入未完成**：`ReviewOrchestrator` 当前未把 DB 中的 provider / project_rules / block_policies 注入 `ReviewContext`，`llm-direct` 引擎在未注入 provider 时安全降级为「不产出 finding」；评审 finding 暂不落库（`/api/findings` 仅返回管理 API 创建的记录），通过 GitLab discussion 与 `POST /api/reviews` 响应摘要体现。
