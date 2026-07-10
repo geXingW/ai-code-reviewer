@@ -7,6 +7,7 @@
 ### Added
 
 - **前端管理后台（8 个页面 Linear 化）**：Providers / Projects / Rules / ReviewRecords / Findings / FalsePositives / Engines / NegativeExamples 全部按 Linear 风格重构，抽出 DataRow / StatusRow 通用组件（Issue #35 → PR #52）。
+- **commit_sha 去重**：orchestrator 在拿 changes 前先按 `(project_id, commit_sha)` 查一次 DB，命中已完成评审（done / engine_error）直接复用旧结果，不再重跑引擎、不再重复写 GitLab（Issue #65）。
 - **误报评审 UI 补齐**：Rules 页新增编辑/删除按钮，Projects 页新增「AI 供应商」下拉；后端补 `updateRule` / `deleteRule` API 与 `test_admin_errors.py` 三分支单测（Issue #54 → PR #55）。
 - **数据存储层跨方言支持**：10 个 model 从 PG-only 改为 `sa.Uuid` / `sa.JSON` 通用类型；UUID 主键改 Python 层 `uuid.uuid4` 生成；`docker-compose` 新增 `mysql:8.0` profile；Alembic 迁移重写为跨方言写法（Issue #56 Part A → PR #57）。
 - **CI 双库矩阵**：GitHub Actions 后端测试同时跑 PostgreSQL 15 与 MySQL 8.0（`backend-test-postgres` + `backend-test-mysql`）；补充 `docs/storage.md` 说明双库切换（Issue #56 Part B → PR #58）。

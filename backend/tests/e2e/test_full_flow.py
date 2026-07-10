@@ -447,16 +447,60 @@ async def test_duplicate_commit_skipped(
     e2e_client: tuple[AsyncClient, StubReviewEngine],
     gitlab_mock: SimpleNamespace,
 ) -> None:
-    """Duplicate commit_sha trigger: MVP re-runs (no dedup yet); both succeed.
+    """Duplicate commit_sha trigger: dedup 命中，第二次直接复用旧结果。
 
-    The orchestrator does not yet deduplicate by ``commit_sha``. This test pins
-    the current graceful behavior — a second trigger with the same commit re-runs
-    the review and returns a fresh result — and should be updated when dedup or
-    result caching lands.
+    orchestrator 拿到 ``(project_id, commit_sha)`` 前置查一次 DB，命中已完成评审
+    则跳过引擎与 GitLab 调用，直接以旧 review 的状态返回。本例覆盖典型场景：
+    ``_seed_project`` 的 ``gitlab_project_id`` 与 payload 里的 ``PROJECT_ID`` 一致，
+    保证 Project 在库里能查到；第二次 POST 断言 GitLab 只被调一次。
     """
 
     client, stub = e2e_client
-    await _seed_project(client)
+    # 为了让 dedup 命中，先把 seed 出来的 Project 的 gitlab_project_id 改为 payload 用的数字 ID。
+    seed_project = await client.post(
+        "/api/providers",
+        json={
+            "name": "ark-dedup",
+            "protocol": "openai_compatible",
+            "base_url": "https://llm.example.com/v1",
+            "api_key": "secret-key",
+            "model": "glm",
+        },
+    )
+    assert seed_project.status_code == 201, seed_project.text
+    rule = await client.post(
+        "/api/rules",
+        json={
+            "rule_id": "general.hardcoded-secret",
+            "title": "Hard-coded secret",
+            "prompt_snippet": "Flag hard-coded secrets and credentials.",
+            "severity_default": "BLOCKER",
+        },
+    )
+    assert rule.status_code == 201, rule.text
+    project = await client.post(
+        "/api/projects",
+        json={
+            "name": "demo-dedup",
+            # 关键：与 _review_payload 的 project_id=PROJECT_ID(123) 完全一致，dedup 才能命中。
+            "gitlab_project_id": str(PROJECT_ID),
+            "gitlab_access_token": "gl-token",
+            "webhook_secret": "hook-secret",
+            "provider_id": seed_project.json()["id"],
+            "rules": [
+                {"rule_id": rule.json()["id"], "enabled": True, "severity_override": "BLOCKER"},
+            ],
+            "block_policies": [
+                {
+                    "branch_pattern": "master",
+                    "block_severity": "BLOCKER",
+                    "block_on_engine_error": False,
+                    "priority": 1,
+                },
+            ],
+        },
+    )
+    assert project.status_code == 201, project.text
     stub.findings = [_blocker_finding()]
 
     first = await client.post(
@@ -474,7 +518,8 @@ async def test_duplicate_commit_skipped(
     assert second.status_code == 200, second.text
     assert first.json()["has_blocker"] is True
     assert second.json()["has_blocker"] is True
-
-    # No skip/dedup: GitLab diff + commit-status endpoints hit once per trigger.
-    assert len(gitlab_mock.changes.calls) == 2
-    assert len(gitlab_mock.statuses.calls) == 2
+    # dedup 命中：第二次沿用第一次的 review_id。
+    assert first.json()["review_id"] == second.json()["review_id"]
+    # GitLab diff 端点只被调用一次（第二次走 dedup 提前返回）。
+    assert len(gitlab_mock.changes.calls) == 1
+    assert len(gitlab_mock.statuses.calls) == 1
