@@ -2,10 +2,9 @@
 
 from datetime import datetime
 from typing import TYPE_CHECKING
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, text
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base, TimestampMixin
@@ -19,13 +18,14 @@ class Finding(Base, TimestampMixin):
 
     __tablename__ = "review_findings"
 
+    # 主键 UUID 由 Python 层生成，不依赖 PG 的 gen_random_uuid()，保证 MySQL 也可用。
     id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         primary_key=True,
-        server_default=text("gen_random_uuid()"),
+        default=uuid4,
     )
     review_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         ForeignKey("reviews.id", ondelete="CASCADE"),
         nullable=False,
     )
@@ -40,7 +40,6 @@ class Finding(Base, TimestampMixin):
     confidence: Mapped[float] = mapped_column(
         Float,
         default=0.0,
-        server_default=text("0"),
         nullable=False,
     )
     gitlab_discussion_id: Mapped[str | None] = mapped_column(String(255), nullable=True)

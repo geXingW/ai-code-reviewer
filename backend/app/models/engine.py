@@ -1,11 +1,9 @@
 """SQLAlchemy model for review engines."""
 
 from typing import TYPE_CHECKING, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, String, text
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import JSON, Boolean, String, Uuid, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base, TimestampMixin
@@ -19,23 +17,23 @@ class Engine(Base, TimestampMixin):
 
     __tablename__ = "engines"
 
+    # 主键 UUID 由 Python 层生成，不依赖 PG 的 gen_random_uuid()，保证 MySQL 也可用。
     id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         primary_key=True,
-        server_default=text("gen_random_uuid()"),
+        default=uuid4,
     )
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     engine_type: Mapped[str] = mapped_column(String(50), nullable=False)
     config: Mapped[dict[str, Any] | None] = mapped_column(
-        JSONB,
+        JSON,
         default=dict,
-        server_default=text("'{}'::jsonb"),
         nullable=True,
     )
     enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
-        server_default=text("true"),
+        server_default=true(),
         nullable=False,
     )
 

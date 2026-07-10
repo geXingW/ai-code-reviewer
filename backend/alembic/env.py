@@ -45,7 +45,13 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection: Connection) -> None:
     """Run migrations against an established synchronous connection."""
 
-    context.configure(connection=connection, target_metadata=target_metadata)
+    # 开启类型与 server_default 对比，保证后续 autogenerate 能检测到模型类型变更。
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        compare_server_default=True,
+    )
 
     with context.begin_transaction():
         context.run_migrations()

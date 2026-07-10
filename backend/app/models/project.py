@@ -2,11 +2,9 @@
 
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, text
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Uuid, text, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base, TimestampMixin
@@ -26,44 +24,43 @@ class Project(Base, TimestampMixin):
 
     __tablename__ = "projects"
 
+    # 主键 UUID 由 Python 层生成，不依赖 PG 的 gen_random_uuid()，保证 MySQL 也可用。
     id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         primary_key=True,
-        server_default=text("gen_random_uuid()"),
+        default=uuid4,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     gitlab_project_id: Mapped[str] = mapped_column(String(255), nullable=False)
     gitlab_access_token: Mapped[str] = mapped_column(EncryptedString(), nullable=False)
     webhook_secret: Mapped[str] = mapped_column(EncryptedString(), nullable=False)
     engine_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         ForeignKey("engines.id", ondelete="SET NULL"),
         nullable=True,
     )
     provider_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True),
+        Uuid,
         ForeignKey("providers.id", ondelete="SET NULL"),
         nullable=True,
     )
     enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
-        server_default=text("true"),
+        server_default=true(),
         nullable=False,
     )
     timeout_seconds: Mapped[int] = mapped_column(
         Integer,
         default=300,
-        server_default=text("300"),
         nullable=False,
     )
     max_files: Mapped[int] = mapped_column(
         Integer,
         default=50,
-        server_default=text("50"),
         nullable=False,
     )
-    ignore_paths: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    ignore_paths: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
     default_block_severity: Mapped[str] = mapped_column(
         String(30),
         default="BLOCKER",

@@ -19,6 +19,29 @@ services:
       timeout: 5s
       retries: 10
 
+  # MySQL 备选数据库：默认不启动，仅在 --profile mysql 时拉起，用于跨方言验证。
+  mysql:
+    profiles: ["mysql"]
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-ai_reviewer_root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ai_code_reviewer}
+      MYSQL_USER: ${MYSQL_USER:-ai_reviewer}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-ai_reviewer}
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-ai_reviewer_root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   redis:
     image: redis:7-alpine
     ports:
@@ -76,3 +99,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  mysql_data:
