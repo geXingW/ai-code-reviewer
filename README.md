@@ -68,8 +68,9 @@ CONFIRMED 写入 negative_examples
 
 ## 技术栈
 
-- **后端**：Python 3.11 + FastAPI + SQLAlchemy + PostgreSQL + Alembic + Redis
-- **前端**：Vue 3 + Vite + TypeScript + Element Plus + Pinia + Vue Router
+- **后端**：Python 3.11 + FastAPI + SQLAlchemy (async) + Alembic + Redis
+- **数据库**：PostgreSQL 15 或 MySQL 8.0（跨方言，二选一）
+- **前端**：React 19 + Vite + TypeScript + Vitest
 - **部署**：Docker Compose 一键启动
 
 ## 路线图
@@ -85,12 +86,14 @@ CONFIRMED 写入 negative_examples
 - [x] REST API（5 套 CRUD + 误报闭环 + JWT 认证）
 - [x] Jenkins Pipeline 模板
 - [x] 部署 + 配置文档
-- [ ] 前端管理后台（7 个页面）
+- [x] 前端管理后台（8 个页面，Linear 风格）
 
 ### v0.2.0（Phase 2）
 
 - [ ] OcrEngine 适配器（接入阿里 ocr CLI）
-- [ ] 误报评审管理（CONFIRMED → negative_examples）
+- [x] 误报评审管理（CONFIRMED → negative_examples）
+- [x] 数据存储层跨方言（PostgreSQL + MySQL 8.0）
+- [x] Repository 层解耦（数据访问抽象）
 - [ ] 团队级看板（误报率、规则触发率、模型耗时对比）
 
 ### v0.3.0+（Phase 3 远期）
