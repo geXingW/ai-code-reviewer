@@ -130,6 +130,7 @@ describe('MVP 管理台', () => {
             policy_applied: 'master -> BLOCKER',
             review_url: 'https://gitlab.example.com/group/demo/-/merge_requests/7#note_99',
             created_at: '2026-07-01T08:00:00Z',
+            engine_used: 'llm-direct',
           },
         ]);
       }
@@ -150,6 +151,8 @@ describe('MVP 管理台', () => {
 
     expect(await screen.findByText('修复支付回调')).toBeInTheDocument();
     expect(screen.getByText('阻断')).toBeInTheDocument();
+    // Issue #76：最近审查面板应展示引擎徽章。
+    expect(await screen.findAllByText('llm-direct')).not.toHaveLength(0);
     const recentCall = calls.find((call) => call.url === '/api/reviews/recent');
     expect(recentCall?.init?.headers).toEqual({ 'X-Internal-Token': 'test-internal-token' });
   });

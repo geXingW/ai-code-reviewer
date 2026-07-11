@@ -27,6 +27,7 @@ export type RecentReview = {
   policy_applied: string | null;
   review_url: string | null;
   created_at?: string;
+  engine_used?: string | null;
 };
 
 export type CreateReviewPayload = {
@@ -166,6 +167,8 @@ export type ReviewRecord = {
   project_name?: string | null;
   rules_used?: string[];
   created_at?: string;
+  // Issue #76：展示评审所用引擎，便于对比多引擎运行结果。
+  engine_used?: string | null;
 };
 
 export type FindingRecord = {

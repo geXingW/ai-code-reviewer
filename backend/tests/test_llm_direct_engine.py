@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -352,3 +353,42 @@ async def test_health_check_reports_configured_provider() -> None:
     assert status.status == "ok"
     assert status.details["implementation"] == "llm-direct"
     assert status.details["supports_feedback"] is True
+
+
+@pytest.mark.asyncio
+async def test_default_client_logs_request_and_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`OpenAICompatibleLLMClient.complete` 应输出 llm request/response 两条 INFO 日志。"""
+
+    http_client = _FakeProviderHTTPClient(
+        responses=[
+            _FakeProviderHTTPResponse(
+                payload={
+                    "choices": [{"message": {"content": "{\"findings\": []}"}}],
+                    "usage": {"total_tokens": 12},
+                }
+            )
+        ]
+    )
+    client = OpenAICompatibleLLMClient(http_client=http_client)
+    provider_config = _ctx().provider
+    assert provider_config is not None
+
+    with caplog.at_level(logging.INFO, logger="app.engines.llm_engine.engine"):
+        raw = await client.complete(
+            provider=provider_config,
+            prompt="review this diff please",
+            timeout_seconds=5.0,
+        )
+
+    assert raw == "{\"findings\": []}"
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "llm request" in messages
+    assert "llm response" in messages
+
+    request_record = next(r for r in caplog.records if r.getMessage() == "llm request")
+    response_record = next(r for r in caplog.records if r.getMessage() == "llm response")
+    assert request_record.prompt_len > 0  # type: ignore[attr-defined]
+    assert response_record.response_len > 0  # type: ignore[attr-defined]
