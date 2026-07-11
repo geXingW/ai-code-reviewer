@@ -64,6 +64,9 @@ class GitLabMergeRequestEvent:
         action: GitLab MR action, e.g. ``open`` or ``update``.
         title: Merge request title.
         web_url: Browser URL of the merge request.
+        description: MR 描述正文；来自 ``object_attributes.description``，可能为空。
+        last_commit_message: MR head 分支最近一次 commit 的 message；来自
+            ``object_attributes.last_commit.message``，可能为空。
     """
 
     project_id: int
@@ -76,6 +79,8 @@ class GitLabMergeRequestEvent:
     action: str
     title: str
     web_url: str | None = None
+    description: str = ""
+    last_commit_message: str = ""
 
     @property
     def project_uuid(self) -> UUID:
@@ -192,6 +197,9 @@ class ReviewOrchestrator:
             diff_hunks=self._build_diff_hunks(changes),
             provider=await self._resolve_provider(event),
             rules=await self._resolve_rules(event),
+            mr_title=event.title,
+            mr_description=event.description,
+            last_commit_message=event.last_commit_message,
             extra={
                 "gitlab_project_id": event.project_id,
                 "gitlab_project_path": event.project_path,

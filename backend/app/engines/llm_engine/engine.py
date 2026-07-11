@@ -16,6 +16,8 @@ import json
 import logging
 import re
 from collections.abc import Mapping
+from functools import cache
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 from pydantic import ValidationError
@@ -38,6 +40,26 @@ logger = logging.getLogger(__name__)
 _ALLOWED_SEVERITIES = {"INFO", "WARNING", "BLOCKER"}
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.*?)\s*```", re.DOTALL | re.IGNORECASE)
+_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+
+
+def _render_template(template: str, values: dict[str, str]) -> str:
+    """简单的 {{key}} 占位符替换，不做转义、不支持条件分支。
+
+    模板文件不来自用户输入，所以不做转义就足够；如果值里有 {{ 之类的
+    字符也不做特殊处理（会原样出现在 prompt 里）。"""
+
+    result = template
+    for key, value in values.items():
+        result = result.replace("{{" + key + "}}", value)
+    return result
+
+
+@cache
+def _load_prompt(name: str) -> str:
+    """从 prompts/ 目录读取指定 prompt 模板。lru_cache 避免每次 IO。"""
+
+    return (_PROMPTS_DIR / name).read_text(encoding="utf-8")
 
 
 class LLMCompletionClient(Protocol):
@@ -91,10 +113,7 @@ class OpenAICompatibleLLMClient:
                 [
                     ChatMessage(
                         role="system",
-                        content=(
-                            "You are a senior code reviewer. Return only valid JSON "
-                            "that follows the user's output contract."
-                        ),
+                        content=_load_prompt("system.md"),
                     ),
                     ChatMessage(role="user", content=prompt),
                 ]
@@ -212,30 +231,26 @@ class LLMDirectEngine(ReviewEngine):
         )
 
     def _build_prompt(self, ctx: ReviewContext) -> str:
-        """Build the five-section prompt required by Issue #6."""
+        """构建 user prompt，system prompt 由 complete() 单独处理。
 
-        sections = [
-            "## 1. Review scope\n" + self._format_scope(ctx),
-            "## 2. Active rules\n" + self._format_rules(ctx.rules),
-            "## 3. False-positive history\n" + self._format_history(ctx.history),
-            "## 4. Merge request diff\n" + self._format_diff(ctx.diff_hunks),
-            "## 5. Output contract\n" + self._format_output_contract(),
-        ]
-        return "\n\n".join(sections)
+        历史上一个函数拼了两段（system + user），改造后：
+        - system prompt 是纯静态文件（``system.md``）
+        - user prompt 从 ``user.md`` 渲染，注入 diff / rules / history / MR 上下文
+        """
 
-    @staticmethod
-    def _format_scope(ctx: ReviewContext) -> str:
-        return "\n".join(
-            [
-                f"MR IID: {ctx.mr_iid}",
-                f"Source branch: {ctx.source_branch}",
-                f"Target branch: {ctx.target_branch}",
-                f"Source commit: {ctx.source_commit_sha}",
-                f"Target commit: {ctx.target_commit_sha}",
-                "Review only lines added or modified by this diff.",
-                "Do not report style-only issues unless an active rule requires it.",
-            ]
-        )
+        values = {
+            "mr_title": ctx.mr_title,
+            "mr_description": ctx.mr_description or "（无描述）",
+            "last_commit_message": ctx.last_commit_message or "（无最新 commit message）",
+            "source_branch": ctx.source_branch,
+            "target_branch": ctx.target_branch,
+            "source_commit_sha": ctx.source_commit_sha,
+            "target_commit_sha": ctx.target_commit_sha,
+            "rules_block": self._format_rules(ctx.rules),
+            "history_block": self._format_history(ctx.history),
+            "diff_block": self._format_diff(ctx.diff_hunks),
+        }
+        return _render_template(_load_prompt("user.md"), values)
 
     @staticmethod
     def _format_rules(rules: list[RuleSpec]) -> str:
@@ -296,21 +311,6 @@ class LLMDirectEngine(ReviewEngine):
                 )
             )
         return "\n\n".join(blocks)
-
-    @staticmethod
-    def _format_output_contract() -> str:
-        return (
-            "Return only JSON with this exact top-level shape:\n"
-            "{\"findings\": [{\"file_path\": string, \"line_number\": number|null, "
-            "\"rule_id\": string, \"severity\": \"INFO\"|\"WARNING\"|\"BLOCKER\", "
-            "\"title\": string, \"description\": string|null, \"suggestion\": string|null, "
-            "\"existing_code\": string|null, \"confidence\": number}]}\n"
-            "Rules:\n"
-            "- file_path must match a file in the diff.\n"
-            "- line_number must refer to the new side of the diff.\n"
-            "- If unsure, omit the finding.\n"
-            "- Do not wrap the JSON in prose."
-        )
 
     def _parse_findings(self, raw_response: str, ctx: ReviewContext) -> list[Finding]:
         payload = _loads_model_json(raw_response)
