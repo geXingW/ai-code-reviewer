@@ -32,7 +32,7 @@ from app.core.summary_builder import (
     build_finding_discussion_body,
     build_review_summary_note,
 )
-from app.engines import DiffHunk, Finding, ProviderConfig, ReviewContext
+from app.engines import DiffHunk, Finding, ProviderConfig, ReviewContext, RuleSpec
 from app.engines.registry import EngineRegistry, get_engine_registry
 from app.integrations.gitlab.client import GitLabClient
 from app.models.finding import Finding as FindingRow
@@ -191,6 +191,7 @@ class ReviewOrchestrator:
             target_commit_sha=event.target_commit_sha,
             diff_hunks=self._build_diff_hunks(changes),
             provider=await self._resolve_provider(event),
+            rules=await self._resolve_rules(event),
             extra={
                 "gitlab_project_id": event.project_id,
                 "gitlab_project_path": event.project_path,
@@ -452,6 +453,71 @@ class ReviewOrchestrator:
                 extra={"gitlab_project_id": event.project_id},
             )
             return None
+
+    async def _resolve_rules(
+        self,
+        event: GitLabMergeRequestEvent,
+    ) -> list[RuleSpec]:
+        """从 DB 查项目已启用的规则并投影为 ``RuleSpec`` 列表。
+
+        走 ``Project.project_rules`` selectin 关系，只保留 ProjectRule.enabled=True
+        且底层 Rule.enabled=True 的项；severity 优先取 ProjectRule.severity_override，
+        否则用 Rule.severity_default，构造成 ``RuleSpec`` 交给引擎放入 prompt。
+
+        - ``session_factory`` 为 None、Project 未注册、DB 异常：一律返回空列表，
+          让引擎走无规则路径（llm-direct 目前会打印 "No project-specific rules
+          were supplied. Focus on correctness and security."）。绝不能阻断主流程。
+
+        Args:
+            event: 归一化后的 MR 事件。
+
+        Returns:
+            投影后的 ``RuleSpec`` 列表；查询失败或无规则时返回空列表。
+        """
+
+        if self._session_factory is None:
+            return []
+        try:
+            async with self._session_factory() as session:
+                project_repo = ProjectRepository(session)
+                project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
+                if project is None:
+                    return []
+                specs: list[RuleSpec] = []
+                for link in project.project_rules:
+                    if not link.enabled:
+                        continue
+                    rule = link.rule
+                    if rule is None or not rule.enabled:
+                        continue
+                    severity = link.severity_override or rule.severity_default
+                    # 规范化到 Literal["INFO","WARNING","BLOCKER"]；未知值降级为 WARNING
+                    severity_upper = severity.upper() if isinstance(severity, str) else "WARNING"
+                    if severity_upper not in ("INFO", "WARNING", "BLOCKER"):
+                        severity_upper = "WARNING"
+                    specs.append(
+                        RuleSpec(
+                            id=rule.id,
+                            rule_id=rule.rule_id,
+                            title=rule.title,
+                            description=rule.prompt_snippet,
+                            severity=severity_upper,  # type: ignore[arg-type]
+                            enabled=True,
+                        )
+                    )
+                return specs
+        except SQLAlchemyError:
+            logger.exception(
+                "rules resolution failed",
+                extra={"gitlab_project_id": event.project_id},
+            )
+            return []
+        except Exception:
+            logger.exception(
+                "rules resolution failed with unexpected error",
+                extra={"gitlab_project_id": event.project_id},
+            )
+            return []
 
     async def _find_completed_review(
         self,
