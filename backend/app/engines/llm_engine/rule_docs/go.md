@@ -1,0 +1,14 @@
+- **[error-handling]** Flag any function call that returns an `error` whose result is discarded with `_ = fn()` or ignored entirely. Require an explicit check and either return-wrap (`fmt.Errorf("...: %w", err)`) or logged handling.
+- **[error-handling]** Flag error returns wrapped with `fmt.Errorf("...: %v", err)` (loses `errors.Is` / `errors.As` chaining). Require `%w`.
+- **[concurrency]** Flag every `go` statement whose goroutine has no cancellation path (no `ctx.Done()` receive, no bounded channel exit) — likely goroutine leak. Require `context.Context` plumbed through with a shutdown branch.
+- **[concurrency]** Flag `defer` inside a `for` loop when the deferred call holds a resource (file, mutex, connection). Deferred calls stack until the function returns. Require moving the loop body to a helper function or `defer`-free explicit close.
+- **[concurrency]** Flag reads/writes to a shared `map` or slice without a `sync.Mutex` / `sync.RWMutex` / `sync/atomic`. Go maps are not safe for concurrent use — race, then crash.
+- **[correctness]** Flag `context.Background()` used in a handler / request-scoped path where a parent `ctx` is available. Require propagating the parent context.
+- **[correctness]** Flag typed-nil interface bugs: returning a `*T` (nil) as an `error` interface — the interface is non-nil. Require returning `nil` (untyped) or storing to a concrete variable first with an explicit `if err != nil` check.
+- **[correctness]** Flag loop-variable capture in closures: `for _, x := range xs { go func() { use(x) }() }`. Require passing `x` as parameter or shadowing (`x := x`).
+- **[resource-management]** Flag `os.Open`, `http.Response.Body`, `sql.Rows`, `net.Conn` acquired without an immediate `defer Close()`. Require paired `defer` on the happy path.
+- **[correctness]** Flag `bytes` / `strings` comparisons using `==` on slices — Go forbids slice `==`, but subtle equivalents (`reflect.DeepEqual` in hot path, or comparing pointer identity) are bug-prone. Require `bytes.Equal` / `strings.EqualFold` as appropriate.
+- **[performance]** Flag string concatenation with `+=` inside loops on large inputs. Require `strings.Builder` or a pre-sized `[]byte`.
+- **[error-handling]** Flag `panic()` used as flow-control outside `init` / truly unrecoverable states. Require returning an error.
+- **[concurrency]** Flag unbuffered channel writes without a matched reader in scope — a leaked goroutine waiting on send. Require documented buffering or a `select { case ... <-ctx.Done() }` guard.
+- **[maintainability]** Flag `interface{}` (or `any`) parameters that could be a concrete type or a small union interface. Require narrowest interface.

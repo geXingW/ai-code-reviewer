@@ -1,0 +1,15 @@
+- **[correctness]** Flag any dereference of a reference that can be null without a preceding null check or `Optional` narrowing. Require `Objects.requireNonNull`, `Optional.ofNullable(...).map(...)`, or a defensive `if (x == null)`.
+- **[correctness]** Flag `Optional.get()` invoked without `isPresent()` immediately before it. Require `orElse`, `orElseThrow`, or `map`/`ifPresent`.
+- **[correctness]** Flag `Optional` used as a field type, method parameter, or serialized field — designed only for return values. Require plain nullable or an explicit sentinel.
+- **[correctness]** Flag string comparisons using `==` / `!=`. Require `.equals(...)` (or `Objects.equals` when either side may be null).
+- **[resource-management]** Flag `InputStream`, `Reader`, `Connection`, `Statement`, `ResultSet`, `Channel` acquired outside a try-with-resources block or missing a `finally`-close. Require try-with-resources.
+- **[error-handling]** Flag `catch (Exception e) { }` or `catch (Throwable e) { log.info(e) }` — swallowed exceptions. Require narrow catch, structured logging, and rethrow / recovery decision.
+- **[error-handling]** Flag `catch (Throwable ...)`. Reserved for framework-level infrastructure. Require narrowing to `Exception` or specific subclasses.
+- **[concurrency]** Flag `HashMap` / `ArrayList` shared across threads without external synchronization. Require `ConcurrentHashMap`, `CopyOnWriteArrayList`, or `Collections.synchronizedX` with a documented use pattern.
+- **[concurrency]** Flag `synchronized` on a mutable `this` reference or on interned strings / boxed integers. Require a dedicated `private final Object lock = new Object()`.
+- **[concurrency]** Flag `Thread.sleep` inside a lock / synchronized block, `wait` without a surrounding `while (condition)` loop, and `notify` where `notifyAll` is safer.
+- **[security]** Flag deserialization of untrusted bytes via `ObjectInputStream.readObject`, `XMLDecoder`, or unsafe Jackson polymorphic typing (`enableDefaultTyping`). Require allow-lists or safe formats (JSON/Protobuf with schema).
+- **[security]** Flag log statements that interpolate secrets, tokens, session IDs, or full request bodies. Require redaction / structured MDC with allow-lists.
+- **[security]** Flag SQL built via string concatenation, `Statement.executeQuery(...)`, or Hibernate HQL with untrusted input. Require `PreparedStatement` with parameters or named-parameter APIs.
+- **[correctness]** Flag boxed numeric equality with `==` (e.g. `Integer a == Integer b`). Require `.equals` or unboxed primitives.
+- **[maintainability]** Flag public API returning `null` where an empty `List` / `Optional` conveys intent better. Require empty collection or `Optional` per method contract.

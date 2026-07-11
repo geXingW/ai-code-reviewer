@@ -1,0 +1,13 @@
+- **[correctness]** Flag every `==` / `!=` comparison between values of potentially different types. Require strict equality `===` / `!==` unless the loose form is explicitly annotated as intentional (e.g. checking `x == null` for both `null` and `undefined`).
+- **[correctness]** Flag `async` functions that call another async function without `await`, or that return a promise where the caller expects a value. Require explicit `await` or a documented fire-and-forget with `.catch`.
+- **[error-handling]** Flag every top-level `Promise`, `.then` chain, or async call that is not `await`ed and has no `.catch` handler. Unhandled rejections crash Node and hide errors in browsers. Require explicit handling.
+- **[correctness]** Flag `for...in` loops over arrays. Enumerates inherited keys and returns strings, not indices. Require `for...of`, `forEach`, or index-based `for`.
+- **[correctness]** Flag any `var` declaration and any usage of `let` where `const` would suffice. In loops with async work, ensure captured variables are `let` / `const`, never `var`.
+- **[security]** Flag `eval`, `new Function(...)`, `setTimeout("...", ...)` with a string first argument, and `document.write`. Require safe alternatives.
+- **[security]** Flag `Object.assign({}, userInput)` or deep-merge helpers applied to attacker-controlled JSON without a prototype-pollution guard (`__proto__`, `constructor.prototype`). Require `Object.create(null)` targets or a vetted safe-merge lib.
+- **[security]** Flag string concatenation used to build SQL, shell commands, HTML, or URLs from user input. Require parameterised queries / templating with auto-escaping / `URL` API.
+- **[correctness]** Flag callbacks passed as `obj.method` (unbound) to `setTimeout`, `setInterval`, or event handlers when the callback uses `this`. Require `.bind(this)` or an arrow function.
+- **[maintainability]** Flag deeply-nested `.then` chains and mixed `await` + `.then` inside one function. Require consistent async/await.
+- **[error-handling]** Flag `catch` blocks that only `console.log` the error and swallow it. Require rethrow, structured logging, or explicit recovery + comment.
+- **[performance]** Flag reading `.length` inside a hot loop's condition on large arrays where the length is invariant. Cache it. Flag `Array.prototype.forEach` where an early-exit is needed (should be `for...of` + `break`).
+- **[correctness]** Flag `JSON.parse` on untrusted or possibly-empty input without a `try/catch`. Require guarded parse.

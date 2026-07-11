@@ -1,0 +1,14 @@
+- **[type-safety]** Flag every `as any`, `as unknown as T`, and `<any>` cast. Require a discriminated union, type guard, or `zod` / `io-ts` runtime validator to narrow.
+- **[type-safety]** Flag the non-null assertion operator `!` unless immediately preceded by an early-return or condition that provably eliminates `null` / `undefined`. Require optional chaining `?.` + explicit fallback, or a narrowing check.
+- **[type-safety]** Flag `Record<string, unknown>` / `Record<string, any>` values consumed without narrowing (`in` check, `typeof` guard, schema validate). Require explicit narrowing before property access.
+- **[type-safety]** Flag `@ts-ignore` and `@ts-expect-error` without an inline reason comment and follow-up ticket reference. Require justification.
+- **[type-safety]** Flag `--strict` sub-flags being disabled in `tsconfig.json`: `strictNullChecks`, `noImplicitAny`, `strictFunctionTypes`, `strictBindCallApply`. Any of them off is a red flag.
+- **[correctness]** Flag every `==` / `!=` comparison between values of potentially different types. Require `===` / `!==`.
+- **[correctness]** Flag `async` functions called without `await` where a value is expected, and `Promise` chains missing `.catch`.
+- **[correctness]** Flag `for...in` over arrays; require `for...of`.
+- **[security]** Flag `eval`, `new Function(...)`, and prototype pollution via unguarded deep-merge on untrusted JSON.
+- **[maintainability]** Flag exported public functions / API returns typed with `any` or unannotated inferred `any`. Require explicit return types on public exports.
+- **[correctness]** Flag `Array.prototype.filter(Boolean)` used to strip `undefined` when the compiler still infers `T | undefined` unless a type predicate `(x): x is T => Boolean(x)` is supplied.
+- **[error-handling]** Flag `catch (e)` blocks that access `e.message` without `e instanceof Error` — `unknown` is the default caught type since TS 4.4. Require narrowing.
+- **[correctness]** Flag enum comparisons across a numeric enum with `<` / `>` unless the enum is deliberately ordered — usually a bug. Require explicit `===` against named values.
+- **[maintainability]** Flag `interface X extends any {}` or intersections that widen to `any`. Require a concrete union / intersection.
