@@ -491,6 +491,14 @@ export async function updateProject(
   return parseJsonResponse<ProjectConfig>(response, true);
 }
 
+// Issue #73：项目删除。参照 deleteRule 的写法，成功返回 204/200 即可。
+export async function deleteProject(id: string): Promise<void> {
+  const response = await adminFetch(`/api/projects/${id}`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`删除项目失败：HTTP ${response.status}`);
+  }
+}
+
 export async function fetchReviewRecords(): Promise<Page<ReviewRecord>> {
   const response = await adminFetch('/api/reviews/records');
   return parseJsonResponse<Page<ReviewRecord>>(response, true);

@@ -29,6 +29,7 @@ import {
   createProvider,
   createReview,
   createRule,
+  deleteProject,
   deleteRule,
   updateProvider,
   updateRule,
@@ -569,6 +570,21 @@ function App() {
     }
   }
 
+  // Issue #73：删除项目后本地过滤列表刷新，参考 handleDeleteRule 的模式。
+  async function handleDeleteProject(id: string) {
+    setError(null);
+    setMessage(null);
+    try {
+      await deleteProject(id);
+      setProjectsPage((prev) =>
+        prev ? { ...prev, items: prev.items.filter((project) => project.id !== id), total: Math.max(prev.total - 1, 0) } : prev,
+      );
+      setMessage('GitLab 项目已删除。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
   async function handleMarkFalsePositive(finding: FindingRecord) {
     setError(null);
     setMessage(null);
@@ -925,8 +941,10 @@ function App() {
                   key={project.id}
                   project={project}
                   providerOptions={providerOptions}
+                  rules={rulesPage?.items ?? []}
                   onSavePolicies={handleSaveBlockPolicies}
                   onSaveProject={handleSaveProjectEdit}
+                  onDeleteProject={handleDeleteProject}
                 />
               ))
             )}
@@ -1498,8 +1516,10 @@ function RecentReviewsPanel({ reviews, onViewAll }: RecentReviewsPanelProps) {
 type ProjectCardProps = {
   project: ProjectConfig;
   providerOptions: SelectOption[];
+  rules: RuleConfig[];
   onSavePolicies: (projectId: string, policies: BlockPolicyPayload[]) => Promise<void>;
   onSaveProject: (projectId: string, payload: ProjectUpdatePayload) => Promise<void>;
+  onDeleteProject: (id: string) => Promise<void>;
 };
 
 type ProjectEditForm = {
@@ -1508,9 +1528,11 @@ type ProjectEditForm = {
   gitlab_access_token: string;
   webhook_secret: string;
   provider_id: string;
+  // Issue #73：编辑项目时也允许勾选启用规则。
+  rules: ProjectRuleFormPayload[];
 };
 
-function ProjectCard({ project, providerOptions, onSavePolicies, onSaveProject }: ProjectCardProps) {
+function ProjectCard({ project, providerOptions, rules, onSavePolicies, onSaveProject, onDeleteProject }: ProjectCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
@@ -1520,17 +1542,20 @@ function ProjectCard({ project, providerOptions, onSavePolicies, onSaveProject }
     gitlab_access_token: '',
     webhook_secret: '',
     provider_id: '',
+    rules: [],
   });
   const letter = project.name.charAt(0).toUpperCase();
 
   function startEdit() {
     // 两个敏感字段留空表示不修改，避免把脱敏的 **** 误回写。
+    // rules 预填当前项目已启用的规则，rule_id 存的是规则表的 UUID（后端 FK），与"新建项目"表单一致。
     setEditForm({
       name: project.name,
       gitlab_project_id: project.gitlab_project_id,
       gitlab_access_token: '',
       webhook_secret: '',
       provider_id: project.provider_id ?? '',
+      rules: project.rules.map((rule) => ({ rule_id: rule.rule_id, enabled: rule.enabled })),
     });
     setEditing(true);
   }
@@ -1543,6 +1568,7 @@ function ProjectCard({ project, providerOptions, onSavePolicies, onSaveProject }
       name: editForm.name,
       gitlab_project_id: editForm.gitlab_project_id,
       provider_id: editForm.provider_id || null,
+      rules: editForm.rules,
     };
     if (editForm.gitlab_access_token.trim()) {
       payload.gitlab_access_token = editForm.gitlab_access_token;
@@ -1557,6 +1583,14 @@ function ProjectCard({ project, providerOptions, onSavePolicies, onSaveProject }
     } finally {
       setEditSaving(false);
     }
+  }
+
+  async function handleDelete() {
+    // Issue #73：项目删除不可撤销，弹二次确认。
+    if (!window.confirm(`确定删除项目「${project.name}」？此操作不可撤销。`)) {
+      return;
+    }
+    await onDeleteProject(project.id);
   }
 
   return (
@@ -1579,6 +1613,7 @@ function ProjectCard({ project, providerOptions, onSavePolicies, onSaveProject }
             {project.enabled ? '启用' : '停用'}
           </UiBadge>
           <Button variant="ghost" size="sm" type="button" onClick={startEdit}>编辑</Button>
+          <Button variant="destructive" size="sm" type="button" onClick={() => void handleDelete()}>删除</Button>
           <Button variant="secondary" size="sm" type="button" onClick={() => setExpanded((prev) => !prev)}>
             {expanded ? '收起策略' : '展开策略'}
           </Button>
@@ -1591,12 +1626,35 @@ function ProjectCard({ project, providerOptions, onSavePolicies, onSaveProject }
           <TextInput label="GitLab Access Token" type="password" placeholder="留空则不修改" value={editForm.gitlab_access_token} onChange={(value) => setEditForm({ ...editForm, gitlab_access_token: value })} />
           <TextInput label="Webhook Secret" type="password" placeholder="留空则不修改" value={editForm.webhook_secret} onChange={(value) => setEditForm({ ...editForm, webhook_secret: value })} />
           <SelectInput label="AI 供应商" value={editForm.provider_id} options={providerOptions} onChange={(value) => setEditForm({ ...editForm, provider_id: value })} />
+          {/* Issue #73：启用规则多选列表，样式与"新建项目"表单对齐。 */}
+          <div>
+            <label className="text-[12px] font-medium text-zinc-600 mb-2 block">启用规则</label>
+            <div className="rounded-md border border-zinc-200 max-h-48 overflow-y-auto">
+              {rules.length === 0 ? (
+                <div className="p-3 text-[12px] text-zinc-500">暂无规则，请先到"审查规则"页面创建。</div>
+              ) : (
+                rules.map((rule) => (
+                  <label key={rule.id} className="flex items-center gap-2 px-3 py-2 border-b border-zinc-100 last:border-b-0 text-[13px] cursor-pointer hover:bg-white">
+                    <input
+                      type="checkbox"
+                      className="size-4 rounded border-zinc-300 accent-indigo-600"
+                      checked={editForm.rules.some((selected) => selected.rule_id === rule.id)}
+                      onChange={(event) => setEditForm((prev) => ({ ...prev, rules: toggleRuleSelection(prev.rules, rule.id, event.target.checked) }))}
+                    />
+                    <span className="text-zinc-900">{rule.rule_id}</span>
+                    <span className="text-zinc-500">·</span>
+                    <span className="text-zinc-600 truncate">{rule.title}</span>
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
           <div className="flex items-center justify-end gap-2 pt-1">
             <Button variant="secondary" size="sm" type="button" disabled={editSaving} onClick={() => setEditing(false)}>取消</Button>
             <Button size="sm" type="button" disabled={editSaving} onClick={() => void handleSaveEdit()}>{editSaving ? '保存中…' : '保存'}</Button>
           </div>
           <div className="text-[11px] text-zinc-500">
-            规则与阻断策略请在各自的编辑入口维护，此处不涉及。
+            阻断策略请点"展开策略"编辑。
           </div>
         </div>
       ) : null}
