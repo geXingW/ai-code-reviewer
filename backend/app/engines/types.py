@@ -135,6 +135,9 @@ class ReviewContext(BaseModel):
         history: Prior confirmed false positives for this project.
         repo_url: Optional clone URL — only needed by engines that have
             ``ReviewEngine.requires_repo_clone() == True``.
+        mr_title: MR 标题；作为 prompt 上下文注入，帮助模型理解意图。
+        mr_description: MR 描述正文；同上，可能为空字符串。
+        last_commit_message: MR head 分支最近一次 commit message；同上。
         extra: Open-ended bag for engine-specific extensions.
     """
 
@@ -152,6 +155,9 @@ class ReviewContext(BaseModel):
     provider: ProviderConfig | None = None
     history: list[ReviewHistoryItem] = Field(default_factory=list)
     repo_url: str | None = None
+    mr_title: str = ""
+    mr_description: str = ""
+    last_commit_message: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -166,6 +166,8 @@ def _parse_merge_request_event(payload: dict[str, Any]) -> GitLabMergeRequestEve
         action=str(attrs.get("action") or ""),
         title=str(attrs.get("title") or ""),
         web_url=str(attrs.get("url") or "") or None,
+        description=str(attrs.get("description") or ""),
+        last_commit_message=str(last_commit.get("message") or ""),
     )
 
 

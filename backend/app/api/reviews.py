@@ -177,6 +177,8 @@ async def create_review(
         action="jenkins_sync",
         title=payload.title or "",
         web_url=web_url,
+        description="",
+        last_commit_message="",
     )
     result = await review_merge_request_event(event)
     review_url = _build_review_url(
