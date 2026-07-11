@@ -23,6 +23,7 @@ from typing import Any, Protocol, cast
 from pydantic import ValidationError
 
 from app.engines.base import ReviewEngine
+from app.engines.llm_engine.language_detect import detect_languages
 from app.engines.registry import register_engine
 from app.engines.types import (
     DiffHunk,
@@ -41,6 +42,8 @@ _ALLOWED_SEVERITIES = {"INFO", "WARNING", "BLOCKER"}
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.*?)\s*```", re.DOTALL | re.IGNORECASE)
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+_RULE_DOCS_DIR = Path(__file__).resolve().parent / "rule_docs"
+_EMPTY_LANGUAGE_CHECKLIST = "No specific language checklists apply to this diff."
 
 
 def _render_template(template: str, values: dict[str, str]) -> str:
@@ -60,6 +63,19 @@ def _load_prompt(name: str) -> str:
     """从 prompts/ 目录读取指定 prompt 模板。lru_cache 避免每次 IO。"""
 
     return (_PROMPTS_DIR / name).read_text(encoding="utf-8")
+
+
+@cache
+def _load_rule_doc(language: str) -> str | None:
+    """从 rule_docs/<language>.md 读 checklist；文件不存在返回 None。
+
+    未来新增语言时若忘记补 md 文件，也只是跳过而不是抛异常。
+    """
+
+    path = _RULE_DOCS_DIR / f"{language}.md"
+    if not path.is_file():
+        return None
+    return path.read_text(encoding="utf-8").strip()
 
 
 class LLMCompletionClient(Protocol):
@@ -238,6 +254,13 @@ class LLMDirectEngine(ReviewEngine):
         - user prompt 从 ``user.md`` 渲染，注入 diff / rules / history / MR 上下文
         """
 
+        languages = detect_languages(ctx.diff_hunks)
+        # 运营排查用：知道这次审查究竟叠加了哪些语言 checklist。
+        logger.info(
+            "LLM engine: detected languages=%s for review %s",
+            languages,
+            ctx.review_id,
+        )
         values = {
             "mr_title": ctx.mr_title,
             "mr_description": ctx.mr_description or "（无描述）",
@@ -246,11 +269,33 @@ class LLMDirectEngine(ReviewEngine):
             "target_branch": ctx.target_branch,
             "source_commit_sha": ctx.source_commit_sha,
             "target_commit_sha": ctx.target_commit_sha,
+            "language_checklist_block": self._format_language_checklists(languages),
             "rules_block": self._format_rules(ctx.rules),
             "history_block": self._format_history(ctx.history),
             "diff_block": self._format_diff(ctx.diff_hunks),
         }
         return _render_template(_load_prompt("user.md"), values)
+
+    @staticmethod
+    def _format_language_checklists(languages: list[str]) -> str:
+        """把每种语言的 checklist 拼成 markdown 段落。
+
+        - 空列表返回默认占位文案
+        - 缺 md 文件的 language 直接跳过（不占位不报错）
+        - 每种语言渲染成 ``### <Language> checklist`` 段落，段落之间空行分隔
+        """
+
+        if not languages:
+            return _EMPTY_LANGUAGE_CHECKLIST
+        blocks: list[str] = []
+        for language in languages:
+            body = _load_rule_doc(language)
+            if body is None:
+                continue
+            blocks.append(f"### {language.capitalize()} checklist\n\n{body}")
+        if not blocks:
+            return _EMPTY_LANGUAGE_CHECKLIST
+        return "\n\n".join(blocks)
 
     @staticmethod
     def _format_rules(rules: list[RuleSpec]) -> str:

@@ -1,0 +1,14 @@
+- **[correctness]** Flag any function or method that uses a mutable default argument (e.g. `def f(x=[])`, `def f(x={})`). Require `None` sentinel + inline construction inside the body.
+- **[correctness]** Flag comparisons of a value against `None`, `True`, or `False` using `==` / `!=`. Require the `is` / `is not` identity operator.
+- **[error-handling]** Flag any bare `except:` or `except Exception:` that swallows without re-raising, logging, or narrowing. Require the narrowest concrete exception class; if a broad catch is deliberate, insist on `logger.exception` and a re-raise or explicit degradation comment.
+- **[resource-management]** Flag any `open()`, `socket.socket()`, `tempfile.NamedTemporaryFile`, or DB connection acquired without a `with` block (or explicit `try/finally close`). Require context managers.
+- **[security]** Flag `subprocess.run` / `Popen` / `os.system` calls with `shell=True` or with a string command built via f-string / `%` / `+`. Require `shell=False` + argument list, and reject any user-controlled input reaching the command.
+- **[security]** Flag hardcoded credentials, API keys, tokens, or private URLs in source. Require environment variables or secret manager lookup.
+- **[security]** Flag use of `eval`, `exec`, `pickle.load(s)` on untrusted input, `yaml.load` without `SafeLoader`, and `xml.etree` on external XML. Require safe alternatives (`ast.literal_eval`, `yaml.safe_load`, `defusedxml`).
+- **[concurrency]** Flag CPU-bound work dispatched to `threading.Thread` / `concurrent.futures.ThreadPoolExecutor` when the GIL will serialise it. Require `multiprocessing` / `ProcessPoolExecutor`. Conversely, flag `multiprocessing` used for pure IO-bound work when a thread pool or `asyncio` would be cheaper.
+- **[concurrency]** Inside `async def`, flag blocking calls: `time.sleep`, `requests.*`, sync file IO on large files, sync DB drivers. Require `asyncio.sleep`, an async HTTP client, or `run_in_executor` for unavoidable sync IO.
+- **[performance]** Flag ORM patterns that trigger N+1 queries: iterating a queryset and dereferencing a related field per row, or `.get()` in a loop keyed by parent id. Require `select_related` / `joinedload` / bulk fetch.
+- **[correctness]** Flag `datetime.utcnow()`, `datetime.now()` without `tz=`, and construction of naive `datetime` used in cross-timezone comparisons. Require timezone-aware `datetime` (`datetime.now(tz=UTC)`).
+- **[correctness]** Flag mutating a list / dict while iterating over it. Require iterating over a snapshot (`list(d.items())`) or building a new collection.
+- **[maintainability]** Flag broad wildcard imports (`from x import *`) in application modules and re-imports that shadow builtins.
+- **[error-handling]** Flag `logger.info(f"... {secret} ...")` or any log statement interpolating a value that looks like a token, password, cookie, or authorization header. Require redaction.
