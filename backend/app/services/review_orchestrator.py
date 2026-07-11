@@ -32,12 +32,13 @@ from app.core.summary_builder import (
     build_finding_discussion_body,
     build_review_summary_note,
 )
-from app.engines import DiffHunk, Finding, ReviewContext
+from app.engines import DiffHunk, Finding, ProviderConfig, ReviewContext
 from app.engines.registry import EngineRegistry, get_engine_registry
 from app.integrations.gitlab.client import GitLabClient
 from app.models.finding import Finding as FindingRow
 from app.models.review import Review as ReviewRow
 from app.repositories.project import ProjectRepository
+from app.repositories.provider import ProviderRepository
 from app.repositories.review import ReviewRepository
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
@@ -189,6 +190,7 @@ class ReviewOrchestrator:
             source_commit_sha=event.source_commit_sha,
             target_commit_sha=event.target_commit_sha,
             diff_hunks=self._build_diff_hunks(changes),
+            provider=await self._resolve_provider(event),
             extra={
                 "gitlab_project_id": event.project_id,
                 "gitlab_project_path": event.project_path,
@@ -388,6 +390,68 @@ class ReviewOrchestrator:
             policy_applied=policy_applied,
             note_id=_extract_int(note, "id"),
         )
+
+    async def _resolve_provider(
+        self,
+        event: GitLabMergeRequestEvent,
+    ) -> ProviderConfig | None:
+        """按 GitLab project_id 查 Project 关联的 Provider，转成 ``ProviderConfig``。
+
+        为 orchestrator 的引擎调用注入 provider 配置。查不到 Project、Project 未
+        关联 provider_id、Provider 已删或已禁用、DB / 解密异常，一律返回 ``None``
+        让 llm-direct 引擎优雅退化（跳过评审、返回空 findings），**绝不能阻断
+        主流程**。
+
+        Args:
+            event: 归一化后的 MR 事件。
+
+        Returns:
+            解密后的 ``ProviderConfig``；无法解析时 ``None``。
+        """
+
+        if self._session_factory is None:
+            return None
+        try:
+            async with self._session_factory() as session:
+                project_repo = ProjectRepository(session)
+                project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
+                if project is None or project.provider_id is None:
+                    return None
+                provider_repo = ProviderRepository(session)
+                provider = await provider_repo.get(project.provider_id)
+                if provider is None or not provider.enabled:
+                    logger.warning(
+                        "provider missing or disabled; llm-direct will skip",
+                        extra={
+                            "gitlab_project_id": event.project_id,
+                            "provider_id": str(project.provider_id),
+                        },
+                    )
+                    return None
+                # Provider.api_key 是 EncryptedString，读出时已自动解密。
+                return ProviderConfig(
+                    provider_id=provider.id,
+                    provider_type=provider.protocol,
+                    base_url=provider.base_url,
+                    model=provider.model,
+                    api_key=provider.api_key,
+                    temperature=provider.temperature,
+                    max_tokens=provider.max_tokens,
+                    extra=provider.extra_headers or {},
+                )
+        except SQLAlchemyError:
+            logger.exception(
+                "provider resolution failed",
+                extra={"gitlab_project_id": event.project_id},
+            )
+            return None
+        except Exception:
+            # 解密失败 / Fernet key 不匹配等异常也吞掉，走 llm-direct skip 分支。
+            logger.exception(
+                "provider resolution failed with unexpected error",
+                extra={"gitlab_project_id": event.project_id},
+            )
+            return None
 
     async def _find_completed_review(
         self,
