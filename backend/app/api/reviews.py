@@ -5,13 +5,17 @@ from __future__ import annotations
 import hmac
 import logging
 from collections import deque
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.gitlab_webhook import review_merge_request_event
 from app.core.config import get_settings
+from app.core.db import DbSession
+from app.repositories.review import ReviewRepository
 from app.services.review_orchestrator import GitLabMergeRequestEvent
 
 logger = logging.getLogger(__name__)
@@ -68,6 +72,9 @@ class RecentReviewRead(BaseModel):
     blocker_count: int
     policy_applied: str | None
     review_url: str | None
+    # Issue #76：新增引擎与创建时间，前端展示"何时用哪个引擎评的"。
+    engine_used: str | None = None
+    created_at: datetime | None = None
 
 
 _recent_reviews: deque[RecentReviewRead] = deque(maxlen=20)
@@ -75,12 +82,73 @@ _recent_reviews: deque[RecentReviewRead] = deque(maxlen=20)
 
 @router.get("/recent", response_model=list[RecentReviewRead])
 async def list_recent_reviews(
+    db: DbSession,
     x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
 ) -> list[RecentReviewRead]:
-    """Return the latest in-memory review summaries for the MVP dashboard."""
+    """从 DB 读最近 20 条评审用于首页最近审查面板。
+
+    历史实现仅在 ``POST /api/reviews`` 时把摘要追加到内存 deque，webhook
+    路径不经过该接口，首页永远看不到数据。本实现改为直接查库，DB 查询
+    失败时回退到旧 deque 保持退化可用。
+    """
 
     _validate_internal_token(x_internal_token)
-    return list(_recent_reviews)
+    try:
+        reviews_repo = ReviewRepository(db)
+        rows = await reviews_repo.list_recent(limit=20)
+    except (SQLAlchemyError, OSError, ConnectionError) as exc:
+        # 涵盖 SQLAlchemy 抛出的所有 DB 层错误，以及 asyncpg 连接期未被包装的
+        # 原生错误（OSError / ConnectionError），失败时回退到内存 deque 兜底。
+        logger.warning("recent reviews DB fallback: %s", exc)
+        return list(_recent_reviews)
+    except Exception as exc:  # noqa: BLE001 — DB 拉取失败必须降级，避免面板 500。
+        logger.warning("recent reviews DB fallback (unexpected): %s", exc)
+        return list(_recent_reviews)
+    return [_to_recent_review(row) for row in rows]
+
+
+def _to_recent_review(review: object) -> RecentReviewRead:
+    """将 Review ORM 行转换为面板摘要 schema。
+
+    - project_path 直接复用 project.name（前端已展示；比 UUID/数字 ID 更可读）。
+    - project_id 尝试从 gitlab_project_id 解析为 int，兜底 0。
+    - blocker_count 通过 selectinload 的 findings 在 Python 侧统计，避免 N+1。
+    """
+
+    # 使用局部导入避免 typing.TYPE_CHECKING 与 forward ref 环。
+    project = getattr(review, "project", None)
+    project_name = getattr(project, "name", None) or "-"
+    gitlab_project_id_raw = getattr(project, "gitlab_project_id", None) if project else None
+    try:
+        gitlab_project_id = int(gitlab_project_id_raw) if gitlab_project_id_raw is not None else 0
+    except (TypeError, ValueError):
+        gitlab_project_id = 0
+
+    findings = getattr(review, "findings", []) or []
+    blocker_count = sum(1 for f in findings if getattr(f, "severity", "") == "BLOCKER")
+
+    mr_iid_raw = getattr(review, "mr_iid", "0")
+    try:
+        mr_iid = int(mr_iid_raw)
+    except (TypeError, ValueError):
+        mr_iid = 0
+
+    return RecentReviewRead(
+        review_id=getattr(review, "id", None),
+        project_id=gitlab_project_id,
+        project_path=project_name,
+        mr_iid=mr_iid,
+        title=f"MR !{mr_iid_raw}",
+        web_url=None,
+        status=getattr(review, "status", "unknown"),
+        has_blocker=bool(getattr(review, "has_blocker", False)),
+        finding_count=int(getattr(review, "finding_count", 0) or 0),
+        blocker_count=blocker_count,
+        policy_applied=None,
+        review_url=None,
+        engine_used=getattr(review, "engine_used", None),
+        created_at=getattr(review, "created_at", None),
+    )
 
 
 @router.post("", response_model=ReviewCreateResponse)

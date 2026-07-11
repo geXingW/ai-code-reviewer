@@ -217,6 +217,9 @@ async def test_recent_reviews_returns_latest_manual_review(
             "blocker_count": 1,
             "policy_applied": "master -> BLOCKER",
             "review_url": "https://gitlab.example.com/group/demo/-/merge_requests/7#note_88",
+            # Issue #76：schema 新增字段，deque 回退项没有这两条数据，默认 None。
+            "engine_used": None,
+            "created_at": None,
         }
     ]
     reviews.clear_recent_reviews_for_tests()

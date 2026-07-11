@@ -1497,6 +1497,12 @@ function RecentReviewsPanel({ reviews, onViewAll }: RecentReviewsPanelProps) {
                   <UiBadge variant="default" className="h-4 px-1.5 text-[10px]">
                     !{review.mr_iid}
                   </UiBadge>
+                  {review.engine_used ? (
+                    // Issue #76：紧跟标题展示引擎名，便于运维快速识别本条评审的引擎。
+                    <span className="inline-flex items-center rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] font-mono text-zinc-600">
+                      {review.engine_used}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">
                   {review.project_path} · {relativeTime(review.created_at)}
@@ -1868,14 +1874,21 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
             </div>
             <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">
               {review.status} · {review.finding_count} 个问题 · {review.commit_sha.slice(0, 7)} · {review.project_name || '-'}
+              {review.created_at ? ` · ${relativeTime(review.created_at)}` : ''}
             </div>
-            {(review.rules_used ?? []).length > 0 ? (
+            {(review.rules_used ?? []).length > 0 || review.engine_used ? (
               <div className="mt-1 flex flex-wrap gap-1">
                 {(review.rules_used ?? []).map((ruleId) => (
                   <span key={ruleId} className="inline-flex items-center rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] font-mono text-zinc-600">
                     {ruleId}
                   </span>
                 ))}
+                {review.engine_used ? (
+                  // Issue #76：引擎徽章紧跟规则标签末尾，用不同色区分。
+                  <span className="inline-flex items-center rounded border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[10px] font-mono text-indigo-700">
+                    {review.engine_used}
+                  </span>
+                ) : null}
               </div>
             ) : (
               <div className="mt-1 text-[10px] text-zinc-400">-</div>

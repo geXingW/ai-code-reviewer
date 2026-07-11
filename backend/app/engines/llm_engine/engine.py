@@ -75,20 +75,54 @@ class OpenAICompatibleLLMClient:
         """Call the configured provider through the shared LLM abstraction."""
 
         llm_provider = build_provider(provider, http_client=self._http_client)
-        response = await llm_provider.chat(
-            [
-                ChatMessage(
-                    role="system",
-                    content=(
-                        "You are a senior code reviewer. Return only valid JSON "
-                        "that follows the user's output contract."
-                    ),
-                ),
-                ChatMessage(role="user", content=prompt),
-            ]
+        # 请求前记录关键元信息 + prompt 头部预览，避免刷屏；DEBUG 时打全量便于排查。
+        logger.info(
+            "llm request",
+            extra={
+                "provider_type": provider.provider_type,
+                "model": provider.model,
+                "prompt_len": len(prompt),
+                "prompt_head": prompt[:500],
+            },
         )
+        logger.debug("llm request full prompt", extra={"prompt": prompt})
+        try:
+            response = await llm_provider.chat(
+                [
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "You are a senior code reviewer. Return only valid JSON "
+                            "that follows the user's output contract."
+                        ),
+                    ),
+                    ChatMessage(role="user", content=prompt),
+                ]
+            )
+        except Exception as exc:
+            # 记录失败元数据（不含 prompt 内容）后原样抛出，交由上层降级处理。
+            logger.warning(
+                "llm request failed",
+                extra={
+                    "provider_type": provider.provider_type,
+                    "model": provider.model,
+                    "error": str(exc),
+                },
+            )
+            raise
+        raw = response.content
+        logger.info(
+            "llm response",
+            extra={
+                "provider_type": provider.provider_type,
+                "model": provider.model,
+                "response_len": len(raw),
+                "response_head": raw[:500],
+            },
+        )
+        logger.debug("llm response full", extra={"response": raw})
         _ = timeout_seconds
-        return response.content
+        return raw
 
 
 @register_engine

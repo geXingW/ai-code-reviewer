@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.models.finding import Finding
 from app.models.review import Review
@@ -23,6 +24,29 @@ class ReviewRepository(BaseRepository[Review]):
             select(Review)
             .where(Review.project_id == project_id)
             .order_by(Review.created_at.desc())
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_recent(self, limit: int = 20) -> list[Review]:
+        """按 created_at 倒序列出最近 ``limit`` 条评审，预取 project 与 findings。
+
+        用于首页最近审查面板，走 DB 查询以取代早期仅按 POST /api/reviews 入队
+        的内存 deque —— webhook 路径也能正确回显。
+
+        Args:
+            limit: 上限条数。默认 20。
+
+        Returns:
+            按创建时间倒序的 Review 列表；已 selectinload project + findings，
+            调用方遍历 findings 统计 BLOCKER 数量不会触发 N+1 查询。
+        """
+
+        stmt = (
+            select(Review)
+            .options(selectinload(Review.project), selectinload(Review.findings))
+            .order_by(Review.created_at.desc())
+            .limit(limit)
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
