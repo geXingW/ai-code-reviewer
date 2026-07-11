@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createRule, setStoredAdminAccessToken, updateProvider, updateProject } from './api';
+import { createRule, deleteProject, setStoredAdminAccessToken, updateProvider, updateProject } from './api';
 
 type Captured = { url?: string; init?: RequestInit };
 
@@ -94,5 +94,17 @@ describe('API 客户端 payload 处理', () => {
     expect(body.name).toBe('renamed');
     expect(body.gitlab_access_token).toBe('new-token');
     expect(body.webhook_secret).toBe('new-secret');
+  });
+
+  it('deleteProject 发 DELETE 到 /api/projects/:id 并注入鉴权头', async () => {
+    setStoredAdminAccessToken('admin-token');
+    const captured = mockFetchAndCapture();
+
+    await deleteProject('proj-42');
+
+    expect(captured.url).toBe('/api/projects/proj-42');
+    expect(captured.init?.method).toBe('DELETE');
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer admin-token');
   });
 });
