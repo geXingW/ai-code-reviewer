@@ -22,7 +22,16 @@ from typing import Any, Protocol, cast
 
 from pydantic import ValidationError
 
+from app.core.config import Settings, get_settings
 from app.engines.base import ReviewEngine
+from app.engines.llm_engine.filter_stage import (
+    FilterDecision,
+    apply_decisions,
+    format_candidates,
+    format_filter_user_prompt,
+    parse_filter_response,
+    summarize_decisions,
+)
 from app.engines.llm_engine.language_detect import detect_languages
 from app.engines.registry import register_engine
 from app.engines.types import (
@@ -87,8 +96,13 @@ class LLMCompletionClient(Protocol):
         provider: ProviderConfig,
         prompt: str,
         timeout_seconds: float,
+        system_prompt: str | None = None,
     ) -> str:
-        """Return a raw text completion for ``prompt``."""
+        """Return a raw text completion for ``prompt``.
+
+        ``system_prompt=None`` 表示使用默认 review system prompt（``system.md``），
+        filter 阶段传入 filter 专用 system prompt。
+        """
 
 
 class OpenAICompatibleLLMClient:
@@ -109,10 +123,14 @@ class OpenAICompatibleLLMClient:
         provider: ProviderConfig,
         prompt: str,
         timeout_seconds: float,
+        system_prompt: str | None = None,
     ) -> str:
         """Call the configured provider through the shared LLM abstraction."""
 
         llm_provider = build_provider(provider, http_client=self._http_client)
+        effective_system_prompt = (
+            system_prompt if system_prompt is not None else _load_prompt("system.md")
+        )
         # 请求前记录关键元信息 + prompt 头部预览，避免刷屏；DEBUG 时打全量便于排查。
         logger.info(
             "llm request",
@@ -129,7 +147,7 @@ class OpenAICompatibleLLMClient:
                 [
                     ChatMessage(
                         role="system",
-                        content=_load_prompt("system.md"),
+                        content=effective_system_prompt,
                     ),
                     ChatMessage(role="user", content=prompt),
                 ]
@@ -171,12 +189,14 @@ class LLMDirectEngine(ReviewEngine):
         *,
         client: LLMCompletionClient | None = None,
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+        settings: Settings | None = None,
     ) -> None:
         """Create an engine instance.
 
         Args:
             client: Optional injectable completion client for tests/provider swaps.
             timeout_seconds: Maximum seconds spent in one LLM request.
+            settings: Optional injected settings for tests；默认走 ``get_settings()``。
         """
 
         if timeout_seconds <= 0:
@@ -184,6 +204,7 @@ class LLMDirectEngine(ReviewEngine):
             raise ValueError(msg)
         self._client = client or OpenAICompatibleLLMClient()
         self._timeout_seconds = timeout_seconds
+        self._settings = settings
 
     def name(self) -> str:
         """Return the registry identifier."""
@@ -213,7 +234,7 @@ class LLMDirectEngine(ReviewEngine):
                 prompt=prompt,
                 timeout_seconds=self._timeout_seconds,
             )
-            return self._parse_findings(raw_response, ctx)
+            findings = self._parse_findings(raw_response, ctx)
         except (
             LLMError,
             ValueError,
@@ -223,6 +244,8 @@ class LLMDirectEngine(ReviewEngine):
         ) as exc:
             logger.exception("llm-direct review degraded to no findings: %s", exc)
             return []
+
+        return await self._filter_findings(ctx, findings)
 
     def supports_feedback(self) -> bool:
         """Return ``True`` because false-positive history is included in prompt/filtering."""
@@ -420,6 +443,99 @@ class LLMDirectEngine(ReviewEngine):
             "confidence": _clamp_confidence(raw.get("confidence")),
         }
 
+    async def _filter_findings(
+        self,
+        ctx: ReviewContext,
+        findings: list[Finding],
+    ) -> list[Finding]:
+        """对 findings 做证伪式后置过滤。
+
+        Fail-open 契约：
+        - 开关关闭 → 原样返回，**不调用 LLM**。
+        - findings 为空 → 原样返回，**不调用 LLM**。
+        - LLM 抛错 / 返回非 JSON / decisions 全部非法 → warning 日志 + 原样返回。
+        - 只保留输入顺序中未被 drop 的 finding；downgrade 换新 severity。
+        """
+
+        settings = self._settings if self._settings is not None else get_settings()
+        if not settings.llm_filter_enabled:
+            logger.info(
+                "filter stage: disabled by settings, returning %d findings unchanged",
+                len(findings),
+            )
+            return findings
+        if not findings:
+            logger.info("filter stage: input 0 findings, skipping LLM call")
+            return findings
+        if ctx.provider is None:
+            # 理论上到不了这里（review() 已早退），保险起见再兜一次。
+            return findings
+
+        candidate_block = format_candidates(findings)
+        diff_block = self._format_diff(ctx.diff_hunks)
+        try:
+            user_prompt = format_filter_user_prompt(
+                template=_load_prompt("filter_user.md"),
+                context=ctx,
+                candidate_findings_block=candidate_block,
+                diff_block=diff_block,
+            )
+            system_prompt = _load_prompt("filter_system.md")
+        except OSError as exc:
+            logger.warning(
+                "filter stage: failed to load prompt templates, falling back to original: %s",
+                exc,
+            )
+            return findings
+
+        logger.info("filter stage: input %d findings", len(findings))
+        try:
+            raw_response = await self._client.complete(
+                provider=ctx.provider,
+                prompt=user_prompt,
+                timeout_seconds=self._timeout_seconds,
+                system_prompt=system_prompt,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-open：任何异常都不能拖累主流程
+            logger.warning(
+                "filter stage: LLM call failed, keeping original findings: %s",
+                exc,
+            )
+            return findings
+
+        decisions = parse_filter_response(raw_response, len(findings))
+        if not decisions:
+            # parse 空可能是 LLM 全 keep，也可能是格式非法；无论哪种都 fail-open。
+            logger.info(
+                "filter stage: no actionable decisions parsed, keeping all %d findings",
+                len(findings),
+            )
+            return findings
+
+        try:
+            kept = apply_decisions(findings, decisions)
+        except Exception as exc:  # noqa: BLE001 - 兜底防御
+            logger.warning(
+                "filter stage: apply_decisions raised, keeping original findings: %s",
+                exc,
+            )
+            return findings
+
+        kept_touched, dropped, downgraded = summarize_decisions(decisions)
+        logger.info(
+            "filter stage: kept %d, dropped %d, downgraded %d "
+            "(explicit keep decisions: %d)",
+            len(kept),
+            dropped,
+            downgraded,
+            kept_touched,
+        )
+        logger.debug(
+            "filter stage decisions",
+            extra={"decisions": [_decision_to_dict(d) for d in decisions]},
+        )
+        return kept
+
 
 def _loads_model_json(raw_response: str) -> dict[str, Any]:
     """Load model JSON, accepting optional fenced code blocks."""
@@ -433,6 +549,17 @@ def _loads_model_json(raw_response: str) -> dict[str, Any]:
         msg = "LLM response must be a JSON object"
         raise ValueError(msg)
     return cast(dict[str, Any], data)
+
+
+def _decision_to_dict(decision: FilterDecision) -> dict[str, Any]:
+    """把 FilterDecision 转成 dict 便于 DEBUG 日志序列化。"""
+
+    return {
+        "index": decision.index,
+        "verdict": decision.verdict,
+        "reason": decision.reason,
+        "new_severity": decision.new_severity,
+    }
 
 
 def _file_in_diff(file_path: str, diff_hunks: list[DiffHunk]) -> bool:

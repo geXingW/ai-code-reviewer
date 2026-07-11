@@ -76,6 +76,15 @@ class Settings(BaseSettings):
         str,
         Field(description="Default registered ReviewEngine name used for GitLab webhook reviews."),
     ] = "llm-direct"
+    llm_filter_enabled: Annotated[
+        bool,
+        Field(
+            description=(
+                "是否启用 LLM 证伪式后置过滤阶段：True 表示对主 LLM 产出的 findings "
+                "再走一次 LLM 决定 keep / drop / downgrade；False 直接返回原始 findings。"
+            ),
+        ),
+    ] = True
     cors_origins: Annotated[
         list[str],
         Field(description="Allowed CORS origins."),
