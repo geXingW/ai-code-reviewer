@@ -162,6 +162,9 @@ export type ReviewRecord = {
   status: string;
   has_blocker: boolean;
   finding_count: number;
+  // Issue #71：展示用冗余字段，由后端 ReviewRead 填充。
+  project_name?: string | null;
+  rules_used?: string[];
   created_at?: string;
 };
 
@@ -232,6 +235,8 @@ export type ProjectFormPayload = {
 export type ProjectUpdatePayload = {
   name?: string;
   gitlab_project_id?: string;
+  gitlab_access_token?: string;
+  webhook_secret?: string;
   enabled?: boolean;
   default_block_severity?: 'INFO' | 'WARNING' | 'BLOCKER';
   engine_id?: string | null;
@@ -385,12 +390,38 @@ export async function createProvider(payload: ProviderFormPayload): Promise<Prov
   return parseJsonResponse<ProviderConfig>(response, true);
 }
 
+export type ProviderUpdatePayload = {
+  name?: string;
+  protocol?: ProviderFormPayload['protocol'];
+  base_url?: string;
+  api_key?: string;
+  model?: string;
+  temperature?: number;
+  max_tokens?: number;
+  enabled?: boolean;
+};
+
+export async function updateProvider(
+  id: string,
+  payload: ProviderUpdatePayload,
+): Promise<ProviderConfig> {
+  const response = await adminFetch(`/api/providers/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<ProviderConfig>(response, true);
+}
+
 export async function fetchRules(): Promise<Page<RuleConfig>> {
   const response = await adminFetch('/api/rules');
   return parseJsonResponse<Page<RuleConfig>>(response, true);
 }
 
-export async function createRule(payload: RuleFormPayload): Promise<RuleConfig> {
+// Issue #69：rule_id 可选，留空时由后端从标题自动生成 slug。
+export type RuleCreatePayload = Omit<RuleFormPayload, 'rule_id'> & { rule_id?: string };
+
+export async function createRule(payload: RuleCreatePayload): Promise<RuleConfig> {
   const response = await adminFetch('/api/rules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

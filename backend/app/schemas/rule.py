@@ -12,7 +12,8 @@ Severity = Literal["INFO", "WARNING", "BLOCKER"]
 class RuleCreate(BaseModel):
     """Payload for creating a shared review rule."""
 
-    rule_id: str
+    # rule_id 可选：留空时由后端从 title 自动生成 slug（见 admin._generate_rule_slug）。
+    rule_id: str | None = None
     title: str
     prompt_snippet: str
     severity_default: Severity = "WARNING"

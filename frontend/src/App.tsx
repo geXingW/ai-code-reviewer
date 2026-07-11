@@ -18,9 +18,11 @@ import {
   ProjectUpdatePayload,
   ProviderConfig,
   ProviderFormPayload,
+  ProviderUpdatePayload,
   RecentReview,
   ReviewRecord,
   RuleConfig,
+  RuleCreatePayload,
   RuleFormPayload,
   confirmFalsePositive,
   createProject,
@@ -28,6 +30,7 @@ import {
   createReview,
   createRule,
   deleteRule,
+  updateProvider,
   updateRule,
   updateProject,
   fetchEngineConfigs,
@@ -392,6 +395,27 @@ function App() {
     }
   }
 
+  async function handleSaveProviderEdit(providerId: string, payload: ProviderUpdatePayload) {
+    setError(null);
+    setMessage(null);
+    try {
+      const updated = await updateProvider(providerId, payload);
+      setProvidersPage((prev) =>
+        prev
+          ? {
+              ...prev,
+              items: prev.items.map((provider) =>
+                provider.id === updated.id ? updated : provider,
+              ),
+            }
+          : prev,
+      );
+      setMessage('模型供应商已更新。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
   async function handleCreateProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
@@ -411,10 +435,15 @@ function App() {
     setError(null);
     setMessage(null);
     try {
-      if (!ruleForm.rule_id.trim() || !ruleForm.title.trim() || !ruleForm.prompt_snippet.trim()) {
-        throw new Error('规则 ID、标题和提示片段不能为空。');
+      if (!ruleForm.title.trim() || !ruleForm.prompt_snippet.trim()) {
+        throw new Error('规则标题和提示片段不能为空。');
       }
-      await createRule(ruleForm);
+      // rule_id 可选：留空则不发送该字段，由后端从标题自动生成 slug。
+      const payload: RuleCreatePayload = {
+        ...ruleForm,
+        rule_id: ruleForm.rule_id.trim() || undefined,
+      };
+      await createRule(payload);
       setRuleForm(initialRuleForm);
       setRulesPage(await fetchRules());
       setMessage('审查规则已创建。');
@@ -516,6 +545,25 @@ function App() {
           : prev,
       );
       setMessage('阻断策略已保存。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
+  async function handleSaveProjectEdit(projectId: string, payload: ProjectUpdatePayload) {
+    setError(null);
+    setMessage(null);
+    try {
+      const updated = await updateProject(projectId, payload);
+      setProjectsPage((prev) =>
+        prev
+          ? {
+              ...prev,
+              items: prev.items.map((project) => (project.id === updated.id ? updated : project)),
+            }
+          : prev,
+      );
+      setMessage('GitLab 项目已更新。');
     } catch (caught) {
       handleCaughtError(caught);
     }
@@ -695,7 +743,13 @@ function App() {
             {items.length === 0 ? (
               <div className="p-6 text-center text-[13px] text-zinc-500">暂无模型供应商</div>
             ) : (
-              items.map((provider) => <ProviderListItem key={provider.id} provider={provider} />)
+              items.map((provider) => (
+                <ProviderListItem
+                  key={provider.id}
+                  provider={provider}
+                  onSave={handleSaveProviderEdit}
+                />
+              ))
             )}
           </CardContent>
         </Card>
@@ -718,7 +772,7 @@ function App() {
           </CardHeader>
           <CardContent className="space-y-3">
             <form className="space-y-3" onSubmit={handleCreateRule}>
-              <TextInput label="规则 ID" value={ruleForm.rule_id} onChange={(value) => setRuleForm({ ...ruleForm, rule_id: value })} />
+              <TextInput label="规则 ID" hint="可选：留空则自动从标题生成" value={ruleForm.rule_id} onChange={(value) => setRuleForm({ ...ruleForm, rule_id: value })} />
               <TextInput label="标题" value={ruleForm.title} onChange={(value) => setRuleForm({ ...ruleForm, title: value })} />
               <TextAreaInput label="提示片段" value={ruleForm.prompt_snippet} onChange={(value) => setRuleForm({ ...ruleForm, prompt_snippet: value })} />
               <SelectInput label="默认严重级别" value={ruleForm.severity_default} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setRuleForm({ ...ruleForm, severity_default: value as RuleFormPayload['severity_default'] })} />
@@ -867,7 +921,13 @@ function App() {
               <div className="p-6 text-center text-[13px] text-zinc-500">暂无 GitLab 项目</div>
             ) : (
               (projectsPage?.items ?? []).map((project) => (
-                <ProjectCard key={project.id} project={project} onSavePolicies={handleSaveBlockPolicies} />
+                <ProjectCard
+                  key={project.id}
+                  project={project}
+                  providerOptions={providerOptions}
+                  onSavePolicies={handleSaveBlockPolicies}
+                  onSaveProject={handleSaveProjectEdit}
+                />
               ))
             )}
           </CardContent>
@@ -1072,15 +1132,24 @@ type TextInputProps = {
   label: string;
   value: string;
   type?: string;
+  hint?: string;
+  placeholder?: string;
   onChange: (value: string) => void;
 };
 
-function TextInput({ label, value, type = 'text', onChange }: TextInputProps) {
+function TextInput({ label, value, type = 'text', hint, placeholder, onChange }: TextInputProps) {
   const id = useId();
   return (
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
-      <Input id={id} type={type} value={value} onChange={(event) => onChange(event.target.value)} />
+      <Input
+        id={id}
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {hint ? <span className="block text-[11px] text-zinc-500">{hint}</span> : null}
     </div>
   );
 }
@@ -1283,32 +1352,89 @@ function SystemStatusCard({ health, engines }: SystemStatusCardProps) {
 
 type ProviderListItemProps = {
   provider: ProviderConfig;
+  onSave: (providerId: string, payload: ProviderUpdatePayload) => Promise<void>;
 };
 
-function ProviderListItem({ provider }: ProviderListItemProps) {
+function ProviderListItem({ provider, onSave }: ProviderListItemProps) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState<ProviderFormPayload>(initialProviderForm);
   const letter = provider.name.charAt(0).toUpperCase();
   const baseUrlShort = provider.base_url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+  function startEdit() {
+    // api_key 留空表示不修改，避免把脱敏的 **** 误回写。
+    setForm({
+      name: provider.name,
+      protocol: provider.protocol as ProviderFormPayload['protocol'],
+      base_url: provider.base_url,
+      api_key: '',
+      model: provider.model,
+      temperature: provider.temperature,
+      max_tokens: provider.max_tokens,
+      enabled: provider.enabled,
+    });
+    setEditing(true);
+  }
+
+  async function handleSave() {
+    if (saving) {
+      return;
+    }
+    const payload: ProviderUpdatePayload = { ...form };
+    if (!form.api_key.trim()) {
+      delete payload.api_key;
+    }
+    try {
+      setSaving(true);
+      await onSave(provider.id, payload);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
-      <div className="flex items-center gap-3 min-w-0">
-        <div className="w-8 h-8 rounded-md bg-zinc-100 flex items-center justify-center shrink-0">
-          <span className="text-[13px] font-semibold text-zinc-700">{letter}</span>
+    <div className="border-b border-zinc-100 last:border-b-0">
+      <div className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-8 h-8 rounded-md bg-zinc-100 flex items-center justify-center shrink-0">
+            <span className="text-[13px] font-semibold text-zinc-700">{letter}</span>
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] font-medium text-zinc-900 truncate">{provider.name}</span>
+            </div>
+            <div className="text-[11px] text-zinc-500 mt-0.5 truncate font-mono">
+              {provider.protocol} · {provider.model} · {baseUrlShort}
+            </div>
+          </div>
         </div>
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-[13px] font-medium text-zinc-900 truncate">{provider.name}</span>
-          </div>
-          <div className="text-[11px] text-zinc-500 mt-0.5 truncate font-mono">
-            {provider.protocol} · {provider.model} · {baseUrlShort}
-          </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <UiBadge variant={provider.enabled ? 'success' : 'default'}>
+            <span className={cn('w-1.5 h-1.5 rounded-full', provider.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
+            {provider.enabled ? '已启用' : '已停用'}
+          </UiBadge>
+          <Button variant="ghost" size="sm" type="button" onClick={startEdit}>编辑</Button>
         </div>
       </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <UiBadge variant={provider.enabled ? 'success' : 'default'}>
-          <span className={cn('w-1.5 h-1.5 rounded-full', provider.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
-          {provider.enabled ? '已启用' : '已停用'}
-        </UiBadge>
-      </div>
+      {editing ? (
+        <div className="space-y-3 border-t border-zinc-100 bg-zinc-50 px-4 pb-4 pt-3">
+          <TextInput label="名称" value={form.name} onChange={(value) => setForm({ ...form, name: value })} />
+          <SelectInput label="协议" value={form.protocol} options={['openai_compatible', 'anthropic', 'custom']} onChange={(value) => setForm({ ...form, protocol: value as ProviderFormPayload['protocol'] })} />
+          <TextInput label="Base URL" value={form.base_url} onChange={(value) => setForm({ ...form, base_url: value })} />
+          <TextInput label="API Key" type="password" placeholder="留空则不修改" value={form.api_key} onChange={(value) => setForm({ ...form, api_key: value })} />
+          <div className="grid grid-cols-2 gap-3">
+            <TextInput label="模型" value={form.model} onChange={(value) => setForm({ ...form, model: value })} />
+            <TextInput label="Max Tokens" value={String(form.max_tokens)} onChange={(value) => setForm({ ...form, max_tokens: Number(value) || 0 })} />
+          </div>
+          <CheckboxInput label="启用供应商" checked={form.enabled} onChange={(value) => setForm({ ...form, enabled: value })} />
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <Button variant="secondary" size="sm" type="button" disabled={saving} onClick={() => setEditing(false)}>取消</Button>
+            <Button size="sm" type="button" disabled={saving} onClick={() => void handleSave()}>{saving ? '保存中…' : '保存'}</Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1371,12 +1497,68 @@ function RecentReviewsPanel({ reviews, onViewAll }: RecentReviewsPanelProps) {
 
 type ProjectCardProps = {
   project: ProjectConfig;
+  providerOptions: SelectOption[];
   onSavePolicies: (projectId: string, policies: BlockPolicyPayload[]) => Promise<void>;
+  onSaveProject: (projectId: string, payload: ProjectUpdatePayload) => Promise<void>;
 };
 
-function ProjectCard({ project, onSavePolicies }: ProjectCardProps) {
+type ProjectEditForm = {
+  name: string;
+  gitlab_project_id: string;
+  gitlab_access_token: string;
+  webhook_secret: string;
+  provider_id: string;
+};
+
+function ProjectCard({ project, providerOptions, onSavePolicies, onSaveProject }: ProjectCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editForm, setEditForm] = useState<ProjectEditForm>({
+    name: '',
+    gitlab_project_id: '',
+    gitlab_access_token: '',
+    webhook_secret: '',
+    provider_id: '',
+  });
   const letter = project.name.charAt(0).toUpperCase();
+
+  function startEdit() {
+    // 两个敏感字段留空表示不修改，避免把脱敏的 **** 误回写。
+    setEditForm({
+      name: project.name,
+      gitlab_project_id: project.gitlab_project_id,
+      gitlab_access_token: '',
+      webhook_secret: '',
+      provider_id: project.provider_id ?? '',
+    });
+    setEditing(true);
+  }
+
+  async function handleSaveEdit() {
+    if (editSaving) {
+      return;
+    }
+    const payload: ProjectUpdatePayload = {
+      name: editForm.name,
+      gitlab_project_id: editForm.gitlab_project_id,
+      provider_id: editForm.provider_id || null,
+    };
+    if (editForm.gitlab_access_token.trim()) {
+      payload.gitlab_access_token = editForm.gitlab_access_token;
+    }
+    if (editForm.webhook_secret.trim()) {
+      payload.webhook_secret = editForm.webhook_secret;
+    }
+    try {
+      setEditSaving(true);
+      await onSaveProject(project.id, payload);
+      setEditing(false);
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
   return (
     <div className="border-b border-zinc-100 last:border-b-0">
       <div className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors">
@@ -1396,11 +1578,28 @@ function ProjectCard({ project, onSavePolicies }: ProjectCardProps) {
             <span className={cn('w-1.5 h-1.5 rounded-full', project.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
             {project.enabled ? '启用' : '停用'}
           </UiBadge>
+          <Button variant="ghost" size="sm" type="button" onClick={startEdit}>编辑</Button>
           <Button variant="secondary" size="sm" type="button" onClick={() => setExpanded((prev) => !prev)}>
             {expanded ? '收起策略' : '展开策略'}
           </Button>
         </div>
       </div>
+      {editing ? (
+        <div className="space-y-3 border-t border-zinc-100 bg-zinc-50 px-4 pb-4 pt-3">
+          <TextInput label="项目名称" value={editForm.name} onChange={(value) => setEditForm({ ...editForm, name: value })} />
+          <TextInput label="GitLab Project ID" value={editForm.gitlab_project_id} onChange={(value) => setEditForm({ ...editForm, gitlab_project_id: value })} />
+          <TextInput label="GitLab Access Token" type="password" placeholder="留空则不修改" value={editForm.gitlab_access_token} onChange={(value) => setEditForm({ ...editForm, gitlab_access_token: value })} />
+          <TextInput label="Webhook Secret" type="password" placeholder="留空则不修改" value={editForm.webhook_secret} onChange={(value) => setEditForm({ ...editForm, webhook_secret: value })} />
+          <SelectInput label="AI 供应商" value={editForm.provider_id} options={providerOptions} onChange={(value) => setEditForm({ ...editForm, provider_id: value })} />
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <Button variant="secondary" size="sm" type="button" disabled={editSaving} onClick={() => setEditing(false)}>取消</Button>
+            <Button size="sm" type="button" disabled={editSaving} onClick={() => void handleSaveEdit()}>{editSaving ? '保存中…' : '保存'}</Button>
+          </div>
+          <div className="text-[11px] text-zinc-500">
+            规则与阻断策略请在各自的编辑入口维护，此处不涉及。
+          </div>
+        </div>
+      ) : null}
       {expanded ? (
         <div className="px-4 pb-4 bg-zinc-50 border-t border-zinc-100">
           <BlockPolicyTable projectId={project.id} policies={project.block_policies} onSave={onSavePolicies} />
@@ -1610,8 +1809,19 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
               MR !{review.mr_iid} <span className="text-zinc-500">{review.source_branch} → {review.target_branch}</span>
             </div>
             <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">
-              {review.status} · {review.finding_count} 个问题 · {review.commit_sha.slice(0, 7)}
+              {review.status} · {review.finding_count} 个问题 · {review.commit_sha.slice(0, 7)} · {review.project_name || '-'}
             </div>
+            {(review.rules_used ?? []).length > 0 ? (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {(review.rules_used ?? []).map((ruleId) => (
+                  <span key={ruleId} className="inline-flex items-center rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] font-mono text-zinc-600">
+                    {ruleId}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-1 text-[10px] text-zinc-400">-</div>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
