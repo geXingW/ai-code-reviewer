@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.core.config import Settings
 from app.engines.llm_engine.engine import (
     LLMDirectEngine,
     OpenAICompatibleLLMClient,
@@ -21,6 +22,12 @@ from app.engines.types import (
     ReviewHistoryItem,
     RuleSpec,
 )
+
+
+def _no_filter_settings() -> Settings:
+    """构造一个禁用 filter 阶段的 Settings，避免第二次 LLM 调用干扰这些主流程测试。"""
+
+    return Settings(llm_filter_enabled=False)
 
 
 @dataclass
@@ -36,9 +43,11 @@ class _FakeLLMClient:
         provider: ProviderConfig,
         prompt: str,
         timeout_seconds: float,
+        system_prompt: str | None = None,
     ) -> str:
         _ = provider
         _ = timeout_seconds
+        _ = system_prompt
         self.prompts.append(prompt)
         return self.responses.pop(0)
 
@@ -167,7 +176,7 @@ async def test_review_builds_five_section_prompt_and_parses_findings() -> None:
             """
         ]
     )
-    engine = LLMDirectEngine(client=client)
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
     findings = await engine.review(_ctx())
 
@@ -212,7 +221,7 @@ async def test_review_resolves_missing_line_number_with_sliding_window() -> None
             """
         ]
     )
-    engine = LLMDirectEngine(client=client)
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
     findings = await engine.review(_ctx())
 
@@ -250,7 +259,7 @@ async def test_review_filters_history_confirmed_false_positives() -> None:
             """
         ]
     )
-    engine = LLMDirectEngine(client=client)
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
     findings = await engine.review(_ctx(history=history))
 
@@ -262,7 +271,7 @@ async def test_review_returns_empty_when_provider_missing() -> None:
     """Without provider config the engine degrades safely to no findings."""
 
     client = _FakeLLMClient(responses=["should not be called"])
-    engine = LLMDirectEngine(client=client)
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
     findings = await engine.review(_ctx(response_provider=False))
 
@@ -313,7 +322,7 @@ async def test_review_ignores_malformed_or_out_of_diff_findings() -> None:
             """
         ]
     )
-    engine = LLMDirectEngine(client=client)
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
     findings = await engine.review(_ctx())
 
@@ -357,7 +366,7 @@ async def test_default_client_uses_provider_abstraction() -> None:
 async def test_health_check_reports_configured_provider() -> None:
     """Health status should reflect that the concrete implementation is active."""
 
-    engine = LLMDirectEngine(client=_FakeLLMClient(responses=[]))
+    engine = LLMDirectEngine(client=_FakeLLMClient(responses=[]), settings=_no_filter_settings())
 
     status = await engine.health_check()
 
@@ -410,7 +419,7 @@ async def test_prompt_injects_mr_context() -> None:
     """MR title / description / last commit message 必须出现在 user prompt 中。"""
 
     client = _FakeLLMClient(responses=['{"findings": []}'])
-    engine = LLMDirectEngine(client=client)
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
     ctx = _ctx(
         mr_title="Fix login token leak",
@@ -430,7 +439,7 @@ async def test_prompt_does_not_leak_placeholders() -> None:
     """占位符如 ``{{mr_title}}`` 不能残留在渲染后的 prompt 中。"""
 
     client = _FakeLLMClient(responses=['{"findings": []}'])
-    engine = LLMDirectEngine(client=client)
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
     await engine.review(_ctx(mr_title="hello", mr_description="", last_commit_message=""))
 
