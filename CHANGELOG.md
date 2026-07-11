@@ -7,6 +7,9 @@
 ### Added
 
 - **前端管理后台（8 个页面 Linear 化）**：Providers / Projects / Rules / ReviewRecords / Findings / FalsePositives / Engines / NegativeExamples 全部按 Linear 风格重构，抽出 DataRow / StatusRow 通用组件（Issue #35 → PR #52）。
+- **Rules `rule_id` 字段可选**：新建 Rule 时留空则从 title 自动生成 slug（英文走 slugify，含中文 fallback 到 `rule-<uuid8>`），冲突自动追加 `-2`/`-3` 保证唯一（Issue #69 → PR #72）。
+- **Providers / Projects 页补编辑入口**：Providers 页每行加编辑，Projects 页基础字段（name / gitlab_access_token / webhook_secret / provider_id）也补上编辑；敏感字段（api_key / gitlab_access_token / webhook_secret）走「留空则不改」策略避免明文回显泄露（Issue #70 → PR #72）。
+- **审查记录展示项目名与规则**：`ReviewRead` schema 增补 `project_name` 与 `rules_used`（从关联 findings 的 rule_id 去重聚合），前端 ReviewRecords 页列表增列展示，UUID 不再直接抛给用户（Issue #71 → PR #72）。
 - **orchestrator provider 注入**：修复 MVP 遗留缺口 —— `review_merge_request` 构造 `ReviewContext` 时未从 DB 读 Project 关联的 Provider，导致 `llm-direct` 引擎永远 skip。现在按 GitLab project_id → Project → Provider 链路解析并注入解密后的 `ProviderConfig`；Project/Provider 缺失或禁用时保持向后兼容（Issue #67 → PR #68）。
 - **commit_sha 去重**：orchestrator 在拿 changes 前先按 `(project_id, commit_sha)` 查一次 DB，命中已完成评审（done / engine_error）直接复用旧结果，不再重跑引擎、不再重复写 GitLab（Issue #65）。
 - **误报评审 UI 补齐**：Rules 页新增编辑/删除按钮，Projects 页新增「AI 供应商」下拉；后端补 `updateRule` / `deleteRule` API 与 `test_admin_errors.py` 三分支单测（Issue #54 → PR #55）。

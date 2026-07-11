@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -313,3 +314,90 @@ async def test_persisted_engine_crud_and_runtime_health(admin_client: AsyncClien
     runtime = await admin_client.get("/api/engines")
     assert runtime.status_code == 200
     assert isinstance(runtime.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_create_rule_auto_generates_slug_from_english_title(
+    admin_client: AsyncClient,
+) -> None:
+    """不传 rule_id 时，用英文标题自动生成 kebab-case slug。"""
+
+    response = await admin_client.post(
+        "/api/rules",
+        json={"title": "No Print Statements", "prompt_snippet": "avoid print"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["rule_id"] == "no-print-statements"
+
+
+@pytest.mark.asyncio
+async def test_create_rule_falls_back_to_uuid_slug_for_chinese_title(
+    admin_client: AsyncClient,
+) -> None:
+    """不传 rule_id 且标题含中文时，rule_id 回退为 rule-<8 位 hex>。"""
+
+    response = await admin_client.post(
+        "/api/rules",
+        json={"title": "禁止使用打印语句", "prompt_snippet": "避免 print"},
+    )
+
+    assert response.status_code == 201
+    assert re.fullmatch(r"rule-[0-9a-f]{8}", response.json()["rule_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_rule_slug_appends_suffix_on_conflict(admin_client: AsyncClient) -> None:
+    """自动生成的 slug 与已有 rule_id 冲突时，追加 -2 后缀直至唯一。"""
+
+    first = await admin_client.post(
+        "/api/rules",
+        json={"title": "No Print Statements", "prompt_snippet": "avoid print"},
+    )
+    assert first.status_code == 201
+    assert first.json()["rule_id"] == "no-print-statements"
+
+    second = await admin_client.post(
+        "/api/rules",
+        json={"title": "No Print Statements", "prompt_snippet": "avoid print v2"},
+    )
+    assert second.status_code == 201
+    assert second.json()["rule_id"] == "no-print-statements-2"
+
+
+@pytest.mark.asyncio
+async def test_review_record_returns_project_name_and_deduped_rules_used(
+    admin_client: AsyncClient,
+) -> None:
+    """审查记录列表/详情返回 project_name 与去重后的 rules_used。"""
+
+    seeded = await seed_review_with_finding(admin_client)
+    # 追加一条同 rule_id（验证去重）与一条不同 rule_id（验证聚合）的 finding。
+    for rule_id in ("PY001", "SEC002"):
+        extra = await admin_client.post(
+            "/api/findings",
+            json={
+                "review_id": seeded["review_id"],
+                "file_path": "src/extra.py",
+                "line_number": 1,
+                "rule_id": rule_id,
+                "severity": "WARNING",
+                "title": "extra finding",
+            },
+        )
+        assert extra.status_code == 201
+
+    list_response = await admin_client.get("/api/reviews/records")
+    assert list_response.status_code == 200
+    item = list_response.json()["items"][0]
+    assert item["id"] == seeded["review_id"]
+    assert item["project_name"] == "demo"
+    assert len(item["rules_used"]) == 2
+    assert set(item["rules_used"]) == {"PY001", "SEC002"}
+
+    detail_response = await admin_client.get(f"/api/reviews/{seeded['review_id']}")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["project_name"] == "demo"
+    assert len(detail["rules_used"]) == 2
+    assert set(detail["rules_used"]) == {"PY001", "SEC002"}

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 ReviewStatus = Literal["pending", "running", "done", "failed"]
 
@@ -64,5 +64,9 @@ class ReviewRead(BaseModel):
     finding_count: int
     duration_ms: int | None
     raw_llm_output: str | None
+    # 展示用冗余字段：project_name 来自关联 Project.name，rules_used 为 findings 的
+    # rule_id 去重列表。由 admin API 层在返回前填充，不直接映射 ORM 列。
+    project_name: str | None = None
+    rules_used: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

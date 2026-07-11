@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hmac
-from collections.abc import Sequence
+import re
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, TypeVar, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -27,7 +28,7 @@ from app.models.project_rule import ProjectRule
 from app.models.provider import Provider
 from app.models.review import Review
 from app.models.rule import Rule
-from app.repositories import BaseRepository, ProjectRepository
+from app.repositories import BaseRepository, ProjectRepository, RuleRepository
 from app.schemas.engine import EngineCreate, EngineRead, EngineUpdate
 from app.schemas.finding import FindingCreate, FindingRead, FindingUpdate
 from app.schemas.negative_example import NegativeExampleRead
@@ -239,7 +240,13 @@ async def list_rules(
 async def create_rule(payload: RuleCreate, db: DbSession) -> RuleRead:
     """Create a reusable review rule."""
 
-    rule = Rule(**payload.model_dump())
+    # rule_id 留空时从 title 自动生成 slug；显式传入则沿用（含冲突 -> 409）。
+    rule_id = payload.rule_id
+    if not rule_id:
+        rule_id = await _generate_rule_slug(payload.title, db)
+    data = payload.model_dump()
+    data["rule_id"] = rule_id
+    rule = Rule(**data)
     return await _create(db, rule, RuleRead, "Rule already exists")
 
 
@@ -351,7 +358,9 @@ async def list_reviews(
         stmt = stmt.where(Review.status == status_filter)
     if mr_iid:
         stmt = stmt.where(Review.mr_iid == mr_iid)
-    return await _paginate(db, stmt, ReviewRead, "reviews", sort, limit, offset)
+    return await _paginate(
+        db, stmt, ReviewRead, "reviews", sort, limit, offset, enrich=_review_to_read
+    )
 
 
 @router.post("/reviews/records", response_model=ReviewRead, status_code=status.HTTP_201_CREATED)
@@ -367,7 +376,7 @@ async def get_review_record(review_id: UUID, db: DbSession) -> ReviewRead:
     """Return one review record by ID."""
 
     review = await _get_or_404(db, Review, review_id, "Review")
-    return ReviewRead.model_validate(review)
+    return _review_to_read(review)
 
 
 @router.patch("/reviews/{review_id}", response_model=ReviewRead)
@@ -601,18 +610,25 @@ async def _paginate(
     sort: str,
     limit: int,
     offset: int,
+    enrich: Callable[[ModelT], SchemaT] | None = None,
 ) -> Page:
     """Apply count, sorting, offset, and limit to a select statement.
 
     分页读取通过 Repository 层完成：``BaseRepository`` 暴露的 ``session`` 与
     ``execute`` 均可复用；这里保留 ``select`` 语句参数是因为不同接口
     需要自定义 join / eager-load / where 过滤，不宜在 Repository 里穷举。
+
+    ``enrich`` 可选：对每行 ORM 对象做自定义封装（如 Review 需附带 project_name /
+    rules_used 时），不传则退回 ``schema.model_validate`` 默认映射。
     """
 
     ordered_stmt = _apply_sort(stmt, sort_group, sort)
     total = await db.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
     result = await db.execute(ordered_stmt.offset(offset).limit(limit))
-    items = [schema.model_validate(row) for row in result.scalars().unique().all()]
+    items = [
+        (enrich(row) if enrich else schema.model_validate(row))
+        for row in result.scalars().unique().all()
+    ]
     return Page(items=items, total=total or 0, limit=limit, offset=offset)
 
 
@@ -766,6 +782,50 @@ def _replace_block_policies(project: Project, policies: Sequence[ProjectBlockPol
         ProjectBlockPolicy(**policy.model_dump(exclude={"project_id"}))
         for policy in sorted(policies, key=lambda item: item.priority)
     ]
+
+
+async def _generate_rule_slug(title: str, db: AsyncSession) -> str:
+    """从标题自动生成唯一的 rule_id slug。
+
+    - 标题含中文 -> 用 ``rule-<uuid8>`` 兜底，避免 slug 出现非 ASCII；
+    - 否则按非「英文/数字/空格/-」字符清洗后小写、空格转 ``-`` 生成 slug；
+    - 清洗后为空 -> 退回 ``rule-<uuid8>``；
+    - 与已有 rule_id 冲突 -> 追加 ``-2``、``-3`` 后缀直至唯一。
+    """
+
+    if re.search("[一-鿿]", title):
+        return f"rule-{uuid4().hex[:8]}"
+    slug = re.sub(r"[^\w\s-]", "", title).strip().lower().replace(" ", "-")
+    if not slug:
+        return f"rule-{uuid4().hex[:8]}"
+    repo = RuleRepository(db)
+    candidate = slug
+    suffix = 2
+    while await repo.get_by_rule_id(candidate):
+        candidate = f"{slug}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _review_to_read(review: Review) -> ReviewRead:
+    """构建带项目名与使用规则的 ReviewRead。
+
+    - ``project_name`` 从 ``review.project.name`` 读（relationship lazy=selectin）；
+    - ``rules_used`` 从 ``review.findings`` 聚合 ``rule_id`` 并去重，保持首次出现顺序。
+
+    Review.project 为非空外键（ondelete=CASCADE），故 project 关系必存在，无需 None 兜底。
+    """
+
+    read = ReviewRead.model_validate(review)
+    read.project_name = review.project.name
+    rules_used: list[str] = []
+    seen: set[str] = set()
+    for finding in review.findings:
+        if finding.rule_id not in seen:
+            seen.add(finding.rule_id)
+            rules_used.append(finding.rule_id)
+    read.rules_used = rules_used
+    return read
 
 
 async def _get_pending_finding(db: AsyncSession, finding_id: UUID) -> Finding:
