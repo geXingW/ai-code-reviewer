@@ -501,7 +501,7 @@ class ReviewOrchestrator:
                             rule_id=rule.rule_id,
                             title=rule.title,
                             description=rule.prompt_snippet,
-                            severity=severity_upper,  # type: ignore[arg-type]
+                            severity=severity_upper,
                             enabled=True,
                         )
                     )
