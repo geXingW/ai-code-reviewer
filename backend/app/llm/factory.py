@@ -34,6 +34,8 @@ def build_provider(
     provider: ProviderConfig | DBProviderLike | LLMProviderConfig,
     *,
     http_client: AsyncHTTPClient | None = None,
+    timeout_seconds: float | None = None,
+    max_retries: int | None = None,
 ) -> LLMProvider:
     """Build a concrete provider from runtime config or a DB Provider row.
 
@@ -41,6 +43,8 @@ def build_provider(
         provider: Runtime ``ProviderConfig``, DB model-like object, or already-normalized
             ``LLMProviderConfig``.
         http_client: Optional async HTTP client for tests or custom transports.
+        timeout_seconds: Optional per-request timeout；透传给 ``LLMProvider``。
+        max_retries: Optional 重试上限；透传给 ``LLMProvider``。
 
     Returns:
         Concrete provider adapter matching the configured protocol.
@@ -50,11 +54,16 @@ def build_provider(
     """
 
     config = _normalise_config(provider)
+    kwargs: dict[str, Any] = {"http_client": http_client}
+    if timeout_seconds is not None:
+        kwargs["timeout_seconds"] = timeout_seconds
+    if max_retries is not None:
+        kwargs["max_retries"] = max_retries
     if config.protocol == "openai_compatible":
-        return OpenAICompatibleProvider(config, http_client=http_client)
+        return OpenAICompatibleProvider(config, **kwargs)
     if config.protocol == "anthropic":
-        return AnthropicProvider(config, http_client=http_client)
-    return CustomProvider(config, http_client=http_client)
+        return AnthropicProvider(config, **kwargs)
+    return CustomProvider(config, **kwargs)
 
 
 def _normalise_config(

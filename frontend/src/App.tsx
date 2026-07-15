@@ -1488,7 +1488,18 @@ function RecentReviewsPanel({ reviews, onViewAll }: RecentReviewsPanelProps) {
               key={`${review.review_id ?? review.project_id}-${review.mr_iid}`}
               className="flex items-center gap-3 border-b border-zinc-100 px-4 py-2.5 last:border-b-0 hover:bg-[#FAFAFA]"
             >
-              <span className={cn('size-1.5 shrink-0 rounded-full', review.has_blocker ? 'bg-rose-500' : 'bg-emerald-500')} />
+              <span
+                className={cn(
+                  'size-1.5 shrink-0 rounded-full',
+                  review.status === 'engine_error'
+                    ? review.has_blocker
+                      ? 'bg-rose-500'
+                      : 'bg-amber-500'
+                    : review.has_blocker
+                      ? 'bg-rose-500'
+                      : 'bg-emerald-500',
+                )}
+              />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-[13px] font-medium text-zinc-900">
@@ -1508,9 +1519,14 @@ function RecentReviewsPanel({ reviews, onViewAll }: RecentReviewsPanelProps) {
                   {review.project_path} · {relativeTime(review.created_at)}
                 </div>
               </div>
-              <UiBadge variant={review.has_blocker ? 'destructive' : 'success'}>
-                {review.has_blocker ? '阻断' : '通过'}
-              </UiBadge>
+              {(() => {
+                const badge = reviewStatusBadgeProps(review.status, review.has_blocker);
+                return (
+                  <UiBadge variant={badge.variant} className={badge.className} title={badge.title}>
+                    {badge.label}
+                  </UiBadge>
+                );
+              })()}
             </div>
           ))}
         </div>
@@ -1867,7 +1883,18 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
     <div className="border-b border-zinc-100 last:border-b-0">
       <div className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors">
         <div className="flex items-center gap-3 min-w-0">
-          <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', review.has_blocker ? 'bg-rose-500' : 'bg-emerald-500')} />
+          <span
+            className={cn(
+              'w-1.5 h-1.5 rounded-full shrink-0',
+              review.status === 'engine_error'
+                ? review.has_blocker
+                  ? 'bg-rose-500'
+                  : 'bg-amber-500'
+                : review.has_blocker
+                  ? 'bg-rose-500'
+                  : 'bg-emerald-500',
+            )}
+          />
           <div className="min-w-0">
             <div className="text-[13px] font-medium text-zinc-900 truncate">
               MR !{review.mr_iid} <span className="text-zinc-500">{review.source_branch} → {review.target_branch}</span>
@@ -1896,9 +1923,14 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <UiBadge variant={review.has_blocker ? 'destructive' : 'success'}>
-            {review.has_blocker ? '阻断' : '通过'}
-          </UiBadge>
+          {(() => {
+            const badge = reviewStatusBadgeProps(review.status, review.has_blocker);
+            return (
+              <UiBadge variant={badge.variant} className={badge.className} title={badge.title}>
+                {badge.label}
+              </UiBadge>
+            );
+          })()}
           <Button variant="ghost" size="sm" type="button" onClick={() => void toggleExpand()}>
             {expanded ? '收起问题' : '查看问题'}
           </Button>
@@ -1953,6 +1985,42 @@ function severityBadgeProps(severity: string): { variant: 'destructive' | 'defau
   if (severity === 'BLOCKER') return { variant: 'destructive' };
   if (severity === 'WARNING') return { variant: 'default', className: 'border-amber-100 bg-amber-50 text-amber-700' };
   return { variant: 'default' };
+}
+
+/**
+ * review.status → UiBadge props。
+ *
+ * - ``engine_error``：**红/橙徽章 "审查失败"**，覆盖 has_blocker 分支——AI 引擎
+ *   都挂了就不能装成 "通过"。has_blocker=true 时用 destructive（rose），has_blocker=
+ *   false（有些 policy 允许 fail 时放行 merge）用 amber 表明"引擎异常但未强阻"。
+ * - ``done``：走原来的 has_blocker → 通过/阻断 语义。
+ * - 其它未知状态：显示"未知"灰色徽章，帮助前端及时发现后端加了新状态却没更新 UI。
+ */
+function reviewStatusBadgeProps(
+  status: string,
+  hasBlocker: boolean,
+): { variant: 'destructive' | 'default' | 'success'; className?: string; label: string; title?: string } {
+  if (status === 'engine_error') {
+    if (hasBlocker) {
+      return {
+        variant: 'destructive',
+        label: '审查失败',
+        title: 'AI 引擎调用失败，且策略阻止合并，请人工审查。',
+      };
+    }
+    return {
+      variant: 'default',
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
+      label: '引擎异常',
+      title: 'AI 引擎调用失败，策略未阻止合并，但请人工审查。',
+    };
+  }
+  if (status === 'done') {
+    return hasBlocker
+      ? { variant: 'destructive', label: '阻断' }
+      : { variant: 'success', label: '通过' };
+  }
+  return { variant: 'default', label: '未知', title: `未知状态：${status}` };
 }
 
 function relativeTime(iso?: string): string {

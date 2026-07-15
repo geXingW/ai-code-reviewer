@@ -132,6 +132,40 @@ describe('MVP 管理台', () => {
             created_at: '2026-07-01T08:00:00Z',
             engine_used: 'llm-direct',
           },
+          {
+            // engine_error 场景：AI 引擎调用失败，policy 未阻断 → 应显示"引擎异常"，不是"通过"
+            review_id: '00000000-0000-0000-0000-000000000002',
+            project_id: 123,
+            project_path: 'group/demo',
+            mr_iid: 8,
+            title: '主 LLM 超时',
+            web_url: 'https://gitlab.example.com/group/demo/-/merge_requests/8',
+            status: 'engine_error',
+            has_blocker: false,
+            finding_count: 0,
+            blocker_count: 0,
+            policy_applied: 'feature/* -> NONE',
+            review_url: null,
+            created_at: '2026-07-01T09:00:00Z',
+            engine_used: 'llm-direct',
+          },
+          {
+            // engine_error + policy 阻断 → "审查失败"（destructive）
+            review_id: '00000000-0000-0000-0000-000000000003',
+            project_id: 123,
+            project_path: 'group/demo',
+            mr_iid: 9,
+            title: '主 LLM 超时（master）',
+            web_url: null,
+            status: 'engine_error',
+            has_blocker: true,
+            finding_count: 0,
+            blocker_count: 1,
+            policy_applied: 'master -> ENGINE_ERROR_ONLY',
+            review_url: null,
+            created_at: '2026-07-01T10:00:00Z',
+            engine_used: 'llm-direct',
+          },
         ]);
       }
       return jsonResponse({ detail: 'not found' }, false, 404);
@@ -151,6 +185,12 @@ describe('MVP 管理台', () => {
 
     expect(await screen.findByText('修复支付回调')).toBeInTheDocument();
     expect(screen.getByText('阻断')).toBeInTheDocument();
+    // engine_error + policy 允许合并 → "引擎异常"，不能被渲染为 "通过"。
+    expect(screen.getByText('引擎异常')).toBeInTheDocument();
+    // engine_error + policy 阻断 → "审查失败"。
+    expect(screen.getByText('审查失败')).toBeInTheDocument();
+    // 关键回归：任何 engine_error 行都不该冒充 "通过"。
+    expect(screen.queryByText('通过')).not.toBeInTheDocument();
     // Issue #76：最近审查面板应展示引擎徽章。
     expect(await screen.findAllByText('llm-direct')).not.toHaveLength(0);
     const recentCall = calls.find((call) => call.url === '/api/reviews/recent');
