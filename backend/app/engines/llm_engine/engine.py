@@ -48,7 +48,6 @@ from app.llm import AsyncHTTPClient, ChatMessage, LLMError, build_provider
 logger = logging.getLogger(__name__)
 
 _ALLOWED_SEVERITIES = {"INFO", "WARNING", "BLOCKER"}
-_DEFAULT_TIMEOUT_SECONDS = 30.0
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.*?)\s*```", re.DOTALL | re.IGNORECASE)
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 _RULE_DOCS_DIR = Path(__file__).resolve().parent / "rule_docs"
@@ -108,14 +107,25 @@ class LLMCompletionClient(Protocol):
 class OpenAICompatibleLLMClient:
     """Provider-backed completion client used by ``LLMDirectEngine`` by default."""
 
-    def __init__(self, *, http_client: AsyncHTTPClient | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        http_client: AsyncHTTPClient | None = None,
+        timeout_seconds: float | None = None,
+        max_retries: int | None = None,
+    ) -> None:
         """Create a completion client.
 
         Args:
             http_client: Optional provider HTTP transport for tests.
+            timeout_seconds: Optional per-request 超时，透传给 ``build_provider`` 让底
+                层 httpx AsyncClient 使用。``None`` 走 provider 默认（30s）。
+            max_retries: Optional 重试上限，透传给 ``LLMProvider`` 覆盖默认（2 次）。
         """
 
         self._http_client = http_client
+        self._timeout_seconds = timeout_seconds
+        self._max_retries = max_retries
 
     async def complete(
         self,
@@ -127,7 +137,16 @@ class OpenAICompatibleLLMClient:
     ) -> str:
         """Call the configured provider through the shared LLM abstraction."""
 
-        llm_provider = build_provider(provider, http_client=self._http_client)
+        # 优先使用构造时注入的 timeout / 重试，参数 timeout_seconds 只在没注入时兜底。
+        effective_timeout = (
+            self._timeout_seconds if self._timeout_seconds is not None else timeout_seconds
+        )
+        llm_provider = build_provider(
+            provider,
+            http_client=self._http_client,
+            timeout_seconds=effective_timeout,
+            max_retries=self._max_retries,
+        )
         effective_system_prompt = (
             system_prompt if system_prompt is not None else _load_prompt("system.md")
         )
@@ -188,23 +207,41 @@ class LLMDirectEngine(ReviewEngine):
         self,
         *,
         client: LLMCompletionClient | None = None,
-        timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+        timeout_seconds: float | None = None,
         settings: Settings | None = None,
     ) -> None:
         """Create an engine instance.
 
         Args:
             client: Optional injectable completion client for tests/provider swaps.
-            timeout_seconds: Maximum seconds spent in one LLM request.
+            timeout_seconds: 每次 LLM 请求上限（秒）。传 ``None`` 时从 ``Settings``
+                的 ``llm_request_timeout_seconds`` 读取，允许 env 覆盖，也保留了显式
+                传参入口用于测试。
             settings: Optional injected settings for tests；默认走 ``get_settings()``。
         """
 
-        if timeout_seconds <= 0:
+        self._settings = settings if settings is not None else get_settings()
+        effective_timeout = (
+            timeout_seconds if timeout_seconds is not None
+            else self._settings.llm_request_timeout_seconds
+        )
+        if effective_timeout <= 0:
             msg = "timeout_seconds must be positive"
             raise ValueError(msg)
-        self._client = client or OpenAICompatibleLLMClient()
-        self._timeout_seconds = timeout_seconds
-        self._settings = settings
+        self._client = client or OpenAICompatibleLLMClient(
+            max_retries=self._settings.llm_max_retries,
+            timeout_seconds=effective_timeout,
+        )
+        self._timeout_seconds = effective_timeout
+        # 启动/构造时打一次配置，便于线上排查"到底用了哪套 timeout/重试/filter 开关"。
+        logger.debug(
+            "LLM engine config: timeout=%.1fs, max_retries=%d, filter_enabled=%s, "
+            "prompt_max_chars=%d",
+            self._timeout_seconds,
+            self._settings.llm_max_retries,
+            self._settings.llm_filter_enabled,
+            self._settings.llm_prompt_max_chars,
+        )
 
     def name(self) -> str:
         """Return the registry identifier."""
@@ -214,10 +251,19 @@ class LLMDirectEngine(ReviewEngine):
     async def review(self, ctx: ReviewContext) -> list[Finding]:
         """Review ``ctx`` and return structured findings.
 
-        The engine degrades safely to an empty list when provider configuration
-        is absent, the upstream call fails, or the model returns malformed JSON.
-        Returning no findings is preferable to breaking the webhook request path;
-        operational details are logged server-side for later diagnosis.
+        错误传播契约（Issue: fix/main-llm-fail-error-and-config）：
+
+        - Provider 缺失 / diff 为空：安静降级为空列表——这些是可预期的"没什么要审
+          的"场景，不能污染 orchestrator 的 engine_error 通道。
+        - LLM 请求失败（TimeoutError / AuthError / ServerError / 其他 LLMError）：
+          **直接抛出**，让 orchestrator 的 ``_handle_engine_error`` 落 status=
+          engine_error、在 MR 上写"AI 审查失败"，绝不能把 timeout 装成 0 findings
+          冒充 PASSED。
+        - 响应解析失败（JSON 坏 / schema 错 / 值类型不对）：包装成 ``LLMError``
+          再抛。在用户视角，"主 LLM 请求失败"与"主 LLM 输出无法解析"是同一件
+          事——AI 审查未能给出可信结论。
+        - Filter 阶段（``_filter_findings``）内部保留 fail-open：filter 挂了返回主
+          审 findings 是刻意的降级策略。
         """
 
         if ctx.provider is None:
@@ -227,6 +273,16 @@ class LLMDirectEngine(ReviewEngine):
             logger.info("llm-direct review skipped: diff is empty")
             return []
 
+        # 每次 review 打一条运行配置，方便对齐日志上"当前 review 走的是哪套 timeout"。
+        logger.debug(
+            "llm-direct review start: timeout=%.1fs, max_retries=%d, "
+            "filter_enabled=%s, review_id=%s",
+            self._timeout_seconds,
+            self._settings.llm_max_retries,
+            self._settings.llm_filter_enabled,
+            ctx.review_id,
+        )
+
         prompt = self._build_prompt(ctx)
         try:
             raw_response = await self._client.complete(
@@ -234,16 +290,20 @@ class LLMDirectEngine(ReviewEngine):
                 prompt=prompt,
                 timeout_seconds=self._timeout_seconds,
             )
+        except LLMError:
+            # LLMError 家族（TimeoutError / AuthError / ServerError / …）直接向
+            # 上冒到 orchestrator，让 _handle_engine_error 走引擎失败分支。
+            raise
+        try:
             findings = self._parse_findings(raw_response, ctx)
-        except (
-            LLMError,
-            ValueError,
-            TypeError,
-            json.JSONDecodeError,
-            ValidationError,
-        ) as exc:
-            logger.exception("llm-direct review degraded to no findings: %s", exc)
-            return []
+        except (ValueError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+            # 解析异常升级为 LLMError：模型返回垃圾 JSON，视为审查失败而非"0 findings PASSED"。
+            logger.error(
+                "llm-direct: failed to parse LLM response: %s",
+                exc,
+                exc_info=True,
+            )
+            raise LLMError(f"LLM response parsing failed: {exc}") from exc
 
         return await self._filter_findings(ctx, findings)
 
@@ -275,6 +335,11 @@ class LLMDirectEngine(ReviewEngine):
         历史上一个函数拼了两段（system + user），改造后：
         - system prompt 是纯静态文件（``system.md``）
         - user prompt 从 ``user.md`` 渲染，注入 diff / rules / history / MR 上下文
+
+        对超大 diff 有一层软保护：如果按原样渲染会超过
+        ``settings.llm_prompt_max_chars``，就把 ``diff_block`` 截断到能塞下，其余
+        section（rules / checklist / history / MR context）**不动**——这些是本次
+        审查的语义骨架，比某几行 diff 尾巴重要得多。
         """
 
         languages = detect_languages(ctx.diff_hunks)
@@ -284,6 +349,25 @@ class LLMDirectEngine(ReviewEngine):
             languages,
             ctx.review_id,
         )
+        max_chars = self._settings.llm_prompt_max_chars
+        template = _load_prompt("user.md")
+        diff_block = self._format_diff(ctx.diff_hunks)
+        rendered_diff, truncated = self._maybe_truncate_diff(
+            template=template,
+            diff_block=diff_block,
+            ctx=ctx,
+            languages=languages,
+            max_chars=max_chars,
+        )
+        if truncated:
+            logger.warning(
+                "prompt exceeded max chars=%d, truncated diff from %d to %d chars "
+                "(review_id=%s)",
+                max_chars,
+                len(diff_block),
+                len(rendered_diff),
+                ctx.review_id,
+            )
         values = {
             "mr_title": ctx.mr_title,
             "mr_description": ctx.mr_description or "（无描述）",
@@ -295,9 +379,59 @@ class LLMDirectEngine(ReviewEngine):
             "language_checklist_block": self._format_language_checklists(languages),
             "rules_block": self._format_rules(ctx.rules),
             "history_block": self._format_history(ctx.history),
-            "diff_block": self._format_diff(ctx.diff_hunks),
+            "diff_block": rendered_diff,
         }
-        return _render_template(_load_prompt("user.md"), values)
+        return _render_template(template, values)
+
+    def _maybe_truncate_diff(
+        self,
+        *,
+        template: str,
+        diff_block: str,
+        ctx: ReviewContext,
+        languages: list[str],
+        max_chars: int,
+    ) -> tuple[str, bool]:
+        """如果整个 prompt 超过 max_chars，截断 diff_block 到能塞下。
+
+        算法：先渲染出"空 diff"版本算固定开销 ``fixed``，允许给 diff 的预算是
+        ``max_chars - fixed``。若 diff 已经在预算内直接返回；否则保留前
+        ``budget - marker_len`` 个字符并在末尾追加截断标记。
+
+        当固定开销自己就 >= max_chars（rules / history / MR context 极大）时，直接
+        返回一个仅含截断标记的 diff——绝对不能返回负预算或空串再让下游猜。
+        """
+
+        marker_template = "\n\n...(diff truncated: original %d chars, kept %d chars for length)"
+        # 用 0-length marker 估算最大 marker 尺寸（避免 marker 自身让 budget 变负）。
+        marker_reserve = len(marker_template % (10**9, 10**9))
+
+        values_without_diff: dict[str, str] = {
+            "mr_title": ctx.mr_title,
+            "mr_description": ctx.mr_description or "（无描述）",
+            "last_commit_message": ctx.last_commit_message or "（无最新 commit message）",
+            "source_branch": ctx.source_branch,
+            "target_branch": ctx.target_branch,
+            "source_commit_sha": ctx.source_commit_sha,
+            "target_commit_sha": ctx.target_commit_sha,
+            "language_checklist_block": self._format_language_checklists(languages),
+            "rules_block": self._format_rules(ctx.rules),
+            "history_block": self._format_history(ctx.history),
+            "diff_block": "",
+        }
+        fixed_prompt = _render_template(template, values_without_diff)
+        fixed_len = len(fixed_prompt)
+
+        if fixed_len + len(diff_block) <= max_chars:
+            return diff_block, False
+
+        budget = max_chars - fixed_len - marker_reserve
+        if budget <= 0:
+            # 固定段就已经超预算：给一个占位说明，不再塞 diff 内容。
+            return marker_template % (len(diff_block), 0), True
+
+        kept = diff_block[:budget]
+        return kept + marker_template % (len(diff_block), len(kept)), True
 
     @staticmethod
     def _format_language_checklists(languages: list[str]) -> str:
@@ -457,7 +591,7 @@ class LLMDirectEngine(ReviewEngine):
         - 只保留输入顺序中未被 drop 的 finding；downgrade 换新 severity。
         """
 
-        settings = self._settings if self._settings is not None else get_settings()
+        settings = self._settings
         if not settings.llm_filter_enabled:
             logger.info(
                 "filter stage: disabled by settings, returning %d findings unchanged",
