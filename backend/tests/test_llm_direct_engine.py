@@ -17,6 +17,7 @@ from app.engines.llm_engine.engine import (
 )
 from app.engines.types import (
     DiffHunk,
+    FindingSource,
     ProviderConfig,
     ReviewContext,
     ReviewHistoryItem,
@@ -603,3 +604,109 @@ def test_engine_reads_settings_defaults() -> None:
     assert settings.llm_max_retries == 1
     assert settings.llm_filter_enabled is False
     assert settings.llm_prompt_max_chars == 32000
+
+
+# --- Finding.source 打标签 -----------------------------------------------
+
+
+def _ctx_with_rule(rule_id: str, *, enabled: bool = True) -> ReviewContext:
+    """构造一个只有一条规则的 ctx，方便测 source tagging。"""
+
+    ctx = _ctx()
+    ctx.rules.clear()
+    ctx.rules.append(
+        RuleSpec(
+            id=uuid4(),
+            rule_id=rule_id,
+            title="team-rule",
+            description="a configured team rule",
+            severity="WARNING",
+            category="team",
+            examples=[],
+            enabled=enabled,
+        )
+    )
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_finding_source_tagged_user_rule_when_rule_id_matches_ctx_rules() -> None:
+    """finding.rule_id 命中 ctx.rules 里启用中的规则 → source=USER_RULE。"""
+
+    client = _FakeLLMClient(
+        responses=[
+            """
+            {"findings": [{
+              "file_path": "app/auth.py",
+              "line_number": 11,
+              "rule_id": "team-md-length",
+              "severity": "WARNING",
+              "title": "team rule hit",
+              "existing_code": "print(user.password)",
+              "confidence": 0.9
+            }]}
+            """
+        ]
+    )
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
+
+    findings = await engine.review(_ctx_with_rule("team-md-length"))
+
+    assert len(findings) == 1
+    assert findings[0].source == FindingSource.USER_RULE
+
+
+@pytest.mark.asyncio
+async def test_finding_source_tagged_llm_inferred_when_rule_id_not_in_ctx() -> None:
+    """rule_id 不在 ctx.rules 里 → source=LLM_INFERRED。"""
+
+    client = _FakeLLMClient(
+        responses=[
+            """
+            {"findings": [{
+              "file_path": "app/auth.py",
+              "line_number": 11,
+              "rule_id": "some-made-up-rule",
+              "severity": "WARNING",
+              "title": "llm inferred",
+              "existing_code": "print(user.password)",
+              "confidence": 0.7
+            }]}
+            """
+        ]
+    )
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
+
+    findings = await engine.review(_ctx_with_rule("team-md-length"))
+
+    assert len(findings) == 1
+    assert findings[0].source == FindingSource.LLM_INFERRED
+
+
+@pytest.mark.asyncio
+async def test_finding_source_ignores_disabled_rules_in_ctx() -> None:
+    """ctx.rules 里 rule_id 匹配但 enabled=False → finding 仍标 LLM_INFERRED。"""
+
+    client = _FakeLLMClient(
+        responses=[
+            """
+            {"findings": [{
+              "file_path": "app/auth.py",
+              "line_number": 11,
+              "rule_id": "disabled-rule",
+              "severity": "WARNING",
+              "title": "should not be user_rule",
+              "existing_code": "print(user.password)",
+              "confidence": 0.9
+            }]}
+            """
+        ]
+    )
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
+
+    findings = await engine.review(
+        _ctx_with_rule("disabled-rule", enabled=False)
+    )
+
+    assert len(findings) == 1
+    assert findings[0].source == FindingSource.LLM_INFERRED

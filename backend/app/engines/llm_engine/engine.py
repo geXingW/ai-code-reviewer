@@ -37,6 +37,7 @@ from app.engines.registry import register_engine
 from app.engines.types import (
     DiffHunk,
     Finding,
+    FindingSource,
     HealthStatus,
     ProviderConfig,
     ReviewContext,
@@ -537,7 +538,7 @@ class LLMDirectEngine(ReviewEngine):
                 continue
             if _matches_false_positive_history(finding, ctx.history):
                 continue
-            parsed.append(finding)
+            parsed.append(_tag_finding_source(finding, ctx))
         return parsed
 
     def _normalise_raw_finding(
@@ -655,14 +656,19 @@ class LLMDirectEngine(ReviewEngine):
             )
             return findings
 
-        kept_touched, dropped, downgraded = summarize_decisions(decisions)
+        kept_touched, dropped, downgraded, user_rule_kept, user_rule_blocked = (
+            summarize_decisions(findings, decisions)
+        )
         logger.info(
             "filter stage: kept %d, dropped %d, downgraded %d "
-            "(explicit keep decisions: %d)",
+            "(explicit keep decisions: %d, user_rule_kept=%d, "
+            "user_rule_drop_attempts_blocked=%d)",
             len(kept),
             dropped,
             downgraded,
             kept_touched,
+            user_rule_kept,
+            user_rule_blocked,
         )
         logger.debug(
             "filter stage decisions",
@@ -683,6 +689,23 @@ def _loads_model_json(raw_response: str) -> dict[str, Any]:
         msg = "LLM response must be a JSON object"
         raise ValueError(msg)
     return cast(dict[str, Any], data)
+
+
+def _tag_finding_source(finding: Finding, ctx: ReviewContext) -> Finding:
+    """按 ``finding.rule_id`` 是否命中 ``ctx.rules`` 打来源标签。
+
+    命中启用中的团队/项目规则 → ``USER_RULE``（Filter 默认保留）。
+
+    其余一律 ``LLM_INFERRED``。语言 checklist 的内容里没有明确的
+    rule_id 锚点，LLM 拿到 checklist 之后自己编 rule_id，无法反向回溯
+    到具体 checklist——所以 ``FindingSource.LANGUAGE_CHECKLIST`` 目前
+    保留占位、暂不使用（future work）。
+    """
+
+    user_rule_ids = {rule.rule_id for rule in ctx.rules if rule.enabled}
+    if finding.rule_id in user_rule_ids:
+        return finding.model_copy(update={"source": FindingSource.USER_RULE})
+    return finding.model_copy(update={"source": FindingSource.LLM_INFERRED})
 
 
 def _decision_to_dict(decision: FilterDecision) -> dict[str, Any]:

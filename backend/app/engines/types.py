@@ -18,6 +18,7 @@ forcing a migration.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
@@ -28,6 +29,27 @@ Severity = Literal["INFO", "WARNING", "BLOCKER"]
 
 HealthState = Literal["ok", "degraded", "error"]
 """Operational state reported by :meth:`ReviewEngine.health_check`."""
+
+
+class FindingSource(StrEnum):
+    """Finding 的来源，Filter 阶段据此决定可否 drop。
+
+    ``USER_RULE`` 表示这条 finding 命中了当前 ``ReviewContext.rules`` 中启用的
+    团队/项目规则——是团队"就要报"的东西，Filter 只能因为不适用当前 diff 或
+    严重度失衡而 downgrade，不允许因为"style 而已"之类的通用审美 drop。
+
+    ``LANGUAGE_CHECKLIST`` 表示来自语言 checklist（``rule_docs/*.md``）的
+    finding。目前 checklist 内容里没有能反向追溯的 rule_id 锚点，模型自己
+    生成的 rule_id 无法回到 checklist——所以此枚举保留占位，engine 侧暂时
+    **不会**主动打这个 tag（future work）。
+
+    ``LLM_INFERRED`` 表示 LLM 自己发挥出来的 finding：没有明确的团队规则或
+    checklist 背书。这是默认值，也是 Filter 阶段应该最激进证伪的一档。
+    """
+
+    USER_RULE = "user_rule"
+    LANGUAGE_CHECKLIST = "language_checklist"
+    LLM_INFERRED = "llm_inferred"
 
 
 class DiffHunk(BaseModel):
@@ -180,6 +202,10 @@ class Finding(BaseModel):
     suggestion: str | None = None
     existing_code: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # 打上 finding 的来源标签，Filter 阶段据此分级处理：用户明确配的规则命中
+    # 时默认保留，LLM 自己发挥出来的 finding 才走强对抗证伪。默认值刻意
+    # 选最不受保护的 ``LLM_INFERRED``，避免调用方忘了打标签导致"误保护"。
+    source: FindingSource = FindingSource.LLM_INFERRED
 
 
 class HealthStatus(BaseModel):
