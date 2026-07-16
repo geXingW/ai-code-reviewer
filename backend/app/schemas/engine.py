@@ -1,10 +1,11 @@
 """Pydantic schemas for review engines."""
 
-from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+from app.schemas._datetime import AwareDatetime
 
 
 class EngineCreate(BaseModel):
@@ -35,5 +36,5 @@ class EngineRead(BaseModel):
     engine_type: str
     config: dict[str, Any] | None
     enabled: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: AwareDatetime
+    updated_at: AwareDatetime

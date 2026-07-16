@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas._datetime import AwareDatetime
+
 Severity = Literal["INFO", "WARNING", "BLOCKER"]
 
 
@@ -49,6 +51,6 @@ class RuleRead(BaseModel):
     languages: list[Any]
     path_patterns: list[Any]
     enabled: bool
-    grace_period_until: datetime | None
-    created_at: datetime
-    updated_at: datetime
+    grace_period_until: AwareDatetime | None
+    created_at: AwareDatetime
+    updated_at: AwareDatetime

@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas._datetime import AwareDatetime
+
 Severity = Literal["INFO", "WARNING", "BLOCKER"]
 FalsePositiveStatus = Literal["NONE", "PENDING", "CONFIRMED", "REJECTED"]
 
@@ -75,10 +77,10 @@ class FindingRead(BaseModel):
     gitlab_discussion_id: str | None
     fp_status: FalsePositiveStatus
     fp_marked_by: str | None
-    fp_marked_at: datetime | None
+    fp_marked_at: AwareDatetime | None
     fp_marked_reason: str | None
     fp_reviewed_by: str | None
-    fp_reviewed_at: datetime | None
+    fp_reviewed_at: AwareDatetime | None
     fp_review_note: str | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: AwareDatetime
+    updated_at: AwareDatetime

@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas._datetime import AwareDatetime
+
 
 class NegativeExampleCreate(BaseModel):
     """Payload for creating an approved negative example."""
@@ -42,6 +44,6 @@ class NegativeExampleRead(BaseModel):
     explanation: str | None
     source_finding_id: UUID | None
     approved_by: str | None
-    approved_at: datetime | None
-    created_at: datetime
-    updated_at: datetime
+    approved_at: AwareDatetime | None
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
