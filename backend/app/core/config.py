@@ -82,9 +82,40 @@ class Settings(BaseSettings):
             description=(
                 "是否启用 LLM 证伪式后置过滤阶段：True 表示对主 LLM 产出的 findings "
                 "再走一次 LLM 决定 keep / drop / downgrade；False 直接返回原始 findings。"
+                "默认 False：Filter 每次多一次 LLM 调用，延迟/成本翻倍，除非用户主动开启。"
             ),
         ),
-    ] = True
+    ] = False
+    llm_request_timeout_seconds: Annotated[
+        float,
+        Field(
+            gt=0.0,
+            description=(
+                "单次 LLM 请求超时（秒）。默认 180s 面向 reasoning 模型的常见首字节延迟；"
+                "调用方可通过环境变量 LLM_REQUEST_TIMEOUT_SECONDS 覆盖。"
+            ),
+        ),
+    ] = 180.0
+    llm_max_retries: Annotated[
+        int,
+        Field(
+            ge=0,
+            description=(
+                "LLM provider 请求的最大重试次数（不含首次调用）。"
+                "默认 1：保留一次网络抖动兜底，避免总耗时爆炸。"
+            ),
+        ),
+    ] = 1
+    llm_prompt_max_chars: Annotated[
+        int,
+        Field(
+            gt=0,
+            description=(
+                "user prompt 允许的最大字符数；超限时在 _build_prompt 中优先截断 diff "
+                "段落。默认 32000 ≈ DeepSeek 64K context window 的保守 1/4。"
+            ),
+        ),
+    ] = 32000
     cors_origins: Annotated[
         list[str],
         Field(description="Allowed CORS origins."),
