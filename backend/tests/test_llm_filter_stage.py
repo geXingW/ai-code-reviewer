@@ -15,10 +15,12 @@ from app.engines.llm_engine.filter_stage import (
     apply_decisions,
     format_candidates,
     parse_filter_response,
+    summarize_decisions,
 )
 from app.engines.types import (
     DiffHunk,
     Finding,
+    FindingSource,
     ProviderConfig,
     ReviewContext,
     RuleSpec,
@@ -36,6 +38,7 @@ def _finding(
     suggestion: str | None = "Remove the print or redact sensitive values.",
     existing_code: str | None = "print(user.password)",
     confidence: float = 0.9,
+    source: FindingSource = FindingSource.LLM_INFERRED,
 ) -> Finding:
     return Finding(
         file_path=file_path,
@@ -47,6 +50,7 @@ def _finding(
         suggestion=suggestion,
         existing_code=existing_code,
         confidence=confidence,
+        source=source,
     )
 
 
@@ -313,13 +317,14 @@ class _DualResponseClient:
 async def test_engine_review_calls_filter_when_enabled() -> None:
     """settings.llm_filter_enabled=True 时，engine 走第二次 LLM 调用并应用 decisions。"""
 
+    # rule_id 刻意不匹配 ctx.rules（否则会被标为 USER_RULE 而无法被 filter drop）。
     review = """
     {"findings": [
-      {"file_path": "app/auth.py", "line_number": 11, "rule_id": "no-secret-logging",
+      {"file_path": "app/auth.py", "line_number": 11, "rule_id": "inferred-nit-1",
        "severity": "BLOCKER", "title": "A", "confidence": 0.9},
-      {"file_path": "app/auth.py", "line_number": 11, "rule_id": "no-secret-logging",
+      {"file_path": "app/auth.py", "line_number": 11, "rule_id": "inferred-nit-2",
        "severity": "BLOCKER", "title": "B", "confidence": 0.9},
-      {"file_path": "app/auth.py", "line_number": 11, "rule_id": "no-secret-logging",
+      {"file_path": "app/auth.py", "line_number": 11, "rule_id": "inferred-nit-3",
        "severity": "BLOCKER", "title": "C", "confidence": 0.9}
     ]}
     """
@@ -420,3 +425,146 @@ async def test_engine_review_filter_empty_findings_skips_llm() -> None:
     assert findings == []
     # 仅一次调用（主 review），filter 阶段短路
     assert len(client.calls) == 1
+
+
+# --- 用户规则来源 & Filter 兜底 --------------------------------------------
+
+
+def test_format_candidates_renders_source_label() -> None:
+    """candidate 段落必须带 ``source=`` 字段，让 Filter LLM 能读到来源。"""
+
+    findings = [
+        _finding(source=FindingSource.USER_RULE),
+        _finding(
+            file_path="app/service.py",
+            line_number=42,
+            rule_id="inferred-nit",
+            title="LLM inferred nit",
+            source=FindingSource.LLM_INFERRED,
+        ),
+    ]
+
+    rendered = format_candidates(findings)
+
+    assert "source=user_rule" in rendered
+    assert "source=llm_inferred" in rendered
+
+
+def test_apply_decisions_never_drops_user_rule_finding() -> None:
+    """source=USER_RULE + verdict=drop 时兜底保留（不 remove）。"""
+
+    findings = [
+        _finding(title="user-rule-a", source=FindingSource.USER_RULE),
+        _finding(title="inferred-b", source=FindingSource.LLM_INFERRED),
+    ]
+    decisions = [
+        FilterDecision(index=0, verdict="drop", reason="style opinion", new_severity=None),
+        FilterDecision(index=1, verdict="drop", reason="hallucinated", new_severity=None),
+    ]
+
+    kept = apply_decisions(findings, decisions)
+
+    # user_rule finding 兜底 keep，llm_inferred finding 按 decision drop 掉。
+    assert [f.title for f in kept] == ["user-rule-a"]
+    assert kept[0].source == FindingSource.USER_RULE
+
+
+def test_apply_decisions_allows_downgrade_on_user_rule() -> None:
+    """downgrade 对 user_rule 仍然生效——用于 severity 失衡校正。"""
+
+    findings = [
+        _finding(
+            title="user-rule-a",
+            severity="BLOCKER",
+            source=FindingSource.USER_RULE,
+        ),
+    ]
+    decisions = [
+        FilterDecision(
+            index=0,
+            verdict="downgrade",
+            reason="not blocking",
+            new_severity="INFO",
+        ),
+    ]
+
+    kept = apply_decisions(findings, decisions)
+
+    assert len(kept) == 1
+    assert kept[0].severity == "INFO"
+    # source 不能被 model_copy 弄丢
+    assert kept[0].source == FindingSource.USER_RULE
+
+
+def test_apply_decisions_drops_llm_inferred_finding_normally() -> None:
+    """source=LLM_INFERRED + verdict=drop → 该 finding 被移除。"""
+
+    findings = [
+        _finding(title="keep-me", source=FindingSource.USER_RULE),
+        _finding(title="drop-me", source=FindingSource.LLM_INFERRED),
+    ]
+    decisions = [
+        FilterDecision(index=1, verdict="drop", reason="nit", new_severity=None),
+    ]
+
+    kept = apply_decisions(findings, decisions)
+
+    assert [f.title for f in kept] == ["keep-me"]
+
+
+def test_user_rule_drop_attempts_are_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """LLM 尝试 drop user_rule 时 apply_decisions 打 WARNING 日志，
+    便于观察 LLM 违反 prompt 的频率。"""
+
+    findings = [_finding(source=FindingSource.USER_RULE)]
+    decisions = [
+        FilterDecision(
+            index=0, verdict="drop", reason="style only", new_severity=None
+        ),
+    ]
+
+    with caplog.at_level(
+        logging.WARNING, logger="app.engines.llm_engine.filter_stage"
+    ):
+        kept = apply_decisions(findings, decisions)
+
+    assert len(kept) == 1
+    assert any(
+        "tried to drop user_rule finding" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+def test_summarize_decisions_tracks_user_rule_counts() -> None:
+    """summarize_decisions 应返回 user_rule_kept 与被拦截的 drop 次数。"""
+
+    findings = [
+        _finding(title="ur-untouched", source=FindingSource.USER_RULE),
+        _finding(title="ur-drop-attempt", source=FindingSource.USER_RULE),
+        _finding(title="inferred-drop", source=FindingSource.LLM_INFERRED),
+    ]
+    decisions = [
+        FilterDecision(
+            index=1, verdict="drop", reason="style opinion", new_severity=None
+        ),
+        FilterDecision(
+            index=2, verdict="drop", reason="hallucination", new_severity=None
+        ),
+    ]
+
+    (
+        kept_touched,
+        dropped,
+        downgraded,
+        user_rule_kept,
+        user_rule_blocked,
+    ) = summarize_decisions(findings, decisions)
+
+    assert kept_touched == 0
+    assert dropped == 2
+    assert downgraded == 0
+    # 两条 user_rule 都最终保留（一条未被 decisions 触及，一条 drop 被兜底）
+    assert user_rule_kept == 2
+    assert user_rule_blocked == 1
