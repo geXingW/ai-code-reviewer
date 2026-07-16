@@ -1,10 +1,11 @@
 """Pydantic schemas for project block policies."""
 
-from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+from app.schemas._datetime import AwareDatetime
 
 BlockPolicySeverity = Literal["NONE", "INFO", "WARNING", "BLOCKER", "ENGINE_ERROR_ONLY"]
 
@@ -43,5 +44,5 @@ class ProjectBlockPolicyRead(BaseModel):
     block_on_engine_error: bool
     require_all_resolved: bool
     priority: int
-    created_at: datetime
-    updated_at: datetime
+    created_at: AwareDatetime
+    updated_at: AwareDatetime

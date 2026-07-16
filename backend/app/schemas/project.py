@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas._datetime import AwareDatetime
 from app.schemas.project_block_policy import ProjectBlockPolicyCreate, ProjectBlockPolicyRead
 from app.schemas.project_rule import ProjectRuleCreate, ProjectRuleRead
 
@@ -67,15 +68,15 @@ class ProjectRead(BaseModel):
     max_files: int
     ignore_paths: list[Any] | None
     default_block_severity: BlockSeverity
-    deleted_at: datetime | None
+    deleted_at: AwareDatetime | None
     rules: list[ProjectRuleRead] = Field(
         default_factory=list,
         validation_alias="project_rules",
         serialization_alias="rules",
     )
     block_policies: list[ProjectBlockPolicyRead] = Field(default_factory=list)
-    created_at: datetime
-    updated_at: datetime
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
 
     @field_validator("gitlab_access_token", "webhook_secret", mode="before")
     @classmethod

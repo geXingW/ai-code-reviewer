@@ -69,10 +69,16 @@ _SEVERITY_RANK: dict[Severity, int] = {
     Severity.WARNING: 2,
     Severity.BLOCKER: 3,
 }
+# 新项目首次注册时用于 seed `project_block_policies` 的默认模板。
+# 已存在的项目不会被自动升级：只影响未来新建项目。
+# main / develop 与 master 同级视为主干分支，避免 GitLab 默认分支
+# 为 main 的项目命中 `*` 兜底导致 BLOCKER 被忽略。
 _DEFAULT_POLICY_TEMPLATES: tuple[tuple[int, str, BlockSeverity], ...] = (
     (1, "master", BlockSeverity.BLOCKER),
-    (2, "release/*", BlockSeverity.BLOCKER),
-    (3, "hotfix/*", BlockSeverity.BLOCKER),
+    (2, "main", BlockSeverity.BLOCKER),
+    (3, "develop", BlockSeverity.BLOCKER),
+    (4, "release/*", BlockSeverity.BLOCKER),
+    (5, "hotfix/*", BlockSeverity.BLOCKER),
     (99, "*", BlockSeverity.NONE),
 )
 

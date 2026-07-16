@@ -1,10 +1,11 @@
 """Pydantic schemas for project-rule associations."""
 
-from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+from app.schemas._datetime import AwareDatetime
 
 Severity = Literal["INFO", "WARNING", "BLOCKER"]
 
@@ -34,5 +35,5 @@ class ProjectRuleRead(BaseModel):
     rule_id: UUID
     enabled: bool
     severity_override: Severity | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: AwareDatetime
+    updated_at: AwareDatetime

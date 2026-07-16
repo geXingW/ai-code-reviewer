@@ -2023,11 +2023,16 @@ function reviewStatusBadgeProps(
   return { variant: 'default', label: '未知', title: `未知状态：${status}` };
 }
 
-function relativeTime(iso?: string): string {
+export function relativeTime(iso?: string): string {
   if (!iso) {
     return '';
   }
-  const date = new Date(iso);
+  // 防守：后端理论上已保证输出带 tz（AwareDatetime），这里再补一层兜底——
+  // 如果字符串既没有 Z 也没有 +HH:MM / -HH:MM，就当作 UTC 追加 Z，
+  // 避免浏览器按本地时区解析导致时差错位（见 backend/app/schemas/_datetime.py）。
+  const hasTz = /[Zz]$/.test(iso) || /[+-]\d{2}:?\d{2}$/.test(iso);
+  const normalized = hasTz ? iso : `${iso}Z`;
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) {
     return '';
   }

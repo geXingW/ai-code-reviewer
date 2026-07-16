@@ -99,19 +99,47 @@ def test_engine_error_blocking_is_controlled_by_policy_flag_and_threshold() -> N
 
 
 def test_default_block_policy_seed_templates_match_issue_contract() -> None:
-    """New project defaults should protect master/release/hotfix and allow others."""
+    """New project defaults should protect master/main/develop/release/hotfix and allow others."""
 
     project_id = uuid4()
     defaults = build_default_block_policies(project_id=project_id)
 
     assert [(p.priority, p.branch_pattern, p.block_severity) for p in defaults] == [
         (1, "master", BlockSeverity.BLOCKER.value),
-        (2, "release/*", BlockSeverity.BLOCKER.value),
-        (3, "hotfix/*", BlockSeverity.BLOCKER.value),
+        (2, "main", BlockSeverity.BLOCKER.value),
+        (3, "develop", BlockSeverity.BLOCKER.value),
+        (4, "release/*", BlockSeverity.BLOCKER.value),
+        (5, "hotfix/*", BlockSeverity.BLOCKER.value),
         (99, "*", BlockSeverity.NONE.value),
     ]
     assert all(p.project_id == project_id for p in defaults)
     assert all(p.block_on_engine_error is False for p in defaults)
+
+
+def test_default_policies_include_main_and_develop() -> None:
+    """默认模板必须同时覆盖 master / main / develop，避免主干分支命名不同而漏配。"""
+
+    defaults = build_default_block_policies(project_id=uuid4())
+    patterns = {p.branch_pattern for p in defaults}
+    assert {"master", "main", "develop", "release/*", "hotfix/*"} <= patterns
+
+
+def test_match_block_policy_main_targets_blocker() -> None:
+    """target_branch=main 应命中 BLOCKER，不能掉到 `*` 兜底。"""
+
+    defaults = build_default_block_policies(project_id=uuid4())
+    matched = match_block_policy(defaults, "main")
+    assert matched.branch_pattern == "main"
+    assert matched.block_severity == BlockSeverity.BLOCKER.value
+
+
+def test_match_block_policy_develop_targets_blocker() -> None:
+    """target_branch=develop 应命中 BLOCKER，不能掉到 `*` 兜底。"""
+
+    defaults = build_default_block_policies(project_id=uuid4())
+    matched = match_block_policy(defaults, "develop")
+    assert matched.branch_pattern == "develop"
+    assert matched.block_severity == BlockSeverity.BLOCKER.value
 
 
 def test_default_block_policy_seed_accepts_string_project_id() -> None:

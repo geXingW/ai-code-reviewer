@@ -1,10 +1,11 @@
 """Pydantic schemas for AI review records."""
 
-from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas._datetime import AwareDatetime
 
 ReviewStatus = Literal["pending", "running", "done", "failed"]
 
@@ -68,5 +69,5 @@ class ReviewRead(BaseModel):
     # rule_id 去重列表。由 admin API 层在返回前填充，不直接映射 ORM 列。
     project_name: str | None = None
     rules_used: list[str] = Field(default_factory=list)
-    created_at: datetime
-    updated_at: datetime
+    created_at: AwareDatetime
+    updated_at: AwareDatetime

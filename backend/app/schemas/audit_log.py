@@ -1,10 +1,11 @@
 """Pydantic schemas for audit logs."""
 
-from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+from app.schemas._datetime import AwareDatetime
 
 
 class AuditLogCreate(BaseModel):
@@ -38,5 +39,5 @@ class AuditLogRead(BaseModel):
     resource_type: str
     resource_id: UUID | None
     details: dict[str, Any] | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
