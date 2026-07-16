@@ -1,10 +1,11 @@
 """Pydantic schemas for LLM providers."""
 
-from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, field_validator
+
+from app.schemas._datetime import AwareDatetime
 
 ProviderProtocol = Literal["openai_compatible", "anthropic", "custom"]
 
@@ -52,8 +53,8 @@ class ProviderRead(BaseModel):
     max_tokens: int
     extra_headers: dict[str, Any] | None
     enabled: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
 
     @field_validator("api_key", mode="before")
     @classmethod

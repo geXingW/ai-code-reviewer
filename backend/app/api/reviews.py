@@ -5,7 +5,6 @@ from __future__ import annotations
 import hmac
 import logging
 from collections import deque
-from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -16,6 +15,7 @@ from app.api.gitlab_webhook import review_merge_request_event
 from app.core.config import get_settings
 from app.core.db import DbSession
 from app.repositories.review import ReviewRepository
+from app.schemas._datetime import AwareDatetime
 from app.services.review_orchestrator import GitLabMergeRequestEvent
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ class RecentReviewRead(BaseModel):
     review_url: str | None
     # Issue #76：新增引擎与创建时间，前端展示"何时用哪个引擎评的"。
     engine_used: str | None = None
-    created_at: datetime | None = None
+    created_at: AwareDatetime | None = None
 
 
 _recent_reviews: deque[RecentReviewRead] = deque(maxlen=20)
