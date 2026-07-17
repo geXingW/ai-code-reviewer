@@ -75,6 +75,10 @@ class RecentReviewRead(BaseModel):
     # Issue #76：新增引擎与创建时间，前端展示"何时用哪个引擎评的"。
     engine_used: str | None = None
     created_at: AwareDatetime | None = None
+    # PR #89：让首页最近评审面板也能看到"全量 / 增量"徽章。
+    # DB 里 review_mode 为 NOT NULL server_default='full'，但对内存 deque 兜底
+    # （见 _record_recent_review）也可能没设置，这里保留 Optional 并给默认 'full'。
+    review_mode: str | None = "full"
 
 
 _recent_reviews: deque[RecentReviewRead] = deque(maxlen=20)
@@ -148,6 +152,9 @@ def _to_recent_review(review: object) -> RecentReviewRead:
         review_url=None,
         engine_used=getattr(review, "engine_used", None),
         created_at=getattr(review, "created_at", None),
+        # PR #89：DB 里 review_mode 是 NOT NULL server_default='full'，老数据
+        # 迁移后必然有值。这里读不到就兜底 'full'，防前端徽章渲染出错。
+        review_mode=getattr(review, "review_mode", None) or "full",
     )
 
 

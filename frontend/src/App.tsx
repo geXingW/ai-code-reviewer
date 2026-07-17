@@ -1527,6 +1527,21 @@ function RecentReviewsPanel({ reviews, onViewAll }: RecentReviewsPanelProps) {
                   </UiBadge>
                 );
               })()}
+              {review.review_mode && review.review_mode !== 'full' ? (
+                // PR #89：首页面板只在非 full 时展示紧凑徽章，避免"全量"占位噪声。
+                (() => {
+                  const modeBadge = reviewModeBadgeProps(review.review_mode);
+                  return (
+                    <UiBadge
+                      variant={modeBadge.variant}
+                      className={cn(modeBadge.className, 'h-4 px-1.5 text-[10px]')}
+                      title={modeBadge.title}
+                    >
+                      {modeBadge.label}
+                    </UiBadge>
+                  );
+                })()
+              ) : null}
             </div>
           ))}
         </div>
@@ -1903,7 +1918,7 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
               {review.status} · {review.finding_count} 个问题 · {review.commit_sha.slice(0, 7)} · {review.project_name || '-'}
               {review.created_at ? ` · ${relativeTime(review.created_at)}` : ''}
             </div>
-            {(review.rules_used ?? []).length > 0 || review.engine_used ? (
+            {(review.rules_used ?? []).length > 0 || review.engine_used || review.parent_review_id ? (
               <div className="mt-1 flex flex-wrap gap-1">
                 {(review.rules_used ?? []).map((ruleId) => (
                   <span key={ruleId} className="inline-flex items-center rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] font-mono text-zinc-600">
@@ -1916,6 +1931,16 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
                     {review.engine_used}
                   </span>
                 ) : null}
+                {review.parent_review_id ? (
+                  // PR #89：串链提示。本 PR 不做跳转（要额外路由），只显示 slice(0,7)，
+                  // 完整 parent_id 放到 title 里供开发者排查。
+                  <span
+                    className="inline-flex items-center rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] font-mono text-zinc-500"
+                    title={`接续自评审：${review.parent_review_id}`}
+                  >
+                    ↩ 接续自 {review.parent_review_id.slice(0, 7)}
+                  </span>
+                ) : null}
               </div>
             ) : (
               <div className="mt-1 text-[10px] text-zinc-400">-</div>
@@ -1923,6 +1948,16 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {(() => {
+            // PR #89：review_mode 徽章紧挨 status 徽章展示。老数据 review_mode 缺失
+            // 走 helper 的 'full' fallback，展示"全量"灰色徽章，避免出现空白。
+            const modeBadge = reviewModeBadgeProps(review.review_mode, review.base_sha);
+            return (
+              <UiBadge variant={modeBadge.variant} className={modeBadge.className} title={modeBadge.title}>
+                {modeBadge.label}
+              </UiBadge>
+            );
+          })()}
           {(() => {
             const badge = reviewStatusBadgeProps(review.status, review.has_blocker);
             return (
@@ -2021,6 +2056,54 @@ function reviewStatusBadgeProps(
       : { variant: 'success', label: '通过' };
   }
   return { variant: 'default', label: '未知', title: `未知状态：${status}` };
+}
+
+/**
+ * review_mode → UiBadge props（PR #89 增量审查串链的 UI 徽章）。
+ *
+ * - ``full`` 或 undefined（老数据、以及后端偶发字段缺失时的防御分支）：中性灰色，「全量」；
+ * - ``incremental``：sky 蓝色，「增量」，配合 base_sha 提示前一次 push；
+ * - ``reuse``：violet 紫色，「复用」，标注这次结果直接沿用上一次同 commit 的审查；
+ * - 未知值：仍按中性灰渲染但 label 显示原字符串，帮前端及时发现后端加了新 mode 却没更新 UI。
+ *
+ * `baseSha` 参数只用于 ``incremental`` 分支组装 title；老数据可能为空，需兜底。
+ */
+export function reviewModeBadgeProps(
+  mode: string | null | undefined,
+  baseSha?: string | null,
+): { variant: 'default'; className: string; label: string; title?: string } {
+  if (mode === 'incremental') {
+    // 老数据 base_sha 可能缺失；title 兜底给个通用说明，不硬拼接会产生 "undefined"。
+    const shaSuffix = baseSha ? `相较上次 push: ${baseSha.slice(0, 7)}` : '相较上次 push 的增量审查';
+    return {
+      variant: 'default',
+      className: 'border-sky-200 bg-sky-50 text-sky-700',
+      label: '增量',
+      title: shaSuffix,
+    };
+  }
+  if (mode === 'reuse') {
+    return {
+      variant: 'default',
+      className: 'border-violet-200 bg-violet-50 text-violet-700',
+      label: '复用',
+      title: '复用自上一次同 commit 的审查',
+    };
+  }
+  if (mode && mode !== 'full') {
+    // 未知模式：中性徽章 + 原字符串，便于开发环境显眼地发现。
+    return {
+      variant: 'default',
+      className: 'border-zinc-200 bg-zinc-50 text-zinc-600',
+      label: mode,
+      title: `未知 review_mode：${mode}`,
+    };
+  }
+  return {
+    variant: 'default',
+    className: 'border-zinc-200 bg-zinc-50 text-zinc-600',
+    label: '全量',
+  };
 }
 
 export function relativeTime(iso?: string): string {

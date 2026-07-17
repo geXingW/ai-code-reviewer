@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import App from './App';
+import App, { reviewModeBadgeProps } from './App';
 
 type MockResponse = {
   ok: boolean;
@@ -373,5 +373,55 @@ describe('MVP 管理台', () => {
       expect.objectContaining({ branch_pattern: 'release/*', block_severity: 'WARNING', priority: 1 }),
       expect.objectContaining({ branch_pattern: 'master', block_severity: 'BLOCKER', priority: 2 }),
     ]);
+  });
+});
+
+// PR #89 增量审查串链：helper 层单元测试。
+// 只测 pure function 输出，不做组件级渲染——保证徽章颜色 / label / title 与设计
+// 契约一致，也确保未知 mode 会被兜底展示（防止后端偷偷加新 mode 但前端不更新）。
+describe('reviewModeBadgeProps', () => {
+  it('full 与 undefined 都返回中性灰的"全量"徽章', () => {
+    const full = reviewModeBadgeProps('full');
+    const missing = reviewModeBadgeProps(undefined);
+    const nullish = reviewModeBadgeProps(null);
+    expect(full.label).toBe('全量');
+    expect(full.variant).toBe('default');
+    expect(full.className).toContain('bg-zinc-50');
+    // 未传 title：不追加提示。
+    expect(full.title).toBeUndefined();
+    expect(missing).toEqual(full);
+    expect(nullish).toEqual(full);
+  });
+
+  it('incremental 返回 sky 蓝徽章，且 title 携带 base_sha 前 7 位', () => {
+    const withBase = reviewModeBadgeProps('incremental', 'deadbeefcafebabe1234');
+    expect(withBase.label).toBe('增量');
+    expect(withBase.className).toContain('bg-sky-50');
+    expect(withBase.className).toContain('text-sky-700');
+    // title 兜住 base_sha 前 7 位（不 hardcode "deadbeef" 全长）。
+    expect(withBase.title).toBe('相较上次 push: deadbee');
+  });
+
+  it('incremental 但 base_sha 缺失时 title 兜底为通用说明，不会拼出 "undefined"', () => {
+    const noBase = reviewModeBadgeProps('incremental');
+    expect(noBase.label).toBe('增量');
+    // 不该出现 "undefined"（否则说明 helper 没兜底）。
+    expect(noBase.title).not.toContain('undefined');
+    expect(noBase.title).toBe('相较上次 push 的增量审查');
+  });
+
+  it('reuse 返回 violet 紫徽章，title 说明"复用自上一次"', () => {
+    const reuse = reviewModeBadgeProps('reuse');
+    expect(reuse.label).toBe('复用');
+    expect(reuse.className).toContain('bg-violet-50');
+    expect(reuse.className).toContain('text-violet-700');
+    expect(reuse.title).toBe('复用自上一次同 commit 的审查');
+  });
+
+  it('未知 mode 保留原字符串并给出显眼 title，帮助发现漏更新', () => {
+    const weird = reviewModeBadgeProps('partial');
+    expect(weird.label).toBe('partial');
+    expect(weird.title).toContain('未知 review_mode');
+    expect(weird.title).toContain('partial');
   });
 });
