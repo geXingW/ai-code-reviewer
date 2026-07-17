@@ -20,6 +20,29 @@ from app.models.negative_example import NegativeExample
 
 
 @dataclass
+class FakeProject:
+    """Minimal project test double used by _finding_to_read enrichment."""
+
+    # 只保留 admin API enrich 层实际访问到的两个属性；不模拟 SQLAlchemy 的
+    # relationship 语义，测试只关心 name / id 能被读到。
+    id: UUID
+    name: str = "demo-project"
+
+
+@dataclass
+class FakeReview:
+    """Minimal review test double used to attach negative examples to projects."""
+
+    id: UUID
+    project_id: UUID
+    # PR #92：admin _finding_to_read 读 review.mr_iid / review.created_at /
+    # review.project.name & id；老测试没这几个字段就会 AttributeError。
+    mr_iid: str = "1"
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    project: FakeProject | None = None
+
+
+@dataclass
 class FakeFinding:
     """Minimal finding test double matching fields used by admin FP endpoints."""
 
@@ -44,14 +67,10 @@ class FakeFinding:
     fp_review_note: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-
-
-@dataclass
-class FakeReview:
-    """Minimal review test double used to attach negative examples to projects."""
-
-    id: UUID
-    project_id: UUID
+    # PR #92：admin _finding_to_read 会 finding.review 读关系里的 MR / project
+    # 上下文。默认 None 时 enrich 会走\"review 未 attach\"分支，展示字段全 None，
+    # 符合老测试的既有断言（老断言不校验展示字段）。
+    review: FakeReview | None = None
 
 
 class FakeSession:
@@ -86,9 +105,19 @@ class FakeSession:
     async def rollback(self) -> None:
         """No-op rollback for compatibility."""
 
-    async def refresh(self, model: object) -> None:
-        """Record refreshed ORM objects."""
+    async def refresh(
+        self,
+        model: object,
+        attribute_names: list[str] | None = None,
+    ) -> None:
+        """Record refreshed ORM objects.
 
+        PR #92 起 admin.py 里的 mark/confirm/reject 会显式传 attribute_names 来
+        强制重新加载 relationship（避免 stale），fake 也要接受这个 kwarg，否则
+        TypeError。fake 不真的执行 refresh 逻辑，参数忽略即可。
+        """
+
+        del attribute_names
         self.refreshed.append(model)
 
 

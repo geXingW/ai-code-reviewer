@@ -84,3 +84,16 @@ class FindingRead(BaseModel):
     fp_review_note: str | None
     created_at: AwareDatetime
     updated_at: AwareDatetime
+
+    # 展示用冗余字段：由 admin API 层在返回前从 finding.review / finding.review.project
+    # 关系里读出填充，不直接映射 ORM 列。方便前端"问题与误报"列表页快速定位到
+    # 具体项目 / MR，而不用先点进 review 详情。
+    #
+    # 注意：``mr_title`` 目前在 Review 表里没有落库列（PR #80 只在 orchestrator
+    # 的 ReviewContext 内存里带过），后端 enrich 层暂时始终填 None。字段保留是给
+    # 未来把 mr_title 落库后一次性联通用的，前端也应当处理 None 情况。
+    project_name: str | None = None
+    project_id: UUID | None = None
+    mr_iid: str | None = None
+    mr_title: str | None = None
+    review_created_at: AwareDatetime | None = None
