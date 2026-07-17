@@ -7,7 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas._datetime import AwareDatetime
 
-ReviewStatus = Literal["pending", "running", "done", "failed"]
+# PR #86 起 orchestrator 会把 AI 引擎挂了显式落一条 status='engine_error' 的评审
+# 记录（用于运营统计与前端红/橙徽章）。schema 层 Literal 必须同步包含此值，
+# 否则 GET /api/reviews 从 DB 读到 engine_error 行会因 ValidationError 500。
+ReviewStatus = Literal["pending", "running", "done", "failed", "engine_error"]
+
 # PR #89 增量审查串链的模式：
 # - ``full``：全量审查（默认，也是老数据 server_default）
 # - ``incremental``：仅审查相较上一次 push 的增量 diff
