@@ -58,8 +58,11 @@ class ReviewRepository(BaseRepository[Review]):
     ) -> Review | None:
         """按 ``(project_id, commit_sha)`` 查找**已完成**（done / engine_error）评审。
 
-        用于 commit_sha 去重：同一 commit 多次触发（GitLab 重发、Jenkins 重试等）
-        时复用旧结果，避免重跑引擎与重写 GitLab 评论。
+        .. deprecated::
+            自增量审查引入后，主流程不再基于全局 commit_sha 去重（不同 MR 可能引用
+            同一 commit），保留此函数仅供未来诊断脚本 / 兼容性回退使用。同 MR
+            同 head 复用改走 :meth:`find_last_review_in_mr` + orchestrator 的
+            reuse 分支。
 
         Args:
             project_id: DB 中 Project 主键 UUID。
@@ -82,6 +85,39 @@ class ReviewRepository(BaseRepository[Review]):
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def find_last_review_in_mr(
+        self,
+        project_id: UUID,
+        mr_iid: str,
+        exclude_status: tuple[str, ...] = (),
+    ) -> Review | None:
+        """按 ``(project_id, mr_iid)`` 找同一 MR 的最近一次评审，用于增量串链。
+
+        选择 "created_at DESC + limit 1"：一个 MR 短时间内多次触发，最新一条一定
+        是我们要接上的 parent。走 ``ix_reviews_project_mr`` 联合索引，无 N+1。
+
+        Args:
+            project_id: DB 中 Project 主键 UUID。
+            mr_iid: 归一化后的 MR IID（Review.mr_iid 落库时已是 ``str``）。
+            exclude_status: 需要排除的 ``status`` 集合。默认不排除；调用方一般
+                传 ``("pending",)`` 跳过未完成评审，避免用未落地的评审做起点。
+
+        Returns:
+            最近一条评审；无返回 ``None``。
+        """
+
+        conditions = [Review.project_id == project_id, Review.mr_iid == mr_iid]
+        if exclude_status:
+            conditions.append(Review.status.notin_(exclude_status))
+        stmt = (
+            select(Review)
+            .where(*conditions)
+            .order_by(Review.created_at.desc())
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
 
 class FindingRepository(BaseRepository[Finding]):
     """Finding 专用查询。"""
@@ -92,5 +128,37 @@ class FindingRepository(BaseRepository[Finding]):
         """按 review_id 列出全部 finding。"""
 
         stmt = select(Finding).where(Finding.review_id == review_id)
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_by_mr(
+        self,
+        project_id: UUID,
+        mr_iid: str,
+    ) -> list[Finding]:
+        """列出同 (project, mr) 累计到目前仍 open 的 finding，供增量合并。
+
+        走 Finding → Review 的 join，只保留 ``Finding.status == 'open'`` 的行，
+        按 ``created_at ASC`` 返回（早发现的排前面，展示时用来做"历史遗留"标注
+        的稳定顺序）。
+
+        Args:
+            project_id: DB 中 Project 主键 UUID。
+            mr_iid: MR IID（str）。
+
+        Returns:
+            按创建时间升序的 Finding 列表，可能为空。
+        """
+
+        stmt = (
+            select(Finding)
+            .join(Review, Finding.review_id == Review.id)
+            .where(
+                Review.project_id == project_id,
+                Review.mr_iid == mr_iid,
+                Finding.status == "open",
+            )
+            .order_by(Finding.created_at.asc())
+        )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())

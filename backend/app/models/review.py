@@ -60,6 +60,23 @@ class Review(Base, TimestampMixin):
     )
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     raw_llm_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 增量审查串链：本次评审的 diff 起点 SHA。full 模式与老数据都可能为 NULL，
+    # 由 orchestrator 在有明确 base 时写入；`ix_reviews_project_mr` 索引配合
+    # ReviewRepository.find_last_review_in_mr 支撑 O(logN) 的上一次评审查询。
+    base_sha: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    parent_review_id: Mapped[UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("reviews.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # review_mode: 'full' | 'incremental'（reuse 模式不新建行，因此不落 'reuse'）。
+    # server_default='full' 保证老数据迁移后有值，Python 层 default 保证内存对象取默认值。
+    review_mode: Mapped[str] = mapped_column(
+        String(20),
+        default="full",
+        server_default=text("'full'"),
+        nullable=False,
+    )
 
     project: Mapped["Project"] = relationship(back_populates="reviews", lazy="selectin")
     policy: Mapped["ProjectBlockPolicy | None"] = relationship(
@@ -69,5 +86,8 @@ class Review(Base, TimestampMixin):
     findings: Mapped[list["Finding"]] = relationship(
         back_populates="review",
         cascade="all, delete-orphan",
+        # review_findings 表额外有 first_seen_review_id / resolved_in_review_id 两个
+        # 指向 reviews.id 的 FK；显式声明 ``findings`` 只跟 review_id 主外键。
+        foreign_keys="Finding.review_id",
         lazy="selectin",
     )

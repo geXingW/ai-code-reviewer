@@ -67,6 +67,42 @@ class GitLabClient:
             f"/api/v4/projects/{project_id}/merge_requests/{mr_iid}/changes",
         )
 
+    async def compare_refs(
+        self,
+        *,
+        project_id: int,
+        from_sha: str,
+        to_sha: str,
+    ) -> dict[str, Any]:
+        """GitLab ``/repository/compare``：判断祖先关系 + 拿两点之间的增量 diff。
+
+        ``from=A&to=B&straight=true`` 语义：直接返回 A→B 的 commits 与 diffs
+        （不是 merge-base 视角）。orchestrator 用两种方式：
+          - 判 A 是否 B 的祖先：``commits`` 非空 + 无 error 视为祖先关系；
+          - 取增量 diff：直接读 ``diffs`` 数组（结构和 MR changes 的 ``changes``
+            相近但字段命名略有差异，orchestrator 再做归一化）。
+
+        Args:
+            project_id: 数值型 GitLab 项目 ID。
+            from_sha: 起点 commit。
+            to_sha: 终点 commit。
+
+        Returns:
+            GitLab compare API 的原始 JSON。
+        """
+
+        if not from_sha.strip():
+            msg = "GitLab compare from_sha must not be empty."
+            raise ValueError(msg)
+        if not to_sha.strip():
+            msg = "GitLab compare to_sha must not be empty."
+            raise ValueError(msg)
+        return await self._request_json(
+            "GET",
+            f"/api/v4/projects/{project_id}/repository/compare",
+            params={"from": from_sha, "to": to_sha, "straight": "true"},
+        )
+
     async def create_merge_request_note(
         self,
         *,
@@ -205,6 +241,7 @@ class GitLabClient:
         path: str,
         *,
         json: dict[str, Any] | None = None,
+        params: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Send an HTTP request and return parsed JSON.
 
@@ -217,7 +254,7 @@ class GitLabClient:
             headers={"PRIVATE-TOKEN": self._token},
             timeout=self._timeout,
         ) as client:
-            response = await client.request(method, path, json=json)
+            response = await client.request(method, path, json=json, params=params)
 
         if response.status_code < 200 or response.status_code >= 300:
             raise GitLabClientError(

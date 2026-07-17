@@ -52,11 +52,24 @@ class _FakeGitLabClient:
     notes: list[str] = field(default_factory=list)
     discussions: list[dict] = field(default_factory=list)
     statuses: list[dict] = field(default_factory=list)
+    # compare_refs 由增量审查引入。默认返回 None，保持老测试路径不受影响。
+    # 传入具体 dict 时 compare_refs 直接返回该 dict，方便断言 is_ancestor 决策。
+    compare_response: dict | None = None
+    compare_calls: list[dict] = field(default_factory=list)
 
     async def get_merge_request_changes(self, project_id: int, mr_iid: int) -> dict:
         assert project_id == 123
         assert mr_iid == 7
         return self.changes
+
+    async def compare_refs(
+        self, *, project_id: int, from_sha: str, to_sha: str,
+    ) -> dict:
+        self.compare_calls.append(
+            {"project_id": project_id, "from_sha": from_sha, "to_sha": to_sha},
+        )
+        # None 用于表达"没配"—— orchestrator 该走保守降级。返回空 dict 让 is_ancestor False。
+        return self.compare_response if self.compare_response is not None else {}
 
     async def create_merge_request_note(self, project_id: int, mr_iid: int, body: str) -> dict:
         assert project_id == 123
