@@ -220,6 +220,8 @@ async def test_recent_reviews_returns_latest_manual_review(
             # Issue #76：schema 新增字段，deque 回退项没有这两条数据，默认 None。
             "engine_used": None,
             "created_at": None,
+            # PR #89 UI（PR #90）：review_mode 走 schema 默认值 'full'。
+            "review_mode": "full",
         }
     ]
     reviews.clear_recent_reviews_for_tests()
