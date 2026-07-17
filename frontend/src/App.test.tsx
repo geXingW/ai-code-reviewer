@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import App, { reviewModeBadgeProps } from './App';
+import App, { fpStatusBadgeProps, reviewModeBadgeProps } from './App';
 
 type MockResponse = {
   ok: boolean;
@@ -423,5 +423,44 @@ describe('reviewModeBadgeProps', () => {
     expect(weird.label).toBe('partial');
     expect(weird.title).toContain('未知 review_mode');
     expect(weird.title).toContain('partial');
+  });
+});
+
+// 问题与误报页 fp_status 徽章：确保四种状态视觉分明，未知走 fallback。
+// 只测 pure function，不做组件渲染——contract 稳住即可。
+describe('fpStatusBadgeProps', () => {
+  it('NONE 返回 null，表示不渲染徽章', () => {
+    expect(fpStatusBadgeProps('NONE')).toBeNull();
+  });
+
+  it('PENDING 返回琥珀色「误报待审」徽章', () => {
+    const pending = fpStatusBadgeProps('PENDING');
+    expect(pending).not.toBeNull();
+    expect(pending?.label).toBe('误报待审');
+    expect(pending?.className).toContain('bg-amber-50');
+    expect(pending?.className).toContain('text-amber-700');
+  });
+
+  it('CONFIRMED 返回绿色「已确认误报」徽章', () => {
+    const confirmed = fpStatusBadgeProps('CONFIRMED');
+    expect(confirmed).not.toBeNull();
+    expect(confirmed?.label).toBe('已确认误报');
+    expect(confirmed?.className).toContain('bg-emerald-50');
+    expect(confirmed?.className).toContain('text-emerald-700');
+  });
+
+  it('REJECTED 返回玫红色「误报驳回」徽章', () => {
+    const rejected = fpStatusBadgeProps('REJECTED');
+    expect(rejected).not.toBeNull();
+    expect(rejected?.label).toBe('误报驳回');
+    expect(rejected?.className).toContain('bg-rose-50');
+    expect(rejected?.className).toContain('text-rose-700');
+  });
+
+  it('未知状态走中性灰兜底并保留原字符串，防止后端偷偷加新状态', () => {
+    const unknown = fpStatusBadgeProps('SOMETHING_NEW');
+    expect(unknown).not.toBeNull();
+    expect(unknown?.label).toBe('SOMETHING_NEW');
+    expect(unknown?.className).toContain('bg-zinc-50');
   });
 });

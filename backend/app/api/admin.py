@@ -416,7 +416,10 @@ async def list_findings(
         stmt = stmt.where(Finding.fp_status == fp_status)
     if file_path:
         stmt = stmt.where(Finding.file_path.ilike(f"%{file_path}%"))
-    return await _paginate(db, stmt, FindingRead, "findings", sort, limit, offset)
+    return await _paginate(
+        db, stmt, FindingRead, "findings", sort, limit, offset,
+        enrich=_finding_to_read,
+    )
 
 
 @router.post("/findings", response_model=FindingRead, status_code=status.HTTP_201_CREATED)
@@ -432,7 +435,7 @@ async def get_finding(finding_id: UUID, db: DbSession) -> FindingRead:
     """Return one finding by ID."""
 
     finding = await _get_or_404(db, Finding, finding_id, "Finding")
-    return FindingRead.model_validate(finding)
+    return _finding_to_read(finding)
 
 
 @router.patch("/findings/{finding_id}", response_model=FindingRead)
@@ -467,8 +470,10 @@ async def mark_false_positive(
     finding.fp_reviewed_at = None
     finding.fp_review_note = None
     await _commit_or_400(db, "False-positive mark failed")
-    await db.refresh(finding)
-    return FindingRead.model_validate(finding)
+    # refresh 后关系可能已 stale；显式声明 attribute_names 强制重新加载 review，
+    # 保证 _finding_to_read 能取到 review / project 上下文（正确性优先）。
+    await db.refresh(finding, attribute_names=["review"])
+    return _finding_to_read(finding)
 
 
 @router.get("/false-positives/pending", response_model=Page)
@@ -511,8 +516,8 @@ async def confirm_false_positive(
         ),
     )
     await _commit_or_400(db, "False-positive confirm failed")
-    await db.refresh(finding)
-    return FindingRead.model_validate(finding)
+    await db.refresh(finding, attribute_names=["review"])
+    return _finding_to_read(finding)
 
 
 @router.post("/false-positives/{finding_id}/reject", response_model=FindingRead)
@@ -529,8 +534,8 @@ async def reject_false_positive(
     finding.fp_reviewed_at = datetime.now(UTC)
     finding.fp_review_note = payload.note
     await _commit_or_400(db, "False-positive reject failed")
-    await db.refresh(finding)
-    return FindingRead.model_validate(finding)
+    await db.refresh(finding, attribute_names=["review"])
+    return _finding_to_read(finding)
 
 
 @router.get("/negative-examples", response_model=Page)
@@ -825,6 +830,31 @@ def _review_to_read(review: Review) -> ReviewRead:
             seen.add(finding.rule_id)
             rules_used.append(finding.rule_id)
     read.rules_used = rules_used
+    return read
+
+
+def _finding_to_read(finding: Finding) -> FindingRead:
+    """构建带 MR / 项目上下文的 FindingRead。
+
+    - ``project_name`` / ``project_id``：从 ``finding.review.project`` 关系读；
+    - ``mr_iid`` / ``review_created_at``：从 ``finding.review`` 读；
+    - ``mr_title``：Review 表未落库该列（见 FindingRead 注释），保留 None
+      以待未来落库后一次性联通。
+
+    ``Finding.review`` 与 ``Review.project`` 都是 ``lazy=selectin``（分别见
+    ``app/models/finding.py`` 和 ``app/models/review.py``），list 场景一次性
+    加载，无 N+1；单条 refresh 后的调用方需要自行 ``refresh(attribute_names=
+    ["review"])`` 以避免 relationship stale。
+    """
+
+    read = FindingRead.model_validate(finding)
+    review = finding.review
+    if review is not None:
+        read.mr_iid = review.mr_iid
+        read.review_created_at = review.created_at
+        if review.project is not None:
+            read.project_name = review.project.name
+            read.project_id = review.project.id
     return read
 
 

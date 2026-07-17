@@ -191,10 +191,20 @@ export type FindingRecord = {
   existing_code?: string | null;
   fp_status: string;
   fp_marked_by?: string | null;
+  fp_marked_at?: string | null;
   fp_marked_reason?: string | null;
   fp_reviewed_by?: string | null;
+  fp_reviewed_at?: string | null;
   fp_review_note?: string | null;
   created_at?: string;
+  // 展示用冗余字段：由后端 admin API 的 _finding_to_read 填充，用于问题与误报
+  // 列表页快速定位到项目 / MR。mr_title 目前后端始终返回 null（Review 表未落库
+  // 该列），UI 需要兜底走 mr_iid。老数据 review_created_at 有落库时间可用。
+  project_name?: string | null;
+  project_id?: string | null;
+  mr_iid?: string | null;
+  mr_title?: string | null;
+  review_created_at?: string | null;
 };
 
 export type NegativeExample = {

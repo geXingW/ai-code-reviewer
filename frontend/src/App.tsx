@@ -1004,18 +1004,65 @@ function App() {
             {items.length === 0 ? (
               <div className="p-6 text-center text-[13px] text-zinc-500">暂无问题记录</div>
             ) : (
-              items.map((finding) => (
-                <div key={finding.id} className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-zinc-900 truncate">{finding.title}</div>
-                    <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id} · {finding.fp_status}</div>
+              items.map((finding) => {
+                // fp_status 决定"标记误报"按钮是否可点：只有 NONE 才允许再标一次。
+                // PENDING / CONFIRMED / REJECTED 都是终态或已入队，再点没意义。
+                const fpBadge = fpStatusBadgeProps(finding.fp_status);
+                const canMark = finding.fp_status === 'NONE';
+                const markLabel = canMark
+                  ? '标记误报'
+                  : finding.fp_status === 'PENDING'
+                    ? '已提交'
+                    : '已处理';
+                // hover title：告诉用户是谁 / 什么时候标的，快速溯源。
+                const markTitle = finding.fp_marked_by
+                  ? `已由 ${finding.fp_marked_by} 于 ${relativeTime(finding.fp_marked_at ?? undefined)} 标记`
+                  : undefined;
+                // MR 上下文行：project_name / mr_iid 若缺失走占位，mr_title 目前后端
+                // 恒为 null（Review 表未落库），有值时前置显示，避免 UI 空跑。
+                const mrIidLabel = finding.mr_iid ? `MR !${finding.mr_iid}` : 'MR !-';
+                const projectLabel = finding.project_name ?? '未知项目';
+                const timeLabel = relativeTime(finding.review_created_at ?? undefined);
+                return (
+                  <div key={finding.id} className="flex items-start justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="text-[13px] font-medium text-zinc-900 truncate">{finding.title}</div>
+                      <div className="text-[11px] text-zinc-500 truncate">
+                        {finding.mr_title ? (
+                          <>
+                            <span className="text-zinc-700">{finding.mr_title}</span>
+                            <span className="mx-1">·</span>
+                          </>
+                        ) : null}
+                        <span>{projectLabel}</span>
+                        <span className="mx-1">·</span>
+                        <span className="font-mono">{mrIidLabel}</span>
+                        {timeLabel ? (
+                          <>
+                            <span className="mx-1">·</span>
+                            <span>{timeLabel}</span>
+                          </>
+                        ) : null}
+                      </div>
+                      <div className="text-[11px] text-zinc-500 font-mono truncate">{finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id}</div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <UiBadge {...severityBadgeProps(finding.severity)}>{finding.severity}</UiBadge>
+                      {fpBadge ? <UiBadge variant={fpBadge.variant} className={fpBadge.className}>{fpBadge.label}</UiBadge> : null}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        type="button"
+                        disabled={!canMark}
+                        title={markTitle}
+                        onClick={() => void handleMarkFalsePositive(finding)}
+                      >
+                        {markLabel}
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <UiBadge {...severityBadgeProps(finding.severity)}>{finding.severity}</UiBadge>
-                    <Button variant="ghost" size="sm" type="button" onClick={() => void handleMarkFalsePositive(finding)}>标记误报</Button>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </CardContent>
         </Card>
@@ -2020,6 +2067,51 @@ function severityBadgeProps(severity: string): { variant: 'destructive' | 'defau
   if (severity === 'BLOCKER') return { variant: 'destructive' };
   if (severity === 'WARNING') return { variant: 'default', className: 'border-amber-100 bg-amber-50 text-amber-700' };
   return { variant: 'default' };
+}
+
+/**
+ * finding.fp_status → UiBadge props（+ label）。
+ *
+ * - ``NONE``：返回 null——列表项默认不渲染徽章，视觉更干净；调用方自行判断。
+ * - ``PENDING``：琥珀色「误报待审」。
+ * - ``CONFIRMED``：绿色「已确认误报」。
+ * - ``REJECTED``：玫红色「误报驳回」。
+ * - 未知值：中性灰徽章 + 原字符串，防止后端偷偷加新状态但前端不更新。
+ *
+ * export 出去是给单测 assert 各分支输出的。
+ */
+export function fpStatusBadgeProps(
+  status: string,
+):
+  | { variant: 'default'; className: string; label: string }
+  | null {
+  if (status === 'NONE') return null;
+  if (status === 'PENDING') {
+    return {
+      variant: 'default',
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
+      label: '误报待审',
+    };
+  }
+  if (status === 'CONFIRMED') {
+    return {
+      variant: 'default',
+      className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+      label: '已确认误报',
+    };
+  }
+  if (status === 'REJECTED') {
+    return {
+      variant: 'default',
+      className: 'border-rose-200 bg-rose-50 text-rose-700',
+      label: '误报驳回',
+    };
+  }
+  return {
+    variant: 'default',
+    className: 'border-zinc-200 bg-zinc-50 text-zinc-600',
+    label: status,
+  };
 }
 
 /**
