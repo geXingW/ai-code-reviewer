@@ -8,6 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas._datetime import AwareDatetime
 
 ReviewStatus = Literal["pending", "running", "done", "failed"]
+# PR #89 增量审查串链的模式：
+# - ``full``：全量审查（默认，也是老数据 server_default）
+# - ``incremental``：仅审查相较上一次 push 的增量 diff
+# - ``reuse``：同一 commit 之前审过、直接复用（orchestrator 逻辑不新建 Review 行，
+#   因此实际上 DB 中不会出现 ``reuse``；此 Literal 是给"reuse 结果重推 note"链路
+#   在展示层用的对齐值，schema 层允许 API 回显时给出 reuse 语义。）
+ReviewMode = Literal["full", "incremental", "reuse"]
 
 
 class ReviewCreate(BaseModel):
@@ -26,6 +33,11 @@ class ReviewCreate(BaseModel):
     finding_count: int = 0
     duration_ms: int | None = None
     raw_llm_output: str | None = None
+    # PR #89：增量审查串链字段。Create 时默认 full；base_sha / parent_review_id
+    # 在增量场景由 orchestrator 显式传入。
+    base_sha: str | None = None
+    parent_review_id: UUID | None = None
+    review_mode: ReviewMode = "full"
 
 
 class ReviewUpdate(BaseModel):
@@ -44,6 +56,10 @@ class ReviewUpdate(BaseModel):
     finding_count: int | None = None
     duration_ms: int | None = None
     raw_llm_output: str | None = None
+    # PR #89：增量审查串链字段。Update 全部 optional，仅在需要修正串链时使用。
+    base_sha: str | None = None
+    parent_review_id: UUID | None = None
+    review_mode: ReviewMode | None = None
 
 
 class ReviewRead(BaseModel):
@@ -69,5 +85,11 @@ class ReviewRead(BaseModel):
     # rule_id 去重列表。由 admin API 层在返回前填充，不直接映射 ORM 列。
     project_name: str | None = None
     rules_used: list[str] = Field(default_factory=list)
+    # PR #89：增量审查串链字段透传给前端，让"全量 / 增量 / 复用"一眼可辨。
+    # base_sha 与 parent_review_id 老数据可能为 NULL；review_mode 数据库层
+    # server_default='full'，schema 层同样非空（老数据取默认值 'full'）。
+    base_sha: str | None = None
+    parent_review_id: UUID | None = None
+    review_mode: ReviewMode = "full"
     created_at: AwareDatetime
     updated_at: AwareDatetime

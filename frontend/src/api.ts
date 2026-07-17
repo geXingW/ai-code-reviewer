@@ -28,6 +28,8 @@ export type RecentReview = {
   review_url: string | null;
   created_at?: string;
   engine_used?: string | null;
+  // PR #89：首页最近评审面板也需要展示"增量 / 复用"徽章。
+  review_mode?: 'full' | 'incremental' | 'reuse' | null;
 };
 
 export type CreateReviewPayload = {
@@ -169,6 +171,11 @@ export type ReviewRecord = {
   created_at?: string;
   // Issue #76：展示评审所用引擎，便于对比多引擎运行结果。
   engine_used?: string | null;
+  // PR #89：增量审查串链元数据，用于列表 UI 展示"全量 / 增量 / 复用"徽章
+  // 及"接续自 <parent_id>"提示。老数据 review_mode 会走 server_default 'full'。
+  base_sha?: string | null;
+  parent_review_id?: string | null;
+  review_mode?: 'full' | 'incremental' | 'reuse' | null;
 };
 
 export type FindingRecord = {
