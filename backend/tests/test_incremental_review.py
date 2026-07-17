@@ -1,22 +1,28 @@
-"""增量审查（feat/incremental-review）单测：
+"""按"改动文件重刷"审查模式（feat/rescan-changed-files）的单测：
 
-覆盖 orchestrator 决策的六条主路径：
+主线：新 push → 只审"本次 push 改动的文件"的 base..head 完整 diff；审完后
+把这些文件的历史 finding + GitLab discussion 整体换代。未改动文件的老 finding
+和 discussion 全部保留。
+
+覆盖：
 1. 首次审 MR → full；
-2. 第二次 push（head 前进 + is_ancestor True）→ incremental，base=上次 head；
-3. rebase / squash（is_ancestor False）→ history_rewritten 降级 full，parent 仍串；
-4. 同 head 重复触发（CI 抖动）→ reuse，不新建 review、不调 engine；
-5. 增量合并：旧 finding + 新 findings 匹配 → 保留 first_seen；旧文件被改而
-   模型没再报同一位置 → status='resolved'；
-6. 同 project 不同 mr_iid → 全新会话，不复用。
-
-所有测试直接跑 ReviewOrchestrator + 真库（session_factory 绑定当前 event loop
-的 async_sessionmaker），GitLab 客户端全部 mock，避免 HTTP / LLM 不确定性。
+2. 第二次 push（head 前进 + is_ancestor True）→ incremental，compare 返回的
+   diffs 决定改动文件集合，changes 端点拿 base..head 完整 diff 后按改动集合
+   过滤送引擎；
+3. 只审改动文件：diff_hunks 中不出现未改动文件；
+4. 改动文件的历史 discussion 被 resolve；老 finding DB 里 status='resolved'；
+   未改动文件的老 finding 保持 open、不 resolve；
+5. resolve API 抛异常 → warning，但 DB 层 status 仍标 resolved，主流程继续；
+6. rebase / squash（is_ancestor False）→ history_rewritten 降级 full；
+7. 同 head 重复触发 → reuse；
+8. 同 project 不同 mr_iid → 全新 full 会话。
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -63,12 +69,16 @@ class _StubEngine:
     def __init__(self, findings_sequence: list[list[EngineFinding]]) -> None:
         self._sequence = list(findings_sequence)
         self.call_count = 0
+        # 记录每次 engine.review 收到的 context 里 diff_hunks 文件集合，
+        # 便于断言"只审改动文件"。
+        self.received_file_sets: list[list[str]] = []
 
     def name(self) -> str:
         return self._NAME
 
     async def review(self, context: ReviewContext) -> list[EngineFinding]:
         self.call_count += 1
+        self.received_file_sets.append([h.file_path for h in context.diff_hunks])
         if not self._sequence:
             return []
         return list(self._sequence.pop(0))
@@ -80,28 +90,67 @@ def _registry(engine: _StubEngine) -> EngineRegistry:
     return reg
 
 
-def _gitlab_mock(compare_response: dict | None = None) -> AsyncMock:
-    """GitLabClient mock：默认 changes payload 有一个 app.py 变更；compare 可配。"""
+def _mr_changes_payload(files: list[str]) -> dict:
+    """构造一个覆盖 ``files`` 的 MR changes 响应；每个文件都有 non-trivial diff。"""
 
-    client = AsyncMock()
-    client.get_merge_request_changes.return_value = {
-        "changes": [
+    changes = []
+    for path in files:
+        changes.append(
             {
-                "diff": "@@ -1,3 +1,4 @@\n line1\n+new line\n line2\n",
-                "new_path": "app.py",
-                "old_path": "app.py",
+                "diff": f"@@ -1,3 +1,4 @@\n line-a\n+new-{path}\n line-b\n",
+                "new_path": path,
+                "old_path": path,
                 "new_file": False,
                 "deleted_file": False,
-            }
-        ],
+            },
+        )
+    return {
+        "changes": changes,
         "diff_refs": {"base_sha": "b", "start_sha": "s", "head_sha": "h"},
     }
+
+
+def _gitlab_mock(
+    *,
+    compare_response: dict | None = None,
+    changes_files: list[str] | None = None,
+) -> AsyncMock:
+    """GitLabClient mock：默认 changes 覆盖 app.py 一个文件；compare / changes 可配。
+
+    - ``compare_response``: :meth:`compare_refs` 返回值；默认 ``{}`` → 视作非祖先
+      关系（老测试路径行为）。传值时应符合真实 compare API 结构：``commits`` +
+      ``diffs``（本 PR 用 diffs 提取改动文件集合）。
+    - ``changes_files``: :meth:`get_merge_request_changes` 返回的文件列表；默认
+      仅 ``app.py``。
+    """
+
+    client = AsyncMock()
+    client.get_merge_request_changes.return_value = _mr_changes_payload(
+        changes_files if changes_files is not None else ["app.py"],
+    )
     client.create_merge_request_note.return_value = {"id": 100}
     client.set_commit_status.return_value = {"status": "success"}
-    client.create_merge_request_discussion.return_value = {"id": "d1"}
-    # compare_refs 默认返回空 dict → is_ancestor False；测试可以覆盖。
+    client.create_merge_request_discussion.side_effect = _make_discussion_side_effect()
+    # resolve_discussion 默认 noop，测试可覆盖 side_effect 让它抛错。
+    client.resolve_discussion.return_value = {"resolved": True}
     client.compare_refs.return_value = compare_response if compare_response is not None else {}
     return client
+
+
+def _make_discussion_side_effect() -> Callable[..., Awaitable[dict[str, Any]]]:
+    """按创建次序为每次 create_merge_request_discussion 分配确定性 discussion id。
+
+    改用 side_effect 而不是 return_value：新 discussion 每次拿到不同的字符串 id，
+    才能断言 orchestrator 把 id 正确回写到对应 Finding 行。
+    """
+
+    counter = {"n": 0}
+
+    async def _create(**_kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+        counter["n"] += 1
+        return {"id": f"disc-{counter['n']}"}
+
+    return _create
 
 
 PROJECT_GITLAB_ID = 4242
@@ -229,13 +278,21 @@ async def test_first_review_uses_full_mode(
 async def test_second_push_uses_incremental_mode(
     session_factory_fixture: async_sessionmaker[AsyncSession],
 ) -> None:
-    """head 前进 + compare.commits 非空 → incremental，base=上次 head，parent 串上。"""
+    """head 前进 + compare 拿到改动文件集合 → incremental，base=上次 head，parent 串上。
+
+    新语义：compare 用来判祖先 + 拿改动文件集合；实际 diff 走 MR changes（base..head）。
+    """
 
     factory = session_factory_fixture
     await _seed_project(factory)
 
-    # is_ancestor True：compare 返回一条 commits。
-    gitlab = _gitlab_mock(compare_response={"commits": [{"id": "c1"}]})
+    # is_ancestor True + compare.diffs 里出现 app.py。
+    gitlab = _gitlab_mock(
+        compare_response={
+            "commits": [{"id": "c1"}],
+            "diffs": [{"new_path": "app.py", "old_path": "app.py"}],
+        },
+    )
 
     engine = _StubEngine(
         [
@@ -260,8 +317,49 @@ async def test_second_push_uses_incremental_mode(
     assert second.review_mode == "incremental"
     assert second.base_sha == "head-a"  # base 是上次的 head
     assert second.parent_review_id == first.id
-    # incremental 走 compare 拉 diff（不再调 MR changes）。
+    # 第二次触发调了 compare（拿改动文件集合）+ 又调了 MR changes（base..head 全量 diff）。
     gitlab.compare_refs.assert_awaited()
+    # get_merge_request_changes 至少调用 2 次：首次全量 + 第二次增量仍走它。
+    assert gitlab.get_merge_request_changes.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_incremental_only_reviews_changed_files_diff_scope(
+    session_factory_fixture: async_sessionmaker[AsyncSession],
+) -> None:
+    """send to engine 的 diff_hunks 只包含本次 push 改动的文件（other.py 被过滤）。"""
+
+    factory = session_factory_fixture
+    await _seed_project(factory)
+
+    # MR changes 有两个文件：app.py + other.py（都在 base..head 里），
+    # compare.diffs 只包含 app.py —— orchestrator 应过滤掉 other.py。
+    gitlab = _gitlab_mock(
+        compare_response={
+            "commits": [{"id": "c1"}],
+            "diffs": [{"new_path": "app.py", "old_path": "app.py"}],
+        },
+        changes_files=["app.py", "other.py"],
+    )
+    engine = _StubEngine(
+        [
+            [],  # 第一次不管
+            [],  # 第二次 engine 输出无所谓；断言点在收到的 context
+        ]
+    )
+    orch = ReviewOrchestrator(
+        gitlab_client=gitlab,
+        engine_registry=_registry(engine),
+        default_engine="stub-engine",
+        session_factory=factory,
+    )
+    await orch.review_merge_request(_event(commit_sha="head-a"))
+    await orch.review_merge_request(_event(commit_sha="head-b"))
+
+    # 第一次：full，two files 都进 diff_hunks。
+    assert set(engine.received_file_sets[0]) == {"app.py", "other.py"}
+    # 第二次：incremental，只留 app.py。
+    assert engine.received_file_sets[1] == ["app.py"]
 
 
 @pytest.mark.asyncio
@@ -327,41 +425,37 @@ async def test_same_head_ci_retry_reuses_previous_review(
 
 
 @pytest.mark.asyncio
-async def test_carried_over_findings_merged_and_marked(
+async def test_incremental_rescans_changed_files_and_resolves_stale_discussions(
     session_factory_fixture: async_sessionmaker[AsyncSession],
 ) -> None:
-    """
-    情景：第一次审出两条 finding（app.py:2 / other.py:5），第二次 push 只让
-    app.py 有 diff 且模型不再报 app.py:2 —— 期望：
-      - app.py:2 → resolved（文件本次改过但没再报）；
-      - other.py:5 → 保持 open（文件本次没动，历史遗留继续显示）；
-      - 新报的 app.py:20 → 落成新 finding，first_seen 指向本次 review。
+    """新 push 涉及 app.py：
+      - app.py 的所有历史 open finding 全部标 resolved；
+      - resolve_discussion 对每条历史 finding（有 gitlab_discussion_id 的）调用一次；
+      - 本轮 app.py 的新 findings 全部走 create_merge_request_discussion 落新记录，
+        并把返回的 discussion id 写回 finding 行；
+      - other.py（不在改动集合）的老 finding 保持 open，不调 resolve_discussion。
     """
 
     factory = session_factory_fixture
     await _seed_project(factory)
 
-    gitlab = _gitlab_mock(compare_response={"commits": [{"id": "c1"}]})
-    # 增量 diff 只涉及 app.py。
-    gitlab.compare_refs.return_value = {
-        "commits": [{"id": "c1"}],
-        "diffs": [
-            {
-                "new_path": "app.py",
-                "old_path": "app.py",
-                "diff": "@@ -1,3 +1,4 @@\n line1\n+more\n line2\n",
-                "new_file": False,
-                "deleted_file": False,
-            }
-        ],
-    }
-
+    gitlab = _gitlab_mock(
+        compare_response={
+            "commits": [{"id": "c1"}],
+            "diffs": [{"new_path": "app.py", "old_path": "app.py"}],
+        },
+        # 第二次审 base..head 也覆盖 app.py + other.py（other.py 会被过滤掉，
+        # 但 MR changes 本身依旧带全 —— 更贴近真实 GitLab 语义）。
+        changes_files=["app.py", "other.py"],
+    )
     engine = _StubEngine(
         [
+            # 第一次 push：app.py 与 other.py 各一条 finding。
             [
                 _finding(file_path="app.py", line=2, rule_id="rule-a"),
                 _finding(file_path="other.py", line=5, rule_id="rule-b"),
             ],
+            # 第二次 push：只改 app.py；重审后 LLM 只报了新位置的问题。
             [
                 _finding(file_path="app.py", line=20, rule_id="rule-c"),
             ],
@@ -374,24 +468,144 @@ async def test_carried_over_findings_merged_and_marked(
         session_factory=factory,
     )
     await orch.review_merge_request(_event(commit_sha="head-a"))
+    # 第一次 push 后应创建 2 条 discussion（disc-1 / disc-2），写回到 DB。
+    first_findings = await _list_findings(factory)
+    disc_ids_after_first = {
+        (f.file_path, f.line_number): f.gitlab_discussion_id for f in first_findings
+    }
+    assert disc_ids_after_first[("app.py", 2)] == "disc-1"
+    assert disc_ids_after_first[("other.py", 5)] == "disc-2"
+
     result = await orch.review_merge_request(_event(commit_sha="head-b"))
 
-    # note 显示合并后的总数：新增 1 + 历史遗留 1 = 2。
+    # note 里"合并后总数" = 本次新增 1 + 未动文件历史 1 = 2。
     assert result.finding_count == 2
 
     findings = await _list_findings(factory)
-    # 3 条 finding：老 app.py:2 + 老 other.py:5 + 新 app.py:20。
-    assert len(findings) == 3
     by_key = {(f.file_path, f.line_number, f.rule_id): f for f in findings}
+    # app.py:2 老 finding 被 resolved（属于改动文件）。
     assert by_key[("app.py", 2, "rule-a")].status == "resolved"
     assert by_key[("app.py", 2, "rule-a")].resolved_in_review_id is not None
+    # other.py:5 未动 → 保持 open。
     assert by_key[("other.py", 5, "rule-b")].status == "open"
-    # 新 finding 的 first_seen 指向第二次 review。
-    # 用 commit_sha 定位而不是 index：MySQL DATETIME 秒级精度下两次调用
-    # 可能落在同一秒，order by created_at 排序不稳定。
+    # app.py:20 本次新增，first_seen 指向第二次 review。
     reviews = await _list_reviews(factory)
     reviews_by_sha = {r.commit_sha: r for r in reviews}
-    assert by_key[("app.py", 20, "rule-c")].first_seen_review_id == reviews_by_sha["head-b"].id
+    new_finding = by_key[("app.py", 20, "rule-c")]
+    assert new_finding.first_seen_review_id == reviews_by_sha["head-b"].id
+    assert new_finding.status == "open"
+    # 新 finding 的 discussion id 也应被回写：本次 create 顺序上是第 3 条 → disc-3。
+    assert new_finding.gitlab_discussion_id == "disc-3"
+
+    # resolve_discussion：只对改动文件的历史 finding 调一次（app.py:2 → disc-1）。
+    assert gitlab.resolve_discussion.await_count == 1
+    resolved_call = gitlab.resolve_discussion.await_args_list[0].kwargs
+    assert resolved_call["discussion_id"] == "disc-1"
+    assert resolved_call["mr_iid"] == 7
+
+
+@pytest.mark.asyncio
+async def test_incremental_carries_over_untouched_file_findings_as_open(
+    session_factory_fixture: async_sessionmaker[AsyncSession],
+) -> None:
+    """A.java（本次没改）B.java（本次改了）都有老 finding；push 后 A.java 老
+    finding 保持 open，B.java 老 finding 全 resolved，且 combined_findings 顺序
+    与数量与 SummaryBuilder 期待对齐。
+    """
+
+    factory = session_factory_fixture
+    await _seed_project(factory)
+
+    gitlab = _gitlab_mock(
+        compare_response={
+            "commits": [{"id": "c1"}],
+            "diffs": [{"new_path": "B.java", "old_path": "B.java"}],
+        },
+        # 第一次 push 覆盖两个文件；第二次 push 只改 B.java。
+        changes_files=["A.java", "B.java"],
+    )
+    engine = _StubEngine(
+        [
+            [
+                _finding(file_path="A.java", line=1, rule_id="ra1"),
+                _finding(file_path="A.java", line=2, rule_id="ra2"),
+                _finding(file_path="B.java", line=1, rule_id="rb1"),
+                _finding(file_path="B.java", line=2, rule_id="rb2"),
+            ],
+            # 第二次 push：B.java 报一条新问题。
+            [_finding(file_path="B.java", line=99, rule_id="rb-new")],
+        ]
+    )
+    orch = ReviewOrchestrator(
+        gitlab_client=gitlab,
+        engine_registry=_registry(engine),
+        default_engine="stub-engine",
+        session_factory=factory,
+    )
+    await orch.review_merge_request(_event(commit_sha="head-a"))
+    result = await orch.review_merge_request(_event(commit_sha="head-b"))
+
+    # 合并总数 = 本次新增 1 (B.java:99) + 未动文件历史 2 (A.java x 2) = 3。
+    assert result.finding_count == 3
+
+    findings = await _list_findings(factory)
+    by_key = {(f.file_path, f.line_number, f.rule_id): f for f in findings}
+    # A.java 老 finding 保持 open。
+    assert by_key[("A.java", 1, "ra1")].status == "open"
+    assert by_key[("A.java", 2, "ra2")].status == "open"
+    # B.java 老 finding 全 resolved。
+    assert by_key[("B.java", 1, "rb1")].status == "resolved"
+    assert by_key[("B.java", 2, "rb2")].status == "resolved"
+    # 新的 B.java:99 落成 open。
+    assert by_key[("B.java", 99, "rb-new")].status == "open"
+
+    # resolve_discussion 只对 B.java 历史 finding（2 条）调用。
+    assert gitlab.resolve_discussion.await_count == 2
+    resolved_ids = sorted(
+        c.kwargs["discussion_id"] for c in gitlab.resolve_discussion.await_args_list
+    )
+    # 第一次 push 顺序：A.java:1 → disc-1, A.java:2 → disc-2, B.java:1 → disc-3, B.java:2 → disc-4。
+    assert resolved_ids == ["disc-3", "disc-4"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_discussion_api_failure_does_not_block_flow(
+    session_factory_fixture: async_sessionmaker[AsyncSession],
+) -> None:
+    """GitLab resolve API 抛异常 → warning，主流程继续，DB 侧 status 依然要标 resolved。"""
+
+    factory = session_factory_fixture
+    await _seed_project(factory)
+
+    gitlab = _gitlab_mock(
+        compare_response={
+            "commits": [{"id": "c1"}],
+            "diffs": [{"new_path": "app.py", "old_path": "app.py"}],
+        },
+    )
+    # resolve_discussion 抛错。
+    gitlab.resolve_discussion.side_effect = RuntimeError("network flaky")
+
+    engine = _StubEngine(
+        [
+            [_finding(file_path="app.py", line=2, rule_id="rule-a")],
+            [_finding(file_path="app.py", line=20, rule_id="rule-c")],
+        ]
+    )
+    orch = ReviewOrchestrator(
+        gitlab_client=gitlab,
+        engine_registry=_registry(engine),
+        default_engine="stub-engine",
+        session_factory=factory,
+    )
+    await orch.review_merge_request(_event(commit_sha="head-a"))
+    # 关键：即使 resolve 抛错，主流程也要完成，DB 也要 UPDATE resolved。
+    result = await orch.review_merge_request(_event(commit_sha="head-b"))
+    assert result.status == "done"
+
+    findings = await _list_findings(factory)
+    by_key = {(f.file_path, f.line_number, f.rule_id): f for f in findings}
+    assert by_key[("app.py", 2, "rule-a")].status == "resolved"
     assert by_key[("app.py", 20, "rule-c")].status == "open"
 
 

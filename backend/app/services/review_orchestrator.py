@@ -17,10 +17,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.dml import Update
 
 from app.core.block_policy import (
     BlockPolicyLike,
@@ -119,45 +117,53 @@ class _ReviewPlan:
 
     * ``full``：走 GitLab MR changes 拿完整 base..head diff，是首次审 MR / 无法
       沿用上次结果时的兜底路径。
-    * ``incremental``：只审 ``prev_head..new_head``，通过 GitLab compare API 拿增量。
+    * ``incremental``：**只审"本次 push 改动的文件"**（``changed_files``），但
+      审查素材是 base..head 完整 diff（过滤后只保留改动文件）——不是 push 增量。
+      审完后本轮改动文件的历史 finding + GitLab discussion 会被"整体换代"。
     * ``reuse``：head 未变（同一 commit 重触发），跳过 engine，直接沿用 parent
       review 结果重发 GitLab 反馈。
 
     Attributes:
         mode: ``"full"`` / ``"incremental"`` / ``"reuse"``。
         base_sha: 本次 diff 起点。full 时为 event.target_commit_sha，incremental
-            时为上次 review 的 head，reuse 时保留上次 review 的 base（仅用于日志）。
-        parent_review_id: 同 MR 上一次已完成 review 的 id；用于串链与 finding 合并。
+            时为上次 review 的 head（用于日志/note，实际 diff 仍走 base..head），
+            reuse 时保留上次 review 的 base（仅用于日志）。
+        parent_review_id: 同 MR 上一次已完成 review 的 id；用于串链。
         reason: 供日志说明选中此模式的理由（例如 ``history_rewritten``）。
+        changed_files: 本次 push 涉及的文件集合（GitLab compare 里 new_path）。
+            **仅 incremental 模式**填值。为 None 表示 non-incremental；空集合
+            表示 incremental 但获取失败/过滤后无文件——上层降级 full。
     """
 
     mode: str
     base_sha: str
     parent_review_id: UUID | None
     reason: str
+    changed_files: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
 class _MergeResult:
     """finding 合并的结果，orchestrator 内部数据结构。
 
+    **新语义（feat/rescan-changed-files）**：改动文件级"整体换代"。
+
     Attributes:
-        combined_findings: 合并后用于展示 / block 判定的 finding 集合，顺序为
-            "历史遗留在前 + 本次新增在后"。
-        new_findings: 本次真正新增（**未被历史 finding 复用消费**）的 engine
-            findings；``_persist_review`` 只落这一部分为新行。
-        carried_over_findings: 本次沿用的历史 open findings（engine.Finding 形态）。
-        resolved_finding_ids: 本次判定为已修的历史 finding 主键，落库时批量 UPDATE
-            ``status='resolved'`` + ``resolved_in_review_id``。
-        kept_open_finding_ids: 本次继续保留为 open 的历史 finding 主键；
-            当前实现不 UPDATE 它们，字段保留供未来钩子（如更新 last_seen）。
+        combined_findings: 用于 GitLab note / block 判定的合并集合，顺序为
+            "本次新增（改动文件）+ carried_over_untouched（未动文件的历史）"。
+        new_findings: 本轮 engine 输出（改动文件的全量重审结果），全部当作
+            "新增" —— 因为改动文件的老 finding 都会被 resolve 掉。
+        carried_over_untouched: 未在本次 push 中涉及的文件的历史 open findings，
+            engine.Finding 形态，供 note 展示。DB 中保持原状。
+        stale_findings_to_resolve: 本轮改动文件里的历史 open findings（DB 行形态）。
+            需要：(a) DB status='resolved' + resolved_in_review_id；
+            (b) 对应的 GitLab discussion 调 resolve_discussion。
     """
 
     combined_findings: list[Finding]
     new_findings: list[Finding]
-    carried_over_findings: list[Finding]
-    resolved_finding_ids: list[UUID]
-    kept_open_finding_ids: list[UUID]
+    carried_over_untouched: list[Finding]
+    stale_findings_to_resolve: list[FindingRow]
 
 
 class ReviewOrchestrator:
@@ -286,10 +292,18 @@ class ReviewOrchestrator:
                 plan=plan,
             )
         # 增量模式下把新 findings 与历史 open findings 合并，得到本次要展示的集合。
-        merge = await self._merge_findings_for_plan(event, plan, changes, findings, review_id)
+        merge = await self._merge_findings_for_plan(event, plan, findings)
         combined_findings = merge.combined_findings
         has_blocker, blocker_count = compute_has_blocker(combined_findings, block_policy)
-        await self._post_finding_discussions(event, changes, findings)
+
+        # 本轮改动文件的历史 discussion 先在 GitLab 侧关掉（best-effort），再落
+        # 新 discussion —— 保证同一文件的评论上下文始终对齐当前代码状态。
+        # DB 层 status='resolved' 由 _persist_review 事务负责。
+        await self._resolve_stale_discussions_for_files(
+            event=event,
+            findings_to_resolve=merge.stale_findings_to_resolve,
+        )
+        discussion_ids = await self._post_finding_discussions(event, changes, findings)
         note = await self._gitlab_client.create_merge_request_note(
             project_id=event.project_id,
             mr_iid=event.mr_iid,
@@ -306,7 +320,7 @@ class ReviewOrchestrator:
                     event.source_commit_sha if plan.mode == "incremental" else None
                 ),
                 new_finding_count=len(merge.new_findings),
-                carried_finding_count=len(merge.carried_over_findings),
+                carried_finding_count=len(merge.carried_over_untouched),
                 mode_reason=plan.reason,
             ),
         )
@@ -335,6 +349,7 @@ class ReviewOrchestrator:
             plan=plan,
             merge=merge,
             combined_finding_count=len(combined_findings),
+            discussion_ids=discussion_ids,
         )
         return OrchestratorResult(
             review_id=review_id,
@@ -377,20 +392,28 @@ class ReviewOrchestrator:
         event: GitLabMergeRequestEvent,
         changes_payload: dict[str, Any],
         findings: Sequence[Finding],
-    ) -> None:
+    ) -> list[str | None]:
         """Post line-level GitLab discussions for findings with a valid location.
 
         Discussion creation is best-effort: a single stale line location should not
         prevent the summary note or commit status from being written back.
+
+        Returns a list aligned to ``findings`` (same length, same order) whose
+        entries are the GitLab discussion ``id`` (str) 当 create 成功；否则
+        None（无 line、创建失败、无 id 字段）。调用方 :meth:`_persist_review`
+        用这个列表把 ``gitlab_discussion_id`` 写回 finding 行，让下一轮改动
+        文件时能定向 resolve。
         """
 
         diff_refs = _extract_diff_refs(changes_payload, event)
+        discussion_ids: list[str | None] = []
         for finding in findings:
             if finding.line_number is None:
+                discussion_ids.append(None)
                 continue
             old_path, new_path = _resolve_finding_paths(changes_payload, finding.file_path)
             try:
-                await self._gitlab_client.create_merge_request_discussion(
+                response = await self._gitlab_client.create_merge_request_discussion(
                     project_id=event.project_id,
                     mr_iid=event.mr_iid,
                     body=build_finding_discussion_body(finding),
@@ -411,6 +434,11 @@ class ReviewOrchestrator:
                         "line_number": finding.line_number,
                     },
                 )
+                discussion_ids.append(None)
+                continue
+            raw_id = response.get("id") if isinstance(response, dict) else None
+            discussion_ids.append(str(raw_id) if raw_id is not None else None)
+        return discussion_ids
 
     async def _handle_engine_error(
         self,
@@ -473,6 +501,7 @@ class ReviewOrchestrator:
             plan=effective_plan,
             merge=None,
             combined_finding_count=0,
+            discussion_ids=None,
         )
         return OrchestratorResult(
             review_id=review_id,
@@ -653,11 +682,12 @@ class ReviewOrchestrator:
           - session_factory 未接入 / Project 未注册 → full，无 parent，保留旧 MVP 行为。
           - 同 MR 无上一次 review → full。
           - 同 MR 上一次 review 的 head == 本次 head → reuse。
-          - head 变了：调 GitLab compare 判上一次 head 是否本次 head 的祖先：
-            - 是 → incremental，base=上次 head，parent=上次 review.id。
-            - 不是（rebase/squash/force-push）→ full 降级，parent 仍串起来，
-              reason=history_rewritten。
-            - compare 调不通 → 保守降级 full。
+          - head 变了：调 GitLab compare（prev_head..new_head）拿"祖先关系 +
+            改动文件集合"：
+            - commits 非空 且能拿到 changed_files → incremental，base=上次 head，
+              parent=上次 review.id，plan.changed_files=改动文件 new_path 集合。
+            - 不是祖先关系（rebase/squash/force-push）/ compare 失败 → full 降级，
+              parent 仍串起来，reason=history_rewritten 或 compare_failed。
 
         任何 DB 异常都吞成 full 降级，绝不能阻断主流程。
         """
@@ -701,45 +731,46 @@ class ReviewOrchestrator:
                 reason="same_head_ci_retry",
             )
 
-        # head 变了 → 用 GitLab compare 看 last.commit_sha 是不是 event.source_commit_sha 的祖先。
-        is_ancestor = await self._is_ancestor(
+        # head 变了 → 用 GitLab compare 一次拿"祖先关系 + 改动文件集合"。
+        is_ancestor, changed_files = await self._fetch_ancestor_and_changed_files(
             project_id=event.project_id,
             older_sha=last.commit_sha,
             newer_sha=event.source_commit_sha,
         )
-        if is_ancestor:
+        if is_ancestor and changed_files is not None:
             return _ReviewPlan(
                 mode="incremental",
                 base_sha=last.commit_sha,
                 parent_review_id=last.id,
                 reason="head_advanced",
+                changed_files=changed_files,
             )
         return _ReviewPlan(
             mode="full",
             base_sha=event.target_commit_sha,
             parent_review_id=last.id,
-            reason="history_rewritten",
+            reason="history_rewritten" if not is_ancestor else "compare_missing_files",
         )
 
-    async def _is_ancestor(
+    async def _fetch_ancestor_and_changed_files(
         self,
         *,
         project_id: int,
         older_sha: str,
         newer_sha: str,
-    ) -> bool:
-        """判断 ``older_sha`` 是否 ``newer_sha`` 的祖先。
+    ) -> tuple[bool, frozenset[str] | None]:
+        """一次 GitLab compare 调用，同时判祖先关系并抽出改动文件 new_path 集合。
 
-        走 GitLab ``/repository/compare?from=older&to=newer&straight=true``：
-        返回的 ``commits`` 数组即 A→B 之间的提交序列。**非空且无 error** 视为
-        祖先关系。任何异常（网络、权限、404、payload 异常）一律返回 False，
-        让上层保守降级到 full。
+        走 ``/repository/compare?from=older&to=newer&straight=true``：
 
-        GitLab 语义细节：
-          - ``from==to`` → commits 空数组，返回 False；orchestrator 上层的
-            same_head 判断已经先短路成 reuse，走不到这里。
-          - rebase / squash：新 head 是全新链，GitLab compare 通常仍能返回 200，
-            但常见结果是 commits 空数组或 error 字段非空——两种都被 False 覆盖。
+        - ``commits`` 数组非空 + 无 ``error`` → older 是 newer 的祖先。
+        - ``diffs`` 数组：从中收集 ``new_path``（deleted_file 则收集 old_path），
+          得到本次 push 涉及的文件集合。
+
+        异常 / 权限 / 404 一律返回 ``(False, None)``，让上层保守降级到 full。
+        祖先关系为 True 但 diffs 拿不到（异常 payload / 空数组）时返回
+        ``(True, None)``，同样降级到 full —— 增量语义依赖"知道改了哪些文件"，
+        拿不到就不做半吊子的事。
         """
 
         try:
@@ -757,7 +788,7 @@ class ReviewOrchestrator:
                     "to_sha": newer_sha,
                 },
             )
-            return False
+            return False, None
         except Exception:
             logger.exception(
                 "compare_refs raised unexpectedly; falling back to full review",
@@ -767,56 +798,73 @@ class ReviewOrchestrator:
                     "to_sha": newer_sha,
                 },
             )
-            return False
+            return False, None
         if payload.get("error"):
-            return False
+            return False, None
         commits = payload.get("commits")
         if not isinstance(commits, list) or len(commits) == 0:
-            return False
-        return True
+            return False, None
+        raw_diffs = payload.get("diffs")
+        if not isinstance(raw_diffs, list):
+            return True, None
+        changed: set[str] = set()
+        for item in raw_diffs:
+            if not isinstance(item, dict):
+                continue
+            new_path = str(item.get("new_path") or "").strip()
+            old_path = str(item.get("old_path") or "").strip()
+            if item.get("deleted_file"):
+                if old_path:
+                    changed.add(old_path)
+                continue
+            if new_path:
+                changed.add(new_path)
+            elif old_path:
+                # 极端保险：new_path 缺失但 old_path 有 —— 也算改过。
+                changed.add(old_path)
+        if not changed:
+            # 有 commits 但拿不到文件（罕见）→ 保守降级 full。
+            return True, None
+        return True, frozenset(changed)
 
     async def _fetch_changes_for_plan(
         self,
         event: GitLabMergeRequestEvent,
         plan: _ReviewPlan,
     ) -> dict[str, Any]:
-        """按 plan.mode 取本次 diff 的 GitLab payload。
+        """按 plan.mode 取本次要送引擎的 GitLab changes payload。
 
-        - full：走原 MR changes 端点，语义完全等价旧路径。
-        - incremental：走 compare 端点，然后归一化成同 changes 结构复用下游。
-          compare 失败降级到 full。
+        - full / reuse：直接走 MR changes 端点，语义等价旧路径。
+        - incremental：仍走 MR changes 拿 base..head 完整 changes，再按
+          ``plan.changed_files`` 过滤 changes 数组 —— 保证送给 LLM 的是
+          "本次 push 改动的文件、但 diff 是完整 base..head 全量"。
+
+        过滤后 changes 变空时保留其它字段（如 diff_refs）不动，让下游 pipeline
+        继续走完（findings 为空，note 会写"无可审内容"）。
         """
 
-        if plan.mode != "incremental":
-            return await self._gitlab_client.get_merge_request_changes(
-                project_id=event.project_id,
-                mr_iid=event.mr_iid,
-            )
-        try:
-            compare_payload = await self._gitlab_client.compare_refs(
-                project_id=event.project_id,
-                from_sha=plan.base_sha,
-                to_sha=event.source_commit_sha,
-            )
-        except Exception:
-            logger.exception(
-                "incremental compare failed; falling back to MR changes",
-                extra={
-                    "gitlab_project_id": event.project_id,
-                    "mr_iid": event.mr_iid,
-                    "base_sha": plan.base_sha,
-                    "head_sha": event.source_commit_sha,
-                },
-            )
-            return await self._gitlab_client.get_merge_request_changes(
-                project_id=event.project_id,
-                mr_iid=event.mr_iid,
-            )
-        return _normalize_compare_to_changes(
-            compare_payload,
-            base_sha=plan.base_sha,
-            head_sha=event.source_commit_sha,
+        raw = await self._gitlab_client.get_merge_request_changes(
+            project_id=event.project_id,
+            mr_iid=event.mr_iid,
         )
+        if plan.mode != "incremental" or plan.changed_files is None:
+            return raw
+        changed_files = plan.changed_files
+        raw_changes = raw.get("changes")
+        if not isinstance(raw_changes, list):
+            return raw
+        filtered: list[Any] = []
+        for item in raw_changes:
+            if not isinstance(item, dict):
+                continue
+            new_path = str(item.get("new_path") or "")
+            old_path = str(item.get("old_path") or "")
+            # 匹配 new_path 优先（新增/修改文件），deleted_file 匹配 old_path。
+            if new_path and new_path in changed_files:
+                filtered.append(item)
+            elif old_path and old_path in changed_files:
+                filtered.append(item)
+        return {**raw, "changes": filtered}
 
     async def _handle_reuse(
         self,
@@ -895,33 +943,37 @@ class ReviewOrchestrator:
         self,
         event: GitLabMergeRequestEvent,
         plan: _ReviewPlan,
-        changes_payload: dict[str, Any],
         new_findings: Sequence[Finding],
-        review_id: UUID,
     ) -> _MergeResult:
         """按 plan.mode 决定要不要把历史 open findings 与本次 engine 输出合并。
 
-        full 模式（含 history_rewritten 降级）：直接用本次 engine 输出，历史
-        finding 一律不带过来——那是新一次全量审的语义。
+        **新语义（feat/rescan-changed-files）：改动文件级换代**。
 
-        incremental 模式：
-          - 用 (file_path, line_number, rule_id) 匹配旧 open finding 与新 finding；
-          - 匹配上的老 finding 保留 `first_seen_review_id`，本次不重复落库；
-          - 没匹配的老 finding：如果它所在文件是本次 diff 变更文件之一（含
-            deleted_file 明确判 resolved），标 resolved；否则保持 open。
-          - 剩下的新 finding 全部当"本次新增"落库，`first_seen_review_id=review_id`。
+        - ``full`` / 无 session_factory：无历史概念，findings 全部当新增。
+        - ``incremental``：
+            1. 拉本 MR 所有 ``status='open'`` 的历史 findings；
+            2. 按 ``plan.changed_files`` 分两组：
+               - **属于改动文件**（含 old_path 命中，覆盖 renamed / deleted 时的
+                 老 finding）→ ``stale_findings_to_resolve``：本函数不改 DB，
+                 交给 :meth:`_resolve_stale_discussions_for_files` 关 GitLab
+                 discussion + :meth:`_persist_review` 事务里 UPDATE status；
+               - **不属于改动文件** → ``carried_over_untouched``：保持 open，note
+                 里作为"历史遗留"展示。
+            3. 新 findings 全部当作本轮新增（``new_findings``）。
+            4. combined 顺序：新增在前 + 未动文件历史在后。
 
-        session_factory 缺失 → 空历史，等价 full 行为。
+        session_factory 缺失 / DB 异常 / project 未注册 → 空历史，等价 full 行为。
         """
 
         empty = _MergeResult(
             combined_findings=list(new_findings),
             new_findings=list(new_findings),
-            carried_over_findings=[],
-            resolved_finding_ids=[],
-            kept_open_finding_ids=[],
+            carried_over_untouched=[],
+            stale_findings_to_resolve=[],
         )
-        if plan.mode != "incremental" or self._session_factory is None:
+        if plan.mode != "incremental" or plan.changed_files is None:
+            return empty
+        if self._session_factory is None:
             return empty
         try:
             async with self._session_factory() as session:
@@ -941,48 +993,64 @@ class ReviewOrchestrator:
         if not old_open:
             return empty
 
-        new_by_key: dict[tuple[str, int | None, str], Finding] = {
-            _finding_key_engine(f): f for f in new_findings
-        }
-        changed_new_paths, deleted_paths = _extract_diff_file_sets(changes_payload)
-
-        carried_over_findings: list[Finding] = []
-        resolved_ids: list[UUID] = []
-        kept_open_ids: list[UUID] = []
-        # 复用键：如果一条旧 finding 与新 finding key 一致 → 复用旧 finding。
-        # 我们把"新 finding 已经被旧的吃掉"这件事记下来，避免下面又当新增落库。
-        consumed_new_keys: set[tuple[str, int | None, str]] = set()
+        changed = plan.changed_files
+        stale_rows: list[FindingRow] = []
+        carried_untouched: list[Finding] = []
         for row in old_open:
-            key = _finding_key_row(row)
-            if key in new_by_key:
-                consumed_new_keys.add(key)
-                carried_over_findings.append(_finding_row_to_engine(row))
-                kept_open_ids.append(row.id)
-                continue
-            file_path = row.file_path
-            if file_path in deleted_paths:
-                resolved_ids.append(row.id)
-                continue
-            # 文件被改过但那行的问题模型没再报 → 视为已修。
-            if file_path in changed_new_paths:
-                resolved_ids.append(row.id)
-                continue
-            # 文件本次没动 → 老 finding 继续显示。
-            carried_over_findings.append(_finding_row_to_engine(row))
-            kept_open_ids.append(row.id)
+            if row.file_path in changed:
+                stale_rows.append(row)
+            else:
+                carried_untouched.append(_finding_row_to_engine(row))
 
-        # 真正的"本次新增"= new_findings 里没被复用消费掉的。
-        fresh_new = [
-            f for f in new_findings if _finding_key_engine(f) not in consumed_new_keys
-        ]
-        combined = list(carried_over_findings) + fresh_new
+        new_list = list(new_findings)
+        combined = new_list + carried_untouched
         return _MergeResult(
             combined_findings=combined,
-            new_findings=fresh_new,
-            carried_over_findings=carried_over_findings,
-            resolved_finding_ids=resolved_ids,
-            kept_open_finding_ids=kept_open_ids,
+            new_findings=new_list,
+            carried_over_untouched=carried_untouched,
+            stale_findings_to_resolve=stale_rows,
         )
+
+    async def _resolve_stale_discussions_for_files(
+        self,
+        *,
+        event: GitLabMergeRequestEvent,
+        findings_to_resolve: Sequence[FindingRow],
+    ) -> None:
+        """把本轮改动文件里的历史 open findings 对应的 GitLab discussion 逐条 resolve。
+
+        Best-effort：单条 API 抛异常仅 warning，不影响其它 finding 与主流程。
+        ``gitlab_discussion_id`` 为空的（老数据 / 创建 discussion 时曾失败）
+        直接跳过 —— 接受"历史 discussion 关不掉"这个已知不完美。
+
+        DB 层的 ``status='resolved'`` 由 :meth:`_persist_review` 在同事务里
+        统一处理，本函数只关心 GitLab 侧动作。
+        """
+
+        if not findings_to_resolve:
+            return
+        for row in findings_to_resolve:
+            discussion_id = row.gitlab_discussion_id
+            if not discussion_id:
+                # 老数据没记 discussion_id，或者当初 create 失败。
+                continue
+            try:
+                await self._gitlab_client.resolve_discussion(
+                    project_id=event.project_id,
+                    mr_iid=event.mr_iid,
+                    discussion_id=discussion_id,
+                    resolved=True,
+                )
+            except Exception:
+                logger.warning(
+                    "failed to resolve stale GitLab discussion; continuing",
+                    extra={
+                        "gitlab_project_id": event.project_id,
+                        "mr_iid": event.mr_iid,
+                        "discussion_id": discussion_id,
+                        "finding_id": str(row.id),
+                    },
+                )
 
     async def _persist_review(
         self,
@@ -997,6 +1065,7 @@ class ReviewOrchestrator:
         plan: _ReviewPlan,
         merge: _MergeResult | None,
         combined_finding_count: int,
+        discussion_ids: Sequence[str | None] | None,
     ) -> None:
         """Best-effort 落库：写入 ``reviews`` + ``review_findings`` 两张表。
 
@@ -1004,24 +1073,41 @@ class ReviewOrchestrator:
         - Project 不存在（GitLab 项目未在管理后台注册）：跳过并记 warning。
         - 事务失败：rollback + 记 warning，不影响 GitLab 反馈与 API 响应。
 
-        增量语义：
-          - ``findings`` 是 engine 本次输出，**只把里面"未被历史 finding 复用"
-            的那部分**当作新 finding 落库（``merge.new_findings``），避免
-            重复插入。
-          - ``merge.kept_open_finding_ids`` / ``merge.resolved_finding_ids`` 用来
-            UPDATE 老 finding 的 status / resolved_in_review_id。
+        增量语义（feat/rescan-changed-files）：
+          - ``findings`` = 本轮 engine 输出。改动文件全量重审，全部当作新增
+            行入库，``first_seen_review_id=review_id``。
+          - ``merge.stale_findings_to_resolve`` 通过 ``mark_resolved`` 批量
+            UPDATE 老 finding 的 status='resolved' + resolved_in_review_id。
+          - ``discussion_ids`` 与 ``findings`` 同序，命中的写回
+            ``gitlab_discussion_id``，供后续改动重审时定向 resolve。
           - ``review.finding_count`` 使用 ``combined_finding_count`` —— 与
             GitLab note / commit status 描述保持一致（合并后的总数）。
         """
 
         if self._session_factory is None:
             return
-        # merge 为 None（engine_error 或 full 模式）时按纯"新 finding"处理。
-        new_findings_to_persist: Sequence[Finding] = (
-            merge.new_findings if merge is not None else findings
+        # merge 为 None（engine_error）时 findings 就是"新 finding"的全部（一般是空）。
+        new_findings_to_persist: Sequence[Finding] = findings
+        stale_rows: Sequence[FindingRow] = (
+            merge.stale_findings_to_resolve if merge is not None else ()
         )
-        kept_open_ids: Sequence[UUID] = merge.kept_open_finding_ids if merge is not None else ()
-        resolved_ids: Sequence[UUID] = merge.resolved_finding_ids if merge is not None else ()
+        # discussion_ids 与 findings 同序对齐；若上游未产出（engine_error），全部
+        # 视为 None，保证 zip 长度对齐。
+        ids_seq: Sequence[str | None] = (
+            list(discussion_ids)
+            if discussion_ids is not None
+            else [None] * len(new_findings_to_persist)
+        )
+        if len(ids_seq) != len(new_findings_to_persist):
+            # 理论不会发生；发生就丢弃 discussion_ids 而不是让 zip 静默截断。
+            logger.warning(
+                "discussion_ids length mismatch; discarding ids to avoid misalignment",
+                extra={
+                    "expected": len(new_findings_to_persist),
+                    "got": len(ids_seq),
+                },
+            )
+            ids_seq = [None] * len(new_findings_to_persist)
         try:
             async with self._session_factory() as session:
                 project_repo = ProjectRepository(session)
@@ -1054,7 +1140,9 @@ class ReviewOrchestrator:
                 session.add(review_row)
                 # flush 一下让 review 主键先落，随后 update / insert 老 finding 才有 FK 目标。
                 await session.flush()
-                for finding in new_findings_to_persist:
+                for finding, discussion_id in zip(
+                    new_findings_to_persist, ids_seq, strict=True,
+                ):
                     session.add(
                         FindingRow(
                             review_id=review_id,
@@ -1070,15 +1158,15 @@ class ReviewOrchestrator:
                             # 本次新出现的 finding：first_seen 指向自己。
                             first_seen_review_id=review_id,
                             status="open",
+                            gitlab_discussion_id=discussion_id,
                         )
                     )
-                if resolved_ids:
-                    await session.execute(
-                        _finding_resolve_update(resolved_ids, review_id),
+                if stale_rows:
+                    finding_repo = FindingRepository(session)
+                    await finding_repo.mark_resolved(
+                        [row.id for row in stale_rows],
+                        review_id,
                     )
-                # kept_open_ids 目前不需要 UPDATE：status 已经是 open、first_seen 也没变。
-                # 但如果未来想在这里记 "last_confirmed_review_id" 之类字段，钩子点在这。
-                _ = kept_open_ids
                 await session.commit()
         except SQLAlchemyError:
             logger.exception(
@@ -1145,81 +1233,6 @@ def _resolve_finding_paths(changes_payload: dict[str, Any], file_path: str) -> t
     return file_path, file_path
 
 
-def _normalize_compare_to_changes(
-    compare_payload: dict[str, Any],
-    *,
-    base_sha: str,
-    head_sha: str,
-) -> dict[str, Any]:
-    """把 GitLab compare 响应归一化成 MR changes 结构。
-
-    GitLab ``/repository/compare`` 返回的字段与 ``/merge_requests/:iid/changes``
-    并不完全一致（前者用顶层 ``diffs``，后者用 ``changes``），下游 pipeline 只
-    需要 ``changes`` 与 ``diff_refs`` 两个键，这里做一次转换保留最小契约。
-
-    ``diff_refs`` 用调用方提供的 base_sha / head_sha 填齐（compare payload 里
-    没有一个统一叫这个名字的字段），保证 :func:`_extract_diff_refs` 后续拼
-    GitLab discussion position 时不用兜底到 event。
-    """
-
-    raw_diffs = compare_payload.get("diffs")
-    diffs = raw_diffs if isinstance(raw_diffs, list) else []
-    return {
-        "changes": diffs,
-        "diff_refs": {
-            "base_sha": base_sha,
-            "start_sha": base_sha,
-            "head_sha": head_sha,
-        },
-    }
-
-
-def _extract_diff_file_sets(
-    changes_payload: dict[str, Any],
-) -> tuple[set[str], set[str]]:
-    """从 changes payload 抽出"本次 diff 涉及的 new_path"与"deleted_file 涉及路径"。
-
-    用于增量 finding 合并的分类：
-      - deleted_file 明示的路径：老 finding 无处可提，直接判 resolved；
-      - 其它变更文件（未 deleted）：老 finding 若还挂在这些路径上但新 findings
-        没再报 → 视为已修 → resolved。
-
-    改名（renamed_file）暂不处理：GitLab payload 里 new_path 是新名字，我们
-    走"文件本次没动"分支保持 open，接受这个已知不完美。
-    """
-
-    changed_new_paths: set[str] = set()
-    deleted_paths: set[str] = set()
-    raw = changes_payload.get("changes", [])
-    if not isinstance(raw, list):
-        return changed_new_paths, deleted_paths
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        new_path = str(item.get("new_path") or "")
-        old_path = str(item.get("old_path") or "")
-        if item.get("deleted_file"):
-            # 删除文件的老 finding 挂在 old_path 上（new_path 可能是空/相同）。
-            if old_path:
-                deleted_paths.add(old_path)
-            continue
-        if new_path:
-            changed_new_paths.add(new_path)
-    return changed_new_paths, deleted_paths
-
-
-def _finding_key_engine(f: Finding) -> tuple[str, int | None, str]:
-    """engine.Finding → 合并键 (file_path, line_number, rule_id)。"""
-
-    return f.file_path, f.line_number, (f.rule_id or "unknown")
-
-
-def _finding_key_row(row: FindingRow) -> tuple[str, int | None, str]:
-    """DB 行 → 合并键，与 engine.Finding 的键保持一致。"""
-
-    return row.file_path, row.line_number, (row.rule_id or "unknown")
-
-
 def _finding_row_to_engine(row: FindingRow) -> Finding:
     """把 DB 行投影回 engine.Finding，供合并展示与 reuse 复用。
 
@@ -1238,21 +1251,4 @@ def _finding_row_to_engine(row: FindingRow) -> Finding:
         suggestion=row.suggestion,
         existing_code=row.existing_code,
         confidence=float(row.confidence or 0.0),
-    )
-
-
-def _finding_resolve_update(
-    finding_ids: Sequence[UUID],
-    resolved_in_review_id: UUID,
-) -> Update:
-    """构造把一组 finding 批量 UPDATE 成 resolved 的 SQLAlchemy 语句。
-
-    独立成函数只是为了让 :meth:`_persist_review` 的主体更聚焦；这里不 execute，
-    调用方在事务里执行。
-    """
-
-    return (
-        update(FindingRow)
-        .where(FindingRow.id.in_(list(finding_ids)))
-        .values(status="resolved", resolved_in_review_id=resolved_in_review_id)
     )

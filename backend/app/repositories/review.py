@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.models.finding import Finding
@@ -162,3 +163,27 @@ class FindingRepository(BaseRepository[Finding]):
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def mark_resolved(
+        self,
+        finding_ids: Sequence[UUID],
+        resolved_in_review_id: UUID,
+    ) -> None:
+        """把一批 finding 标记为已解决。
+
+        单条 UPDATE 语句用 ``IN`` 条件一次搞定，避免逐条查询触发 N+1。
+        事务 flush()/commit() 由调用方在同一 session 内负责。
+
+        Args:
+            finding_ids: 要标记的 finding 主键集合；空集合直接返回，不发 SQL。
+            resolved_in_review_id: 本次判定它们已解决的 review 主键。
+        """
+
+        if not finding_ids:
+            return
+        stmt = (
+            update(Finding)
+            .where(Finding.id.in_(list(finding_ids)))
+            .values(status="resolved", resolved_in_review_id=resolved_in_review_id)
+        )
+        await self._session.execute(stmt)
