@@ -447,16 +447,16 @@ async def test_duplicate_commit_skipped(
     e2e_client: tuple[AsyncClient, StubReviewEngine],
     gitlab_mock: SimpleNamespace,
 ) -> None:
-    """Duplicate commit_sha trigger: dedup 命中，第二次直接复用旧结果。
+    """Duplicate commit_sha trigger: reuse 分支，复用旧 findings 但重发反馈。
 
-    orchestrator 拿到 ``(project_id, commit_sha)`` 前置查一次 DB，命中已完成评审
-    则跳过引擎与 GitLab 调用，直接以旧 review 的状态返回。本例覆盖典型场景：
-    ``_seed_project`` 的 ``gitlab_project_id`` 与 payload 里的 ``PROJECT_ID`` 一致，
-    保证 Project 在库里能查到；第二次 POST 断言 GitLab 只被调一次。
+    新语义（增量审查 v1 起）：同 (project, mr_iid, commit_sha) 二次触发走 reuse
+    分支 —— 不调 engine、不拉 diff（changes 只调一次），但 **仍会重发 commit
+    status 到 GitLab**，保证用户在触发端（比如 CI 重跑、webhook 重投递）能看到
+    反馈，而不是静默跳过。
     """
 
     client, stub = e2e_client
-    # 为了让 dedup 命中，先把 seed 出来的 Project 的 gitlab_project_id 改为 payload 用的数字 ID。
+    # 为了让 reuse 命中，先把 seed 出来的 Project 的 gitlab_project_id 改为 payload 用的数字 ID。
     seed_project = await client.post(
         "/api/providers",
         json={
@@ -518,8 +518,9 @@ async def test_duplicate_commit_skipped(
     assert second.status_code == 200, second.text
     assert first.json()["has_blocker"] is True
     assert second.json()["has_blocker"] is True
-    # dedup 命中：第二次沿用第一次的 review_id。
+    # reuse 命中：第二次沿用第一次的 review_id。
     assert first.json()["review_id"] == second.json()["review_id"]
-    # GitLab diff 端点只被调用一次（第二次走 dedup 提前返回）。
+    # GitLab diff 端点只被调用一次（第二次走 reuse 提前返回不拉 diff）。
     assert len(gitlab_mock.changes.calls) == 1
-    assert len(gitlab_mock.statuses.calls) == 1
+    # commit status 每次都重发：新语义下 reuse 分支要保证触发端能看到反馈。
+    assert len(gitlab_mock.statuses.calls) == 2

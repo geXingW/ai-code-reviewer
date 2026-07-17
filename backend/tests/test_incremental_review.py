@@ -255,10 +255,11 @@ async def test_second_push_uses_incremental_mode(
     assert result.status == "done"
     reviews = await _list_reviews(factory)
     assert len(reviews) == 2
-    second = reviews[1]
+    reviews_by_sha = {r.commit_sha: r for r in reviews}
+    first, second = reviews_by_sha["head-a"], reviews_by_sha["head-b"]
     assert second.review_mode == "incremental"
     assert second.base_sha == "head-a"  # base 是上次的 head
-    assert second.parent_review_id == reviews[0].id
+    assert second.parent_review_id == first.id
     # incremental 走 compare 拉 diff（不再调 MR changes）。
     gitlab.compare_refs.assert_awaited()
 
@@ -287,11 +288,12 @@ async def test_history_rewrite_falls_back_to_full(
 
     reviews = await _list_reviews(factory)
     assert len(reviews) == 2
-    second = reviews[1]
+    reviews_by_sha = {r.commit_sha: r for r in reviews}
+    first, second = reviews_by_sha["head-a"], reviews_by_sha["head-b"]
     # 降级 full：base_sha 回到 event.target_commit_sha，parent 依然指向上一次。
     assert second.review_mode == "full"
     assert second.base_sha == "base-master"
-    assert second.parent_review_id == reviews[0].id
+    assert second.parent_review_id == first.id
 
 
 @pytest.mark.asyncio
@@ -385,8 +387,11 @@ async def test_carried_over_findings_merged_and_marked(
     assert by_key[("app.py", 2, "rule-a")].resolved_in_review_id is not None
     assert by_key[("other.py", 5, "rule-b")].status == "open"
     # 新 finding 的 first_seen 指向第二次 review。
+    # 用 commit_sha 定位而不是 index：MySQL DATETIME 秒级精度下两次调用
+    # 可能落在同一秒，order by created_at 排序不稳定。
     reviews = await _list_reviews(factory)
-    assert by_key[("app.py", 20, "rule-c")].first_seen_review_id == reviews[1].id
+    reviews_by_sha = {r.commit_sha: r for r in reviews}
+    assert by_key[("app.py", 20, "rule-c")].first_seen_review_id == reviews_by_sha["head-b"].id
     assert by_key[("app.py", 20, "rule-c")].status == "open"
 
 
