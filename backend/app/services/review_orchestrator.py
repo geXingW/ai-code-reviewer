@@ -322,6 +322,8 @@ class ReviewOrchestrator:
                 new_finding_count=len(merge.new_findings),
                 carried_finding_count=len(merge.carried_over_untouched),
                 mode_reason=plan.reason,
+                new_findings=list(merge.new_findings),
+                carried_findings=list(merge.carried_over_untouched),
             ),
         )
         await self._gitlab_client.set_commit_status(
