@@ -198,6 +198,46 @@ class GitLabClient:
             },
         )
 
+    async def resolve_discussion(
+        self,
+        *,
+        project_id: int,
+        mr_iid: int,
+        discussion_id: str,
+        resolved: bool = True,
+    ) -> dict[str, Any]:
+        """把一条 MR discussion 标记为 resolved / unresolved。
+
+        对应 GitLab API：
+        ``PUT /projects/:id/merge_requests/:iid/discussions/:discussion_id?resolved=true``。
+        ``discussion_id`` 为 :meth:`create_merge_request_discussion` 返回 payload
+        里的字符串 ``id`` —— 我们把它存进 ``Finding.gitlab_discussion_id``，
+        每次审改动文件时用它来关掉历史 discussion。
+
+        - 已经 resolved 再次调用 → 200 OK（幂等）。
+        - discussion 不存在 / 权限不足 / 已删 → GitLab 返回 4xx，本函数抛
+          :class:`GitLabClientError`，调用方需 best-effort 兜底（记 warning
+          就好，不要阻断主流程）。
+
+        Args:
+            project_id: 数值型 GitLab 项目 ID。
+            mr_iid: MR IID。
+            discussion_id: GitLab discussion 字符串 ID。
+            resolved: True 关闭 / False 重新打开。默认 True。
+
+        Returns:
+            GitLab 返回的 discussion payload。
+        """
+
+        if not discussion_id.strip():
+            msg = "GitLab resolve_discussion discussion_id must not be empty."
+            raise ValueError(msg)
+        return await self._request_json(
+            "PUT",
+            f"/api/v4/projects/{project_id}/merge_requests/{mr_iid}/discussions/{discussion_id}",
+            params={"resolved": "true" if resolved else "false"},
+        )
+
     async def set_commit_status(
         self,
         *,
