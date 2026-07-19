@@ -187,3 +187,71 @@ class FindingRepository(BaseRepository[Finding]):
             .values(status="resolved", resolved_in_review_id=resolved_in_review_id)
         )
         await self._session.execute(stmt)
+
+    async def mark_mr_closed(
+        self,
+        project_id: UUID,
+        mr_iid: str,
+        lifecycle_review_id: UUID,
+    ) -> int:
+        """把 (project, mr) 所有 ``status='open'`` 的 finding 批量标 ``mr_closed``。
+
+        MR 关闭（非合并）时使用：这些 finding 已经跟着"作废"的 MR 一起没意义。
+        ``resolved_in_review_id`` 复用来记录"是哪次 lifecycle 事件把它关掉的"，
+        语义上稍微 overload 但避免多加一列；后续 reopen 时会把它清空。
+
+        单条 UPDATE + Finding→Review IN 子查询，不做 N+1。
+
+        Args:
+            project_id: DB 中 Project 主键 UUID。
+            mr_iid: 归一化后的 MR IID（str）。
+            lifecycle_review_id: 本次 lifecycle 事件对应的记账 Review 主键。
+
+        Returns:
+            实际 UPDATE 命中的行数。
+        """
+
+        subq = (
+            select(Review.id)
+            .where(Review.project_id == project_id, Review.mr_iid == mr_iid)
+            .scalar_subquery()
+        )
+        stmt = (
+            update(Finding)
+            .where(Finding.review_id.in_(subq), Finding.status == "open")
+            .values(status="mr_closed", resolved_in_review_id=lifecycle_review_id)
+        )
+        result = await self._session.execute(stmt)
+        # SQLAlchemy 2.x 保证 update.rowcount；MySQL / PG 都填。返回 0 时上层可打日志。
+        return int(getattr(result, "rowcount", 0) or 0)
+
+    async def reopen_mr_closed(
+        self,
+        project_id: UUID,
+        mr_iid: str,
+    ) -> int:
+        """把 (project, mr) 所有 ``status='mr_closed'`` 的 finding 翻回 ``open``。
+
+        MR reopen 时使用：清空 ``resolved_in_review_id`` 让它回到"活着"状态，
+        紧接着上层继续走常规增量审查流程，engine 输出会再决定后续状态。
+
+        Args:
+            project_id: DB 中 Project 主键 UUID。
+            mr_iid: 归一化后的 MR IID（str）。
+
+        Returns:
+            实际 UPDATE 命中的行数。
+        """
+
+        subq = (
+            select(Review.id)
+            .where(Review.project_id == project_id, Review.mr_iid == mr_iid)
+            .scalar_subquery()
+        )
+        stmt = (
+            update(Finding)
+            .where(Finding.review_id.in_(subq), Finding.status == "mr_closed")
+            .values(status="open", resolved_in_review_id=None)
+        )
+        result = await self._session.execute(stmt)
+        return int(getattr(result, "rowcount", 0) or 0)

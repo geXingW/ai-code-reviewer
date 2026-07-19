@@ -207,6 +207,19 @@ class ReviewOrchestrator:
             OrchestratorResult: Aggregate execution summary.
         """
 
+        # MR 生命周期事件（close / merge / reopen）不跑 engine，只联动 finding 状态：
+        #  - close：把 (project, mr) 所有 open finding 批量标 mr_closed；
+        #  - merge：批量标 resolved（视为"跟着代码合进主线"）；
+        #  - reopen：把 mr_closed 的 finding 翻回 open，然后走常规增量流程。
+        # 前两种直接短路返回；reopen 只做翻转，接下来的常规流程会继续跑。
+        if event.action == "close":
+            return await self._handle_mr_closed(event)
+        if event.action == "merge":
+            return await self._handle_mr_merged(event)
+        if event.action == "reopen":
+            await self._reopen_mr_closed_findings(event)
+            # fall through 到常规审查流程
+
         started_at = time.perf_counter()
         review_id = uuid4()
         block_policy = match_block_policy(
@@ -1053,6 +1066,187 @@ class ReviewOrchestrator:
                         "finding_id": str(row.id),
                     },
                 )
+
+    async def _handle_mr_closed(
+        self, event: GitLabMergeRequestEvent,
+    ) -> OrchestratorResult:
+        """MR closed（非合并）：批量把 (project, mr) 的 open finding 标 ``mr_closed``。
+
+        - 不跑 engine；不调 GitLab changes / note / commit status。
+        - 插入一条 lifecycle 记账 Review 行（``status='done'``、
+          ``review_mode='full'``、``finding_count=0``、``has_blocker=False``），保留时间线。
+        - **不动 GitLab 侧 discussion**：MR 关闭时 GitLab 自己会灰化 discussion。
+        - session_factory 未接入时全部 no-op，返回一个合成的 result 让上层保持
+          "processed=True" 语义。
+
+        Returns:
+            :class:`OrchestratorResult`：``finding_count`` 报"受影响的 finding 数"，
+            让 webhook 响应能被观测到；其余字段沿用 done 语义。
+        """
+
+        return await self._handle_lifecycle_event(
+            event=event,
+            terminal_status="mr_closed",
+            log_label="mr_closed",
+        )
+
+    async def _handle_mr_merged(
+        self, event: GitLabMergeRequestEvent,
+    ) -> OrchestratorResult:
+        """MR merged：批量把 (project, mr) 的 open finding 标 ``resolved``。
+
+        与 close 分支的区别：finding 状态换成 ``resolved`` 并把
+        ``resolved_in_review_id`` 指向本次 lifecycle 记账 review（``resolved`` 语义
+        本来就要求带 resolver）。其余流程一致。
+        """
+
+        return await self._handle_lifecycle_event(
+            event=event,
+            terminal_status="resolved",
+            log_label="mr_merged",
+        )
+
+    async def _handle_lifecycle_event(
+        self,
+        *,
+        event: GitLabMergeRequestEvent,
+        terminal_status: str,
+        log_label: str,
+    ) -> OrchestratorResult:
+        """close / merge 共用的落库骨架：写 lifecycle Review + 批量翻状态。
+
+        走一个事务：
+          1. 插入 lifecycle Review 行（``status='done'``、``review_mode='full'``、
+             ``finding_count=0``、``has_blocker=False``、``duration_ms=0``）；
+          2. 调 :meth:`FindingRepository.mark_mr_closed` 或 :meth:`mark_resolved` 走
+             单条 UPDATE + IN 子查询把所有 open finding 翻到 ``terminal_status``。
+
+        session_factory / project 缺失均视为 no-op，返回一个合成的 result 而不是
+        抛错，让 webhook 响应保持 processed=True。
+        """
+
+        review_id = uuid4()
+        affected = 0
+        if self._session_factory is not None:
+            try:
+                async with self._session_factory() as session:
+                    project_repo = ProjectRepository(session)
+                    project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
+                    if project is None:
+                        logger.warning(
+                            "skip lifecycle event: project not registered",
+                            extra={
+                                "gitlab_project_id": event.project_id,
+                                "mr_iid": event.mr_iid,
+                                "action": event.action,
+                            },
+                        )
+                    else:
+                        review_row = ReviewRow(
+                            id=review_id,
+                            project_id=project.id,
+                            mr_iid=str(event.mr_iid),
+                            source_branch=event.source_branch,
+                            target_branch=event.target_branch,
+                            commit_sha=event.source_commit_sha,
+                            status="done",
+                            engine_used=None,
+                            has_blocker=False,
+                            finding_count=0,
+                            duration_ms=0,
+                            base_sha=event.target_commit_sha,
+                            parent_review_id=None,
+                            review_mode="full",
+                        )
+                        session.add(review_row)
+                        await session.flush()
+
+                        finding_repo = FindingRepository(session)
+                        if terminal_status == "mr_closed":
+                            affected = await finding_repo.mark_mr_closed(
+                                project.id, str(event.mr_iid), review_id,
+                            )
+                        else:
+                            # merged：先查出 (project, mr) 里所有 open finding 的 id，
+                            # 再复用 mark_resolved（保证 resolved_in_review_id 与其它
+                            # incremental 走的路径完全一致）。
+                            open_rows = await finding_repo.list_open_by_mr(
+                                project.id, str(event.mr_iid),
+                            )
+                            open_ids = [row.id for row in open_rows]
+                            affected = len(open_ids)
+                            await finding_repo.mark_resolved(open_ids, review_id)
+                        await session.commit()
+                        logger.info(
+                            "mr lifecycle event applied",
+                            extra={
+                                "gitlab_project_id": event.project_id,
+                                "mr_iid": event.mr_iid,
+                                "action": event.action,
+                                "lifecycle": log_label,
+                                "affected_findings": affected,
+                                "lifecycle_review_id": str(review_id),
+                            },
+                        )
+            except SQLAlchemyError:
+                logger.exception(
+                    "failed to apply MR lifecycle event",
+                    extra={
+                        "gitlab_project_id": event.project_id,
+                        "mr_iid": event.mr_iid,
+                        "action": event.action,
+                    },
+                )
+        return OrchestratorResult(
+            review_id=review_id,
+            project_uuid=event.project_uuid,
+            status="done",
+            # 用受影响 finding 数，webhook 响应侧可观测。
+            finding_count=affected,
+            has_blocker=False,
+            blocker_count=0,
+            policy_applied=None,
+            note_id=None,
+        )
+
+    async def _reopen_mr_closed_findings(
+        self, event: GitLabMergeRequestEvent,
+    ) -> None:
+        """MR reopen：把之前标记的 mr_closed 翻回 open，不插 Review 行。
+
+        reopen 会紧接着继续跑常规增量审查，该审查会自己产出一条新 review；
+        这里只做纯粹的翻转，避免记两条历史。DB 异常吞掉，退化为 no-op（下面
+        的常规流程正常继续跑）。
+        """
+
+        if self._session_factory is None:
+            return
+        try:
+            async with self._session_factory() as session:
+                project_repo = ProjectRepository(session)
+                project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
+                if project is None:
+                    return
+                finding_repo = FindingRepository(session)
+                affected = await finding_repo.reopen_mr_closed(project.id, str(event.mr_iid))
+                await session.commit()
+                if affected:
+                    logger.info(
+                        "mr reopened; findings flipped back to open",
+                        extra={
+                            "gitlab_project_id": event.project_id,
+                            "mr_iid": event.mr_iid,
+                            "affected_findings": affected,
+                        },
+                    )
+        except SQLAlchemyError:
+            logger.exception(
+                "failed to reopen mr_closed findings",
+                extra={
+                    "gitlab_project_id": event.project_id,
+                    "mr_iid": event.mr_iid,
+                },
+            )
 
     async def _persist_review(
         self,

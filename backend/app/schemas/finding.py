@@ -10,6 +10,12 @@ from app.schemas._datetime import AwareDatetime
 
 Severity = Literal["INFO", "WARNING", "BLOCKER"]
 FalsePositiveStatus = Literal["NONE", "PENDING", "CONFIRMED", "REJECTED"]
+# Finding 生命周期状态：
+# - ``open``: 活着的问题；
+# - ``resolved``: 判定已修/已合并；``resolved_in_review_id`` 指向那次 review；
+# - ``mr_closed``: 所属 MR 关闭（不是合并），问题随 MR 一起"作废"；
+#   ``resolved_in_review_id`` 复用来指向 lifecycle 记账 review。
+FindingStatus = Literal["open", "resolved", "mr_closed"]
 
 
 class FindingCreate(BaseModel):
@@ -82,6 +88,9 @@ class FindingRead(BaseModel):
     fp_reviewed_by: str | None
     fp_reviewed_at: AwareDatetime | None
     fp_review_note: str | None
+    # 生命周期状态；DB 侧 String(20) 无 check constraint，Literal 只在 API 边界约束。
+    # 老数据 server_default='open'，未来若出现落到未预期取值也会被 Pydantic 校验拦下。
+    status: FindingStatus = "open"
     created_at: AwareDatetime
     updated_at: AwareDatetime
 
