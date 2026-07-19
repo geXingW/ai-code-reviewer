@@ -191,15 +191,19 @@ async def test_mr_closed_marks_open_findings_and_records_review(
     assert len(lifecycle_ids) == 1
 
     # DB 里多了一条 lifecycle 记账 review：done / full / 0 finding / no blocker。
+    # 用 finding.resolved_in_review_id 反查定位而不是 reviews[-1]：MySQL DATETIME
+    # 秒精度下两条 review 可能同秒，order_by(created_at) 排序不稳定。
     reviews = await _list_reviews(factory)
     assert len(reviews) == 2
-    lifecycle_review = reviews[-1]
+    lifecycle_id = lifecycle_ids.pop()
+    lifecycle_reviews = [r for r in reviews if r.id == lifecycle_id]
+    assert len(lifecycle_reviews) == 1
+    lifecycle_review = lifecycle_reviews[0]
     assert lifecycle_review.status == "done"
     assert lifecycle_review.review_mode == "full"
     assert lifecycle_review.finding_count == 0
     assert lifecycle_review.has_blocker is False
     assert lifecycle_review.parent_review_id is None
-    assert lifecycle_review.id == lifecycle_ids.pop()
 
     # 关键：lifecycle 分支下这些 GitLab API 都**不再**被调用。
     assert gitlab.get_merge_request_changes.await_count == changes_calls_before
@@ -247,11 +251,17 @@ async def test_mr_merged_resolves_open_findings(
     assert all(f.status == "resolved" for f in findings)
     assert all(f.resolved_in_review_id is not None for f in findings)
 
+    # 用 finding.resolved_in_review_id 反查定位 lifecycle review，避免 MySQL
+    # DATETIME 秒精度下 open review 与 merge lifecycle review 同秒时
+    # reviews[-1] 顺序不稳定。
+    lifecycle_ids = {f.resolved_in_review_id for f in findings}
+    assert len(lifecycle_ids) == 1
+    lifecycle_id = lifecycle_ids.pop()
     reviews = await _list_reviews(factory)
-    lifecycle_review = reviews[-1]
+    lifecycle_reviews = [r for r in reviews if r.id == lifecycle_id]
+    assert len(lifecycle_reviews) == 1
+    lifecycle_review = lifecycle_reviews[0]
     assert lifecycle_review.status == "done"
-    # resolved_in_review_id 指向 lifecycle 记账 review。
-    assert {f.resolved_in_review_id for f in findings} == {lifecycle_review.id}
 
     # merge 分支同样不调 changes / note / status。
     assert gitlab.get_merge_request_changes.await_count == changes_calls_before
