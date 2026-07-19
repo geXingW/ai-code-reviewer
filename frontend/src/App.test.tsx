@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import App, { fpStatusBadgeProps, reviewModeBadgeProps, statusBadgeProps } from './App';
+import App, { fpStatusBadgeProps, lifecycleEventBadgeProps, reviewModeBadgeProps, statusBadgeProps } from './App';
 
 type MockResponse = {
   ok: boolean;
@@ -423,6 +423,36 @@ describe('reviewModeBadgeProps', () => {
     expect(weird.label).toBe('partial');
     expect(weird.title).toContain('未知 review_mode');
     expect(weird.title).toContain('partial');
+  });
+});
+
+// PR #96：MR 生命周期事件徽章（close / merge webhook 触发的记账 review 专用）。
+// 只测 pure function 输出，验证颜色 / label / title 契约，以及 null / undefined
+// 兜底返回 null（调用方走 review_mode 徽章）。
+describe('lifecycleEventBadgeProps', () => {
+  it('mr_closed 返回灰色「MR 已关闭」徽章', () => {
+    const closed = lifecycleEventBadgeProps('mr_closed');
+    expect(closed).not.toBeNull();
+    expect(closed!.label).toBe('MR 已关闭');
+    expect(closed!.variant).toBe('default');
+    expect(closed!.className).toContain('bg-zinc-100');
+    expect(closed!.className).toContain('text-zinc-700');
+    expect(closed!.title).toContain('mr_closed');
+  });
+
+  it('mr_merged 返回天蓝「MR 已合并」徽章', () => {
+    const merged = lifecycleEventBadgeProps('mr_merged');
+    expect(merged).not.toBeNull();
+    expect(merged!.label).toBe('MR 已合并');
+    expect(merged!.className).toContain('bg-sky-50');
+    expect(merged!.className).toContain('text-sky-700');
+    expect(merged!.title).toContain('resolved');
+  });
+
+  it('null / undefined / 未知值都返回 null，让调用方走 review_mode 徽章', () => {
+    expect(lifecycleEventBadgeProps(null)).toBeNull();
+    expect(lifecycleEventBadgeProps(undefined)).toBeNull();
+    expect(lifecycleEventBadgeProps('something-else')).toBeNull();
   });
 });
 

@@ -79,6 +79,9 @@ class RecentReviewRead(BaseModel):
     # DB 里 review_mode 为 NOT NULL server_default='full'，但对内存 deque 兜底
     # （见 _record_recent_review）也可能没设置，这里保留 Optional 并给默认 'full'。
     review_mode: str | None = "full"
+    # PR #96：MR 生命周期事件记账 Review 的标签（mr_closed / mr_merged）。
+    # 普通审查为 None；前端有值时优先渲染专属徽章，替代 review_mode 徽章。
+    lifecycle_event: str | None = None
 
 
 _recent_reviews: deque[RecentReviewRead] = deque(maxlen=20)
@@ -155,6 +158,8 @@ def _to_recent_review(review: object) -> RecentReviewRead:
         # PR #89：DB 里 review_mode 是 NOT NULL server_default='full'，老数据
         # 迁移后必然有值。这里读不到就兜底 'full'，防前端徽章渲染出错。
         review_mode=getattr(review, "review_mode", None) or "full",
+        # PR #96：普通审查该列为 NULL；close/merge webhook 记账 review 才有值。
+        lifecycle_event=getattr(review, "lifecycle_event", None),
     )
 
 
