@@ -1,0 +1,311 @@
+# 基础规则库目录（Rules Catalog）
+
+> 一份可直接落库使用的**前后端通用基础规则集**，参考 SonarQube、OWASP Top 10、阿里巴巴 Java 开发手册、Airbnb JS Style、ESLint recommended、React 官方 rules-of-hooks 等业界成熟规范整理。
+>
+> 覆盖 40 条规则，按「通用 / 后端 / 前端」三层组织；严重度按 `BLOCKER / WARNING / INFO` 三档分级。规则编写规范见 [rule-authoring.md](rule-authoring.md)，机器可读的批量导入载荷见 [rules-catalog.json](rules-catalog.json)。
+
+## 目录
+
+- [一、通用规则（general.\*）](#一通用规则general)
+- [二、后端-通用（backend.\*）](#二后端-通用backend)
+- [三、后端-Python（python.\*）](#三后端-pythonpython)
+- [四、后端-Java（java.\*）](#四后端-javajava)
+- [五、前端-通用（frontend.\* / js.\*）](#五前端-通用frontend--js)
+- [六、前端-React（react.\*）](#六前端-reactreact)
+- [七、前端-TypeScript（ts.\*）](#七前端-typescriptts)
+- [八、导入方式](#八导入方式)
+
+---
+
+## 一、通用规则（general.\*）
+
+跨语言、跨端通用的高价值规则。安全类规则默认 `BLOCKER`，一旦命中应阻断合并。
+
+### 1.1 硬编码密钥 / 凭据（BLOCKER）
+
+- **rule_id**：`general.hardcoded-secret`
+- **snippet**：检查是否硬编码密钥、密码、Token、API Key、证书私钥等敏感凭据。命中场景：字符串字面量形如 `password = "..."`、`api_key = "sk-..."`、`token = "ghp_..."`；配置内联的数据库连接串含明文密码；`.env` / 配置文件被 commit 且含真实值。正例：从环境变量、配置中心或密钥管理服务读取。rule_id 填 `general.hardcoded-secret`。
+- **理由**：一次泄漏成本极高，仓库历史无法真正清除。
+
+### 1.2 SQL 注入（BLOCKER）
+
+- **rule_id**：`general.sql-injection`
+- **snippet**：检查是否存在 SQL 注入风险。命中场景：字符串拼接构造 SQL（如 `"SELECT * FROM t WHERE id=" + id`、`f"... where name='{name}'"`）、未使用参数化查询、用户输入直接进入 `ORDER BY` / `LIMIT`。正例：使用参数化查询、预编译语句或 ORM 的绑定 API。rule_id 填 `general.sql-injection`。
+
+### 1.3 日志输出敏感信息（BLOCKER）
+
+- **rule_id**：`general.log-sensitive-info`
+- **snippet**：检查日志/异常信息是否泄漏敏感字段。命中场景：日志中打印完整请求体、身份证/手机号/银行卡/密码/Token 未脱敏、异常堆栈携带用户 PII。正例：脱敏后再打印（`138****1234`），敏感字段用占位符或哈希。rule_id 填 `general.log-sensitive-info`。
+
+### 1.4 异常被静默吞噬（WARNING）
+
+- **rule_id**：`general.swallowed-exception`
+- **snippet**：检查是否存在异常被捕获后未处理也未记录的情况。命中场景：`catch(e) {}` 空块、`except: pass`、只 `console.log(e)` 但流程继续、丢掉原始异常链。正例：至少记录 warn 级日志并携带上下文，或包装后重新抛出。rule_id 填 `general.swallowed-exception`。
+
+### 1.5 Magic Number / 魔法字符串（INFO）
+
+- **rule_id**：`general.magic-number`
+- **snippet**：检查代码中是否存在无命名的 Magic Number 或 Magic String，尤其是业务含义相关的常量。命中场景：`if (status == 3)`、`retry(5)`、`timeout: 30000` 直接内嵌。正例：抽为具名常量或枚举（`Status.ARCHIVED`、`MAX_RETRY_COUNT`）。允许例外：0、1、-1、2 等无业务含义的数字。rule_id 填 `general.magic-number`。
+
+### 1.6 方法过长 / 单文件过大（INFO）
+
+- **rule_id**：`general.long-method`
+- **snippet**：检查是否存在明显过长的方法/函数（经验阈值：> 80 行）或过长的文件（> 500 行）。命中场景：单函数处理多种职责、大量嵌套 if/for、多个不相关的 branch 堆叠。正例：按职责拆分子函数、抽取策略/命令模式。rule_id 填 `general.long-method`。
+
+### 1.7 注释掉的代码（INFO）
+
+- **rule_id**：`general.commented-code`
+- **snippet**：检查 diff 中是否存在被注释掉的大段代码。命中场景：`// oldImpl(...)`、`# do_xxx()` 连续多行、`/* ... */` 包裹旧逻辑。正例：删除并依赖 git 历史查回；确需保留应以注释说明「保留原因 + 何时删除」。rule_id 填 `general.commented-code`。
+
+### 1.8 TODO/FIXME 遗留关键路径（INFO）
+
+- **rule_id**：`general.todo-in-critical-path`
+- **snippet**：检查 TODO/FIXME/XXX/HACK 标记是否出现在关键路径（支付、权限、鉴权、事务、数据一致性）。命中场景：`// TODO: 加事务` 出现在写操作、`// FIXME: 权限校验先跳过`。正例：拆 Issue 跟踪并在代码里引用 Issue 编号（`TODO(#123): ...`）。rule_id 填 `general.todo-in-critical-path`。
+
+---
+
+## 二、后端-通用（backend.\*）
+
+不区分语言、面向服务端的通用规则。
+
+### 2.1 N+1 查询（WARNING）
+
+- **rule_id**：`backend.n-plus-one`
+- **snippet**：检查是否存在 N+1 查询。命中场景：for 循环内逐条查询数据库/远程服务、ORM 关联对象在循环中懒加载触发查询、批处理未合并请求。正例：预加载（JOIN FETCH / eager / `.select_related()`）、批量查询（`WHERE id IN (...)`）、DataLoader 合并。rule_id 填 `backend.n-plus-one`。
+
+### 2.2 事务边界不清（WARNING）
+
+- **rule_id**：`backend.transaction-boundary`
+- **snippet**：检查事务边界是否合理。命中场景：多个写操作跨越 Service 边界但未标注事务、`@Transactional` 内包含远程 HTTP 调用或长耗时 IO、事务方法被同类内部调用（Spring 自调用不生效）、Session/Connection 手动 commit 无 finally。正例：显式声明事务范围、把远程调用挪出事务、避免类内自调用。rule_id 填 `backend.transaction-boundary`。
+
+### 2.3 无分页查询（WARNING）
+
+- **rule_id**：`backend.unbounded-query`
+- **snippet**：检查是否存在无上限的数据库查询。命中场景：列表查询未加 `LIMIT` / 分页参数、`SELECT * FROM t` 全表扫描进内存、`findAll()` 直接返回。正例：强制分页参数、加合理 `LIMIT`、大结果集用流式/游标读取。rule_id 填 `backend.unbounded-query`。
+
+### 2.4 资源未关闭 / 连接泄漏（BLOCKER）
+
+- **rule_id**：`backend.resource-leak`
+- **snippet**：检查数据库连接、文件句柄、HTTP Client、Stream 是否可能泄漏。命中场景：`new Connection()` / `open(...)` 后无 try-with-resources、`with` 块或 `finally close()`、异常路径下资源未释放、Reactor / Rx 订阅未 dispose。正例：try-with-resources / `with` 上下文管理器 / `defer` 关闭。rule_id 填 `backend.resource-leak`。
+
+### 2.5 并发 / 线程安全（WARNING）
+
+- **rule_id**：`backend.thread-safety`
+- **snippet**：检查共享状态在并发场景是否安全。命中场景：单例 Service 里持有可变字段、`HashMap` / `ArrayList` 被多线程读写、`static` 变量作为缓存无同步、检查即失效（check-then-act）。正例：使用不可变对象、并发容器（`ConcurrentHashMap`）、显式锁或 CAS、避免共享可变状态。rule_id 填 `backend.thread-safety`。
+
+### 2.6 破坏性 API 变更（WARNING）
+
+- **rule_id**：`backend.breaking-api-change`
+- **snippet**：检查对外接口是否发生破坏性变更且未走版本化。命中场景：删除/重命名已发布接口字段、变更接口响应结构、变更必填参数、更严格的入参校验但客户端仍在传旧值。正例：新增字段而非替换、加版本前缀（`/api/v2/...`）、保留旧接口一个宽限期后下线。rule_id 填 `backend.breaking-api-change`。
+
+### 2.7 入参未校验（WARNING）
+
+- **rule_id**：`backend.missing-input-validation`
+- **snippet**：检查对外接口/公开方法是否对入参做了必要校验。命中场景：未校验非空、未校验字符串长度/枚举范围/数值区间、直接将用户输入透传到 SQL/文件路径/命令行、未防护 SSRF/路径穿越。正例：使用校验框架（Bean Validation / Pydantic）、白名单校验、路径规范化后再使用。rule_id 填 `backend.missing-input-validation`。
+
+### 2.8 时区不安全（WARNING）
+
+- **rule_id**：`backend.timezone-naive`
+- **snippet**：检查时间处理是否忽略时区。命中场景：使用 naive datetime（无 tzinfo）、`LocalDateTime` 直接落库、跨时区服务比较时间未统一 UTC、字符串拼接时间格式化。正例：全链路使用带时区的时间类型（`ZonedDateTime` / `datetime` with `tzinfo=UTC`）、DB 存 UTC 展示层转本地时区。rule_id 填 `backend.timezone-naive`。
+
+### 2.9 日志级别滥用（INFO）
+
+- **rule_id**：`backend.log-level-abuse`
+- **snippet**：检查日志级别是否合理。命中场景：正常业务流程用 `error`、循环中用 `info` 打印大量数据、异常路径只用 `debug`、生产环境保留 `println` / `console.log`。正例：`debug` 用于诊断、`info` 用于关键事件、`warn` 用于可恢复异常、`error` 用于真正的错误。rule_id 填 `backend.log-level-abuse`。
+
+### 2.10 缓存一致性 / 未失效（WARNING）
+
+- **rule_id**：`backend.cache-invalidation`
+- **snippet**：检查写操作是否遗漏缓存失效。命中场景：更新 DB 但未清除对应 Redis / 本地缓存、缓存 key 结构变了但未版本化、双写场景下先写缓存后写 DB。正例：写完 DB 立即失效缓存（Cache-Aside）、或用消息驱动失效；key 变更走版本化 key。rule_id 填 `backend.cache-invalidation`。
+
+### 2.11 重试无退避 / 无上限（WARNING）
+
+- **rule_id**：`backend.retry-without-backoff`
+- **snippet**：检查外部依赖调用的重试策略。命中场景：`while true` 或 `for i in 100` 立即重试、无指数退避、无最大次数上限、幂等未保证就重试写操作、批量重试打爆下游。正例：指数退避 + 抖动、明确 max attempts、非幂等操作前置幂等 key、熔断隔离。rule_id 填 `backend.retry-without-backoff`。
+
+---
+
+## 三、后端-Python（python.\*）
+
+### 3.1 异常处理不当（WARNING）
+
+- **rule_id**：`python.exception-handling`
+- **snippet**：检查 Python 异常处理是否过宽、吞掉异常或缺失上下文。命中场景：裸 `except:` / `except Exception` 后仅 `pass`、异常未记录栈（`logger.error(str(e))` 而非 `logger.exception`）、丢失原始异常链（未用 `raise ... from e`）。正例：捕获具体异常类型、`logger.exception()` 记栈、包装时保留链路。rule_id 填 `python.exception-handling`。
+
+### 3.2 可变默认参数（BLOCKER）
+
+- **rule_id**：`python.mutable-default-arg`
+- **snippet**：检查函数是否使用可变对象作为默认参数（`list` / `dict` / `set`）。命中场景：`def f(x, cache={})`、`def f(items=[])`。默认参数在函数定义时求值一次，实例间共享导致隐蔽 Bug。正例：默认值置 `None`，函数体内 `if x is None: x = {}`。rule_id 填 `python.mutable-default-arg`。
+
+### 3.3 async 里执行同步阻塞 IO（WARNING）
+
+- **rule_id**：`python.async-blocking`
+- **snippet**：检查 `async` 函数体内是否执行同步阻塞 IO。命中场景：`requests.get`、`time.sleep`、同步 ORM 查询、`open().read()` 大文件、CPU 密集循环，出现在 `async def` 或 FastAPI/aiohttp 路由中会阻塞 event loop。正例：使用异步库（`httpx.AsyncClient`、`aiofiles`、`asyncio.sleep`）；CPU 密集任务扔 `run_in_executor`。rule_id 填 `python.async-blocking`。
+
+### 3.4 f-string / % / format 拼接 SQL（BLOCKER）
+
+- **rule_id**：`python.fstring-sql`
+- **snippet**：检查是否使用 f-string、`%` 或 `.format()` 构造 SQL 语句。命中场景：`cursor.execute(f"SELECT * FROM t WHERE id={id}")`、`"WHERE name=%s" % name`。SQL 注入直接入口。正例：使用参数化查询占位符（`?` / `%s` / `:param`）由驱动绑定；动态表名/字段名使用白名单枚举。rule_id 填 `python.fstring-sql`。
+
+### 3.5 类型注解缺失（INFO）
+
+- **rule_id**：`python.type-hint-missing`
+- **snippet**：检查公共函数/方法/接口层是否缺失类型注解。命中场景：Service 层公开函数无参数与返回类型、Pydantic Model 字段无类型、`Any` 泛滥。正例：至少对外暴露的函数补齐 annotations，配合 mypy/pyright 检查。私有工具函数可宽松。rule_id 填 `python.type-hint-missing`。
+
+---
+
+## 四、后端-Java（java.\*）
+
+### 4.1 潜在空指针（WARNING）
+
+- **rule_id**：`java.null-safety`
+- **snippet**：检查可能触发 NPE 的访问路径。命中场景：未判空就调用链式方法、`Map.get()` 结果直接解引用、外部接口返回值未校验、Optional 存在但用 `.get()`。正例：使用 `Optional` + `orElse` / `ifPresent`、`Objects.requireNonNull`、`@Nullable` 注解 + IDE 检查。rule_id 填 `java.null-safety`。
+
+### 4.2 循环内字符串拼接（INFO）
+
+- **rule_id**：`java.string-concat-loop`
+- **snippet**：检查 for/while 循环内是否用 `+` 拼接字符串生成大量中间对象。命中场景：拼 SQL、拼 CSV、拼日志。正例：使用 `StringBuilder`（单线程）或 `StringJoiner`。rule_id 填 `java.string-concat-loop`。
+
+### 4.3 equals / hashCode 对称性（WARNING）
+
+- **rule_id**：`java.equals-hashcode`
+- **snippet**：检查重写 `equals` 时是否同时重写 `hashCode`（反之亦然），以及是否符合自反/对称/传递性。命中场景：只重写 equals 未重写 hashCode → HashMap 表现异常；`instanceof` 判断不对称（父子类比较）。正例：两者同时重写、使用 IDE 生成、或 Lombok `@EqualsAndHashCode` 明示字段。rule_id 填 `java.equals-hashcode`。
+
+### 4.4 Stream / IO 未关闭（BLOCKER）
+
+- **rule_id**：`java.stream-close`
+- **snippet**：检查 `InputStream` / `Reader` / `Connection` / `Files.newBufferedReader` 等资源是否关闭。命中场景：`new FileInputStream()` 后无 try-with-resources、`Files.lines()` 返回 Stream 未在 try-with-resources 中使用。正例：try-with-resources（要求实现 `AutoCloseable`）、finally 关闭并处理 close 异常。rule_id 填 `java.stream-close`。
+
+### 4.5 Lombok @Data 与 JPA 实体混用（WARNING）
+
+- **rule_id**：`java.lombok-data-jpa`
+- **snippet**：检查 JPA 实体是否使用了 `@Data` 或默认的 `@EqualsAndHashCode` / `@ToString`。命中场景：包含懒加载关联的实体默认 toString/equals 会触发所有关联加载或死循环。正例：JPA 实体避免 `@Data`，改用 `@Getter @Setter`，`@EqualsAndHashCode(onlyExplicitlyIncluded = true)` 明示业务 key、`@ToString(exclude = {"关联字段"})`。rule_id 填 `java.lombok-data-jpa`。
+
+---
+
+## 五、前端-通用（frontend.\* / js.\*）
+
+### 5.1 调试代码残留（INFO）
+
+- **rule_id**：`js.debug-leftover`
+- **snippet**：检查是否残留调试代码：`console.log` / `console.debug` / `debugger` 语句、被注释掉的大段代码块。允许保留 `console.warn` / `console.error` 作为生产告警。正例：删除或改为正式日志上报。rule_id 填 `js.debug-leftover`。
+
+### 5.2 硬编码接口地址（WARNING）
+
+- **rule_id**：`frontend.hardcoded-api-url`
+- **snippet**：检查是否硬编码接口域名/URL。命中场景：`fetch("http://api.dev.example.com/...")`、`axios.get("https://prod-host/...")`、写死 IP。正例：使用环境变量（`VITE_API_BASE` / `NEXT_PUBLIC_API_BASE`）、集中 axios 实例配置 baseURL、走反向代理。rule_id 填 `frontend.hardcoded-api-url`。
+
+### 5.3 innerHTML / dangerouslySetInnerHTML XSS 风险（BLOCKER）
+
+- **rule_id**：`frontend.xss-innerHTML`
+- **snippet**：检查是否将用户输入或后端返回内容直接注入 DOM。命中场景：`el.innerHTML = userInput`、React `dangerouslySetInnerHTML={{ __html: content }}` 内容来源不可信、`v-html` 绑定动态内容。正例：使用 textContent / 组件插值；确需渲染 HTML 时用 DOMPurify 等库消毒。rule_id 填 `frontend.xss-innerHTML`。
+
+### 5.4 文案硬编码（i18n 未走）（INFO）
+
+- **rule_id**：`frontend.i18n-hardcoded-copy`
+- **snippet**：在已引入 i18n 的项目中，检查是否存在硬编码的中文/英文文案。命中场景：Button、Toast、Modal 标题、错误提示直接写字面量。正例：走 `t('key')` / `$t('key')`，把文案落到 locale 文件。rule_id 填 `frontend.i18n-hardcoded-copy`。仅在已配置 i18n 的项目启用。
+
+### 5.5 全量引入大体积库（INFO）
+
+- **rule_id**：`frontend.large-bundle-import`
+- **snippet**：检查是否全量引入了体积大的库导致 bundle 膨胀。命中场景：`import _ from "lodash"`、`import * as icons from "@ant-design/icons"`、`import moment from "moment"`（推荐替换为 dayjs）。正例：按需 import（`import debounce from "lodash/debounce"`）、tree-shakable 库、替换更轻量的等价库。rule_id 填 `frontend.large-bundle-import`。
+
+### 5.6 缺失 loading / error 态（INFO）
+
+- **rule_id**：`frontend.missing-loading-error-state`
+- **snippet**：检查异步请求是否处理了 loading 与 error 两种状态。命中场景：`useEffect(() => { fetch().then(setData) }, [])` 无 loading 指示、无 error 兜底、请求失败后页面白屏。正例：三态渲染（loading / error / data）、统一的错误边界或全局 toast。rule_id 填 `frontend.missing-loading-error-state`。
+
+---
+
+## 六、前端-React（react.\*）
+
+### 6.1 列表 key 缺失或不稳定（WARNING）
+
+- **rule_id**：`react.list-key`
+- **snippet**：检查列表渲染是否使用了稳定的 key。命中场景：`items.map((it, i) => <Row key={i} />)` 使用数组索引作 key（列表可增删改序时会导致状态错乱）、缺失 key、使用 `Math.random()` 作 key。正例：使用后端返回的稳定业务 id 作 key；仅在列表纯静态且不重排时可用 index。rule_id 填 `react.list-key`。
+
+### 6.2 useEffect 依赖漏项 / 过多（WARNING）
+
+- **rule_id**：`react.effect-deps`
+- **snippet**：检查 `useEffect` / `useMemo` / `useCallback` 依赖数组是否正确。命中场景：闭包内引用了外部变量却未列入 deps（陈旧闭包）、把整个对象/数组列入依赖导致每次 render 都触发、`// eslint-disable-next-line react-hooks/exhaustive-deps` 屏蔽告警。正例：按 eslint-plugin-react-hooks 建议补齐依赖；对象类依赖用 `useMemo` 或提取主键。rule_id 填 `react.effect-deps`。
+
+### 6.3 直接修改 state（BLOCKER）
+
+- **rule_id**：`react.state-mutation`
+- **snippet**：检查是否直接修改 state 对象/数组。命中场景：`state.items.push(x); setState(state.items)`、`state.user.name = "..."` 再 setState、Redux reducer 直接改 state（未使用 Immer 时）。正例：返回新对象/数组（`setState({...state, items: [...state.items, x]})`）；Redux Toolkit 已内置 Immer 允许"看似"修改。rule_id 填 `react.state-mutation`。
+
+### 6.4 副作用未清理（WARNING）
+
+- **rule_id**：`react.effect-cleanup`
+- **snippet**：检查 useEffect 内注册的订阅/定时器/事件监听器/请求是否有清理逻辑。命中场景：`setInterval` / `addEventListener` / WebSocket / AbortController 未在 return 中清理，组件卸载后仍触发导致内存泄漏或"Can't perform state update on unmounted component" 警告。正例：`return () => { clearInterval(id); controller.abort(); }`。rule_id 填 `react.effect-cleanup`。
+
+### 6.5 大组件内联渲染 / 缺少拆分（INFO）
+
+- **rule_id**：`react.large-inline-render`
+- **snippet**：检查是否存在过大的组件（超过 300 行）或深层内联 JSX（> 5 层嵌套）。命中场景：单文件塞进多种职责、事件处理器全部内联、条件渲染嵌套多层三元表达式。正例：按职责拆子组件、内联函数提取为具名函数、复杂条件用 early return。rule_id 填 `react.large-inline-render`。
+
+---
+
+## 七、前端-TypeScript（ts.\*）
+
+### 7.1 any 滥用（INFO）
+
+- **rule_id**：`ts.any-abuse`
+- **snippet**：检查是否引入了 `any` 类型或 `as any` 断言。命中场景：`function f(x: any)`、`const data = res as any`、`Record<string, any>` 作对外类型。any 会关掉整条链路的类型检查。正例：使用具体接口、`unknown` + 类型收窄、泛型；确需宽松时用 `Record<string, unknown>`。rule_id 填 `ts.any-abuse`。
+
+### 7.2 非空断言滥用（INFO）
+
+- **rule_id**：`ts.non-null-assertion`
+- **snippet**：检查是否滥用非空断言 `!`。命中场景：`data!.user.name`、`document.getElementById("x")!`。非空断言等于"我保证不为空"，一旦为空就 runtime 崩。正例：显式判空 + early return、`?.` 可选链兜底、类型守卫收窄。rule_id 填 `ts.non-null-assertion`。
+
+---
+
+## 八、导入方式
+
+### 方式一：一键 seed 脚本（推荐）
+
+```bash
+# 从项目根目录
+cd backend
+python -m scripts.seed_rules --dry-run   # 预览
+python -m scripts.seed_rules             # 实际写入
+python -m scripts.seed_rules --overwrite # 覆盖已存在的同 rule_id
+```
+
+脚本读取 `docs/rules-catalog.json`，按 `rule_id` 幂等 upsert。见 [backend/scripts/seed_rules.py](../backend/scripts/seed_rules.py)。
+
+### 方式二：REST API 批量导入
+
+```bash
+JWT="Bearer <admin token>"
+BASE="http://localhost:8000"
+
+jq -c '.[]' docs/rules-catalog.json | while read -r rule; do
+  curl -sS -X POST "$BASE/api/rules" \
+    -H "Authorization: $JWT" \
+    -H "Content-Type: application/json" \
+    -d "$rule"
+  echo
+done
+```
+
+### 方式三：管理后台手工创建
+
+打开管理后台 → 规则库 → 新建规则，按目录中的字段逐条粘贴。
+
+## 九、启用与项目关联
+
+规则创建后**默认不会被任何项目使用**。要让规则生效：
+
+1. 打开管理后台 → 项目 → 选择项目 → 规则关联
+2. 勾选启用的规则、可覆盖 severity
+3. 保存后从下一次 MR review 起生效
+
+也可通过 `PATCH /api/projects/{id}` 传 `rules` 数组批量关联。详见 [rule-authoring.md § 五](rule-authoring.md#五把规则关联到项目)。
+
+## 十、迭代建议
+
+1. **先启用高价值 BLOCKER**：`hardcoded-secret` / `sql-injection` / `xss-innerHTML` / `resource-leak` / `state-mutation` 这几条误报率低、价值高，先全量启用
+2. **INFO 级别按需启用**：`magic-number` / `long-method` / `todo-in-critical-path` 这类主观规则先在小范围试跑，避免噪音
+3. **看 finding 调 snippet**：命中不准就补触发信号/反例；误报多就走误报闭环沉淀负样本
+4. **保持 rule_id 稳定**：误报按 `rule_id` 关联，改名等于丢历史
