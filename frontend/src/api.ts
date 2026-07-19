@@ -190,6 +190,12 @@ export type FindingRecord = {
   suggestion?: string | null;
   existing_code?: string | null;
   fp_status: string;
+  // finding 生命周期状态：
+  // - ``open``：活着的问题（默认，UI 不渲染徽章）；
+  // - ``resolved``：已修（含 MR merged 情形）；
+  // - ``mr_closed``：所属 MR 被关闭（非合并）。
+  // 老数据可能不带此字段，UI 需按 undefined/null 走 open 语义。
+  status?: 'open' | 'resolved' | 'mr_closed' | null;
   fp_marked_by?: string | null;
   fp_marked_at?: string | null;
   fp_marked_reason?: string | null;

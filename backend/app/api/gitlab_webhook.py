@@ -31,7 +31,7 @@ from app.services.review_orchestrator import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
-_SUPPORTED_ACTIONS = {"open", "reopen", "update"}
+_SUPPORTED_ACTIONS = {"open", "reopen", "update", "close", "merge"}
 
 
 class GitLabWebhookResponse(BaseModel):

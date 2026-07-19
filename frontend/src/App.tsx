@@ -1008,6 +1008,8 @@ function App() {
                 // fp_status 决定"标记误报"按钮是否可点：只有 NONE 才允许再标一次。
                 // PENDING / CONFIRMED / REJECTED 都是终态或已入队，再点没意义。
                 const fpBadge = fpStatusBadgeProps(finding.fp_status);
+                // finding.status 徽章：仅 resolved / mr_closed 展示，open / 空不渲染。
+                const statusBadge = statusBadgeProps(finding.status);
                 const canMark = finding.fp_status === 'NONE';
                 const markLabel = canMark
                   ? '标记误报'
@@ -1048,6 +1050,7 @@ function App() {
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <UiBadge {...severityBadgeProps(finding.severity)}>{finding.severity}</UiBadge>
+                      {statusBadge ? <UiBadge variant={statusBadge.variant} className={statusBadge.className}>{statusBadge.label}</UiBadge> : null}
                       {fpBadge ? <UiBadge variant={fpBadge.variant} className={fpBadge.className}>{fpBadge.label}</UiBadge> : null}
                       <Button
                         variant="ghost"
@@ -2105,6 +2108,46 @@ export function fpStatusBadgeProps(
       variant: 'default',
       className: 'border-rose-200 bg-rose-50 text-rose-700',
       label: '误报驳回',
+    };
+  }
+  return {
+    variant: 'default',
+    className: 'border-zinc-200 bg-zinc-50 text-zinc-600',
+    label: status,
+  };
+}
+
+/**
+ * finding.status → UiBadge props（+ label）。
+ *
+ * 与 fp_status 分开：这条链路展示的是"生命周期"（open / resolved / mr_closed），
+ * 而不是"发现是否为误报"。
+ *
+ * - ``open`` / null / undefined：返回 null——默认活跃状态不渲染徽章，避免噪声。
+ * - ``resolved``：绿色「已修复」（包含 MR 合并进主线导致的收敛）。
+ * - ``mr_closed``：灰色「MR 已关闭」——所属 MR 被关闭而非合并，这些 finding 已作废。
+ * - 未知值：中性灰兜底 + 原字符串，帮助发现后端偷加新状态但前端漏更新。
+ *
+ * export 出去是给单测 assert 各分支输出的。
+ */
+export function statusBadgeProps(
+  status: string | null | undefined,
+):
+  | { variant: 'default'; className: string; label: string }
+  | null {
+  if (!status || status === 'open') return null;
+  if (status === 'resolved') {
+    return {
+      variant: 'default',
+      className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+      label: '已修复',
+    };
+  }
+  if (status === 'mr_closed') {
+    return {
+      variant: 'default',
+      className: 'border-zinc-200 bg-zinc-100 text-zinc-600',
+      label: 'MR 已关闭',
     };
   }
   return {

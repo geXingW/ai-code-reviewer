@@ -23,3 +23,7 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+
+# 测试临时 SQLite（不小心被 Claude Code 产出的 orchestrator 单测创建）
+backend/tmp_test.db
+backend/*.db-journal

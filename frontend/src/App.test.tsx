@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import App, { fpStatusBadgeProps, reviewModeBadgeProps } from './App';
+import App, { fpStatusBadgeProps, reviewModeBadgeProps, statusBadgeProps } from './App';
 
 type MockResponse = {
   ok: boolean;
@@ -459,6 +459,37 @@ describe('fpStatusBadgeProps', () => {
 
   it('未知状态走中性灰兜底并保留原字符串，防止后端偷偷加新状态', () => {
     const unknown = fpStatusBadgeProps('SOMETHING_NEW');
+    expect(unknown).not.toBeNull();
+    expect(unknown?.label).toBe('SOMETHING_NEW');
+    expect(unknown?.className).toContain('bg-zinc-50');
+  });
+});
+
+// finding.status 徽章：新增 mr_closed 状态 + 已存在的 resolved。open/空不渲染。
+describe('statusBadgeProps', () => {
+  it('open / null / undefined 均返回 null，不渲染徽章', () => {
+    expect(statusBadgeProps('open')).toBeNull();
+    expect(statusBadgeProps(null)).toBeNull();
+    expect(statusBadgeProps(undefined)).toBeNull();
+  });
+
+  it('resolved 走绿色「已修复」', () => {
+    const resolved = statusBadgeProps('resolved');
+    expect(resolved).not.toBeNull();
+    expect(resolved?.label).toBe('已修复');
+    expect(resolved?.className).toContain('bg-emerald-50');
+  });
+
+  it('mr_closed 走灰色「MR 已关闭」', () => {
+    const closed = statusBadgeProps('mr_closed');
+    expect(closed).not.toBeNull();
+    expect(closed?.label).toBe('MR 已关闭');
+    expect(closed?.className).toContain('bg-zinc-100');
+    expect(closed?.className).toContain('text-zinc-600');
+  });
+
+  it('未知状态走中性灰兜底并保留原字符串', () => {
+    const unknown = statusBadgeProps('SOMETHING_NEW');
     expect(unknown).not.toBeNull();
     expect(unknown?.label).toBe('SOMETHING_NEW');
     expect(unknown?.className).toContain('bg-zinc-50');
