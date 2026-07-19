@@ -1157,6 +1157,13 @@ class ReviewOrchestrator:
                             base_sha=event.target_commit_sha,
                             parent_review_id=None,
                             review_mode="full",
+                            # PR #96：区分 lifecycle 记账与常规审查。前端根据此字段
+                            # 渲染专属徽章（"MR 已关闭" / "MR 已合并"）。
+                            lifecycle_event=(
+                                "mr_closed"
+                                if terminal_status == "mr_closed"
+                                else "mr_merged"
+                            ),
                         )
                         session.add(review_row)
                         await session.flush()

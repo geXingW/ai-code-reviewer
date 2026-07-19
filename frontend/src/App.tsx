@@ -1577,9 +1577,22 @@ function RecentReviewsPanel({ reviews, onViewAll }: RecentReviewsPanelProps) {
                   </UiBadge>
                 );
               })()}
-              {review.review_mode && review.review_mode !== 'full' ? (
-                // PR #89：首页面板只在非 full 时展示紧凑徽章，避免"全量"占位噪声。
-                (() => {
+              {(() => {
+                // PR #96：lifecycle_event 有值时优先渲染专属徽章，替代 review_mode 徽章。
+                const lifecycleBadge = lifecycleEventBadgeProps(review.lifecycle_event);
+                if (lifecycleBadge) {
+                  return (
+                    <UiBadge
+                      variant={lifecycleBadge.variant}
+                      className={cn(lifecycleBadge.className, 'h-4 px-1.5 text-[10px]')}
+                      title={lifecycleBadge.title}
+                    >
+                      {lifecycleBadge.label}
+                    </UiBadge>
+                  );
+                }
+                if (review.review_mode && review.review_mode !== 'full') {
+                  // PR #89：首页面板只在非 full 时展示紧凑徽章，避免"全量"占位噪声。
                   const modeBadge = reviewModeBadgeProps(review.review_mode);
                   return (
                     <UiBadge
@@ -1590,8 +1603,9 @@ function RecentReviewsPanel({ reviews, onViewAll }: RecentReviewsPanelProps) {
                       {modeBadge.label}
                     </UiBadge>
                   );
-                })()
-              ) : null}
+                }
+                return null;
+              })()}
             </div>
           ))}
         </div>
@@ -1968,7 +1982,12 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
               {review.status} · {review.finding_count} 个问题 · {review.commit_sha.slice(0, 7)} · {review.project_name || '-'}
               {review.created_at ? ` · ${relativeTime(review.created_at)}` : ''}
             </div>
-            {(review.rules_used ?? []).length > 0 || review.engine_used || review.parent_review_id ? (
+            {review.lifecycle_event ? (
+              // PR #96：lifecycle 记账 review 的 rules_used / engine_used /
+              // parent_review_id 都是 NULL/空，展示"辅助信息占位符"或引擎徽章都会
+              // 误导用户，改成一行灰体小字说明这是记账事件。
+              <div className="mt-1 text-[10px] text-zinc-400">MR 生命周期事件（不消耗 engine）</div>
+            ) : (review.rules_used ?? []).length > 0 || review.engine_used || review.parent_review_id ? (
               <div className="mt-1 flex flex-wrap gap-1">
                 {(review.rules_used ?? []).map((ruleId) => (
                   <span key={ruleId} className="inline-flex items-center rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] font-mono text-zinc-600">
@@ -1999,6 +2018,19 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {(() => {
+            // PR #96：lifecycle_event 有值时优先渲染专属徽章，替代 review_mode 徽章。
+            const lifecycleBadge = lifecycleEventBadgeProps(review.lifecycle_event);
+            if (lifecycleBadge) {
+              return (
+                <UiBadge
+                  variant={lifecycleBadge.variant}
+                  className={lifecycleBadge.className}
+                  title={lifecycleBadge.title}
+                >
+                  {lifecycleBadge.label}
+                </UiBadge>
+              );
+            }
             // PR #89：review_mode 徽章紧挨 status 徽章展示。老数据 review_mode 缺失
             // 走 helper 的 'full' fallback，展示"全量"灰色徽章，避免出现空白。
             const modeBadge = reviewModeBadgeProps(review.review_mode, review.base_sha);
@@ -2025,7 +2057,15 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
         <div className="bg-zinc-50 border-t border-zinc-100 px-4 pb-4">
           {loadingFindings ? <div className="py-3 text-[13px] text-zinc-500">加载中…</div> : null}
           {!loadingFindings && findings === null ? <div className="py-3 text-[13px] text-zinc-500">加载失败，请收起后重新展开。</div> : null}
-          {!loadingFindings && findings !== null && findings.length === 0 ? <div className="py-3 text-[13px] text-zinc-500 text-center">暂无问题</div> : null}
+          {!loadingFindings && findings !== null && findings.length === 0 ? (
+            // PR #96：lifecycle 记账 review 展开时 findings 必然空，把"暂无问题"
+            // 换成明确说明——这条不是审查，是记账。
+            review.lifecycle_event ? (
+              <div className="py-3 text-[13px] text-zinc-500 text-center">MR 生命周期事件，未产生新的审查内容</div>
+            ) : (
+              <div className="py-3 text-[13px] text-zinc-500 text-center">暂无问题</div>
+            )
+          ) : null}
           {(findings ?? []).map((finding) => (
             <div key={finding.id} className="flex items-start justify-between gap-3 py-3 border-b border-zinc-100 last:border-b-0">
               <div className="min-w-0 flex-1">
@@ -2239,6 +2279,38 @@ export function reviewModeBadgeProps(
     className: 'border-zinc-200 bg-zinc-50 text-zinc-600',
     label: '全量',
   };
+}
+
+/**
+ * review.lifecycle_event → UiBadge props。
+ *
+ * MR 生命周期事件（close / merge）的记账 review 在 UI 上不该看起来像普通审查。
+ * 有 lifecycle_event 时优先展示这个徽章，替代（不并列）review_mode 徽章。
+ *
+ * - mr_closed → 灰色「MR 已关闭」
+ * - mr_merged → 天蓝色「MR 已合并」
+ * - null / undefined → null（调用方自己走 review_mode 徽章）
+ */
+export function lifecycleEventBadgeProps(
+  event: string | null | undefined,
+): { variant: 'default'; className: string; label: string; title: string } | null {
+  if (event === 'mr_closed') {
+    return {
+      variant: 'default',
+      className: 'border-zinc-300 bg-zinc-100 text-zinc-700',
+      label: 'MR 已关闭',
+      title: 'MR 关闭事件的生命周期记账，涉及的 finding 已标记为 mr_closed',
+    };
+  }
+  if (event === 'mr_merged') {
+    return {
+      variant: 'default',
+      className: 'border-sky-200 bg-sky-50 text-sky-700',
+      label: 'MR 已合并',
+      title: 'MR 合并事件的生命周期记账，涉及的 finding 已标记为 resolved',
+    };
+  }
+  return null;
 }
 
 export function relativeTime(iso?: string): string {

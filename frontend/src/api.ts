@@ -30,6 +30,9 @@ export type RecentReview = {
   engine_used?: string | null;
   // PR #89：首页最近评审面板也需要展示"增量 / 复用"徽章。
   review_mode?: 'full' | 'incremental' | 'reuse' | null;
+  // PR #96：MR 生命周期事件记账 Review 的标签。有值时前端优先渲染专属徽章，
+  // 替代（不并列）review_mode 徽章。老数据 / 普通审查为 null / undefined。
+  lifecycle_event?: 'mr_closed' | 'mr_merged' | null;
 };
 
 export type CreateReviewPayload = {
@@ -176,6 +179,9 @@ export type ReviewRecord = {
   base_sha?: string | null;
   parent_review_id?: string | null;
   review_mode?: 'full' | 'incremental' | 'reuse' | null;
+  // PR #96：MR 生命周期事件记账 Review 的标签。有值时优先渲染专属徽章，
+  // 替代（不并列）review_mode 徽章。老数据 / 普通审查为 null / undefined。
+  lifecycle_event?: 'mr_closed' | 'mr_merged' | null;
 };
 
 export type FindingRecord = {

@@ -222,6 +222,8 @@ async def test_recent_reviews_returns_latest_manual_review(
             "created_at": None,
             # PR #89 UI（PR #90）：review_mode 走 schema 默认值 'full'。
             "review_mode": "full",
+            # PR #96：普通审查 lifecycle_event 为 None（deque 回退项也不带此字段）。
+            "lifecycle_event": None,
         }
     ]
     reviews.clear_recent_reviews_for_tests()

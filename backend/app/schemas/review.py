@@ -20,6 +20,12 @@ ReviewStatus = Literal["pending", "running", "done", "failed", "engine_error"]
 #   在展示层用的对齐值，schema 层允许 API 回显时给出 reuse 语义。）
 ReviewMode = Literal["full", "incremental", "reuse"]
 
+# PR #96：MR 生命周期事件（close / merge webhook）触发的"记账 Review"专用标签。
+# - ``mr_closed`` → MR 关闭事件；相关 finding 被标记为 mr_closed
+# - ``mr_merged`` → MR 合并事件；相关 finding 被标记为 resolved
+# 普通审查该字段为 None（走 review_mode 徽章）；前端有值时优先展示专属徽章。
+ReviewLifecycleEvent = Literal["mr_closed", "mr_merged"]
+
 
 class ReviewCreate(BaseModel):
     """Payload for creating a review record."""
@@ -95,5 +101,7 @@ class ReviewRead(BaseModel):
     base_sha: str | None = None
     parent_review_id: UUID | None = None
     review_mode: ReviewMode = "full"
+    # PR #96：MR 生命周期事件记账 Review 的标签。普通审查为 None。
+    lifecycle_event: ReviewLifecycleEvent | None = None
     created_at: AwareDatetime
     updated_at: AwareDatetime

@@ -204,6 +204,8 @@ async def test_mr_closed_marks_open_findings_and_records_review(
     assert lifecycle_review.finding_count == 0
     assert lifecycle_review.has_blocker is False
     assert lifecycle_review.parent_review_id is None
+    # PR #96：记账 review 带专属标签，前端据此渲染"MR 已关闭"徽章。
+    assert lifecycle_review.lifecycle_event == "mr_closed"
 
     # 关键：lifecycle 分支下这些 GitLab API 都**不再**被调用。
     assert gitlab.get_merge_request_changes.await_count == changes_calls_before
@@ -262,6 +264,8 @@ async def test_mr_merged_resolves_open_findings(
     assert len(lifecycle_reviews) == 1
     lifecycle_review = lifecycle_reviews[0]
     assert lifecycle_review.status == "done"
+    # PR #96：merge 记账 review 带 mr_merged 标签，与 close 分支区分开。
+    assert lifecycle_review.lifecycle_event == "mr_merged"
 
     # merge 分支同样不调 changes / note / status。
     assert gitlab.get_merge_request_changes.await_count == changes_calls_before

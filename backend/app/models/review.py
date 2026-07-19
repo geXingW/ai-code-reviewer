@@ -77,6 +77,16 @@ class Review(Base, TimestampMixin):
         server_default=text("'full'"),
         nullable=False,
     )
+    # PR #96：区分"MR 生命周期事件记账 Review"（close / merge webhook 触发）与常规审查。
+    # - ``NULL`` → 普通审查（老数据也无需刷）
+    # - ``'mr_closed'`` → MR 关闭事件的记账
+    # - ``'mr_merged'`` → MR 合并事件的记账
+    # 前端有值时改渲染专属徽章，替代（不并列）review_mode 徽章。查询访问模式是
+    # "看单条 review 详情"而不是"过滤所有 mr_closed 记录"，不建立索引。
+    lifecycle_event: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
 
     project: Mapped["Project"] = relationship(back_populates="reviews", lazy="selectin")
     policy: Mapped["ProjectBlockPolicy | None"] = relationship(
