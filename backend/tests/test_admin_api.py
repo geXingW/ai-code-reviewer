@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -27,6 +28,8 @@ class FakeProject:
     # relationship 语义，测试只关心 name / id 能被读到。
     id: UUID
     name: str = "demo-project"
+    gitlab_project_id: str = "123"
+    gitlab_access_token: str | None = "test-token"
 
 
 @dataclass
@@ -119,6 +122,43 @@ class FakeSession:
 
         del attribute_names
         self.refreshed.append(model)
+
+
+@pytest.fixture
+def resolve_discussion_calls() -> list[dict[str, Any]]:
+    """
+    记录 resolve_discussion 调用参数，方便 assert GitLab API 是否被正确调用。
+    """
+    return []
+
+
+@pytest.fixture(autouse=True)
+def patch_gitlab_client(
+    monkeypatch: pytest.MonkeyPatch,
+    resolve_discussion_calls: list[dict[str, Any]],
+) -> None:
+    """
+    替换 admin.py 里的 _build_gitlab_client 工厂方法，让它返回一个 fake 客户端。
+    每次 resolve_discussion 被调用就把参数记到 resolve_discussion_calls 里。
+    """
+
+    class FakeGitLabClient:
+        async def resolve_discussion(
+            self, project_id: int, mr_iid: int, discussion_id: str, resolved: bool
+        ) -> None:
+            resolve_discussion_calls.append({
+                "project_id": project_id,
+                "mr_iid": mr_iid,
+                "discussion_id": discussion_id,
+                "resolved": resolved,
+            })
+
+    def fake_build(project: FakeProject) -> FakeGitLabClient | None:
+        if not project.gitlab_access_token:
+            return None
+        return FakeGitLabClient()
+
+    monkeypatch.setattr("app.api.admin._build_gitlab_client", fake_build)
 
 
 @pytest.mark.asyncio
