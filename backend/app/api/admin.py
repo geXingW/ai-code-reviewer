@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import re
 from collections.abc import Callable, Sequence
@@ -20,11 +21,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.db import Base, DbSession
-import logging
-
 from app.integrations.gitlab.client import GitLabClient
-
-logger = logging.getLogger(__name__)
 from app.models.engine import Engine
 from app.models.finding import Finding
 from app.models.negative_example import NegativeExample
@@ -44,6 +41,8 @@ from app.schemas.project_rule import ProjectRuleCreate
 from app.schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
 from app.schemas.review import ReviewCreate, ReviewRead, ReviewUpdate
 from app.schemas.rule import RuleCreate, RuleRead, RuleUpdate
+
+logger = logging.getLogger(__name__)
 
 ModelT = TypeVar("ModelT", bound=Base)
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
