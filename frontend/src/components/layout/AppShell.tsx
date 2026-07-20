@@ -10,6 +10,7 @@ import {
   ListChecks,
   ScrollText,
   ShieldCheck,
+  Sparkles,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -24,6 +25,7 @@ export type PageKey =
   | 'statistics'
   | 'findings'
   | 'falsePositives'
+  | 'negativeExamples'
   | 'engines';
 
 interface NavItem {
@@ -58,6 +60,7 @@ const NAV_SECTIONS: NavSection[] = [
       { key: 'reviews', label: '审查记录', icon: ScrollText },
       { key: 'statistics', label: '统计', icon: BarChart3 },
       { key: 'falsePositives', label: '误报队列', icon: Filter, badge: '3' },
+      { key: 'negativeExamples', label: '负样本库', icon: Sparkles },
       { key: 'findings', label: '问题与误报', icon: AlertTriangle },
     ],
   },

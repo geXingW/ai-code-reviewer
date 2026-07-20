@@ -203,6 +203,9 @@ export type FindingRecord = {
   // - ``mr_closed``：所属 MR 被关闭（非合并）。
   // 老数据可能不带此字段，UI 需按 undefined/null 走 open 语义。
   status?: 'open' | 'resolved' | 'mr_closed' | null;
+  // PR #100 引入：finding 的分类（security/bug/performance/maintainability/style/other）。
+  // 老数据可能不带此字段，UI 应用 categoryDisplay 做未知兜底。
+  category?: string | null;
   fp_marked_by?: string | null;
   fp_marked_at?: string | null;
   fp_marked_reason?: string | null;
@@ -292,9 +295,14 @@ export type LoginResponse = {
   access_token: string;
   token_type: 'bearer';
   expires_in: number;
+  // PR-B：后端登录返回当前用户名，前端存到 sessionStorage 后用作
+  // 误报标记/审核弹窗中"标记人 / 审核人"的默认值。
+  username: string;
 };
 
 const ADMIN_TOKEN_STORAGE_KEY = 'aicr_admin_access_token';
+// PR-B：与 token 同层 sessionStorage 键，登出时一起清空。
+const ADMIN_USERNAME_STORAGE_KEY = 'aicr_admin_username';
 
 export class AuthRequiredError extends Error {
   constructor(message = '登录已过期，请重新登录。') {
@@ -328,6 +336,33 @@ export function setStoredAdminAccessToken(token: string): void {
 
 export function clearStoredAdminAccessToken(): void {
   setStoredAdminAccessToken('');
+  // PR-B：登出时把用户名也一起清掉，保持"登出后什么都不残留"的语义。
+  clearStoredAdminUsername();
+}
+
+// PR-B：sessionStorage 里的当前登录用户名。仅用于前端默认值预填（例如误报
+// 处理弹窗里的"标记人 / 审核人"输入框），不参与服务端鉴权。
+export function getStoredAdminUsername(): string {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+  return window.sessionStorage.getItem(ADMIN_USERNAME_STORAGE_KEY) ?? '';
+}
+
+export function setStoredAdminUsername(username: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const trimmed = username.trim();
+  if (trimmed) {
+    window.sessionStorage.setItem(ADMIN_USERNAME_STORAGE_KEY, trimmed);
+  } else {
+    window.sessionStorage.removeItem(ADMIN_USERNAME_STORAGE_KEY);
+  }
+}
+
+export function clearStoredAdminUsername(): void {
+  setStoredAdminUsername('');
 }
 
 function buildAdminHeaders(extraHeaders: Record<string, string> = {}): Record<string, string> {
@@ -372,6 +407,9 @@ export async function loginAdmin(username: string, password: string): Promise<Lo
   });
   const payload = await parseJsonResponse<LoginResponse>(response);
   setStoredAdminAccessToken(payload.access_token);
+  // PR-B：后端在 LoginResponse 里带回 username，存下来作为误报处理弹窗默认值。
+  // 老服务或测试 mock 可能没有该字段，走 username 兜底避免 trim() 崩。
+  setStoredAdminUsername(payload.username ?? username ?? '');
   return payload;
 }
 

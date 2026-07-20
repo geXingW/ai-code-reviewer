@@ -48,6 +48,7 @@ import {
   fetchRules,
   clearStoredAdminAccessToken,
   getStoredAdminAccessToken,
+  getStoredAdminUsername,
   isAuthRequiredError,
   loginAdmin,
   markFalsePositive,
@@ -63,9 +64,18 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { RuleSelector } from './components/RuleSelector';
+import { MarkFalsePositiveDialog } from './components/dialogs/MarkFalsePositiveDialog';
+import { ReviewFalsePositiveDialog } from './components/dialogs/ReviewFalsePositiveDialog';
 import { LoginPage } from './pages/LoginPage';
 import { StatisticsPage } from './pages/StatisticsPage';
+import {
+  SEVERITY_ORDER,
+  Severity,
+  isKnownSeverity,
+  severityDisplay,
+} from './lib/findingTaxonomy';
 
+// PR-B：新增独立页「负样本库」，放在「误报队列」之后。
 type PageKey =
   | 'dashboard'
   | 'providers'
@@ -75,6 +85,7 @@ type PageKey =
   | 'statistics'
   | 'findings'
   | 'falsePositives'
+  | 'negativeExamples'
   | 'engines';
 
 type FormState = {
@@ -161,6 +172,7 @@ const navItems: Array<{ key: PageKey; label: string }> = [
   { key: 'statistics', label: '统计' },
   { key: 'findings', label: '问题与误报' },
   { key: 'falsePositives', label: '误报队列' },
+  { key: 'negativeExamples', label: '负样本库' },
   { key: 'engines', label: '引擎配置' },
 ];
 
@@ -186,8 +198,20 @@ function App() {
   // 每条规则的编辑态：rule.id → 编辑表单数据（null/缺省表示未进入编辑）。
   // 用 Record 而非单值，避免多条规则互相踩。
   const [ruleEdits, setRuleEdits] = useState<Record<string, RuleFormPayload | null>>({});
-  const [operator, setOperator] = useState('admin@example.com');
-  const [reviewNote, setReviewNote] = useState('');
+  // PR-B：误报处理弹窗状态。旧版页面级 operator / reviewNote state 已移除——
+  // 一处输入到处生效的反直觉行为会被弹窗内表单替代。
+  const [markDialogFinding, setMarkDialogFinding] = useState<FindingRecord | null>(null);
+  const [reviewDialog, setReviewDialog] = useState<{
+    finding: FindingRecord;
+    action: 'confirm' | 'reject';
+  } | null>(null);
+  // PR-B：「问题与误报」页筛选器（前端 filter，findingsPage.items 量级不大）。
+  const [findingsFpFilter, setFindingsFpFilter] = useState<'ALL' | 'NONE' | 'PENDING' | 'CONFIRMED' | 'REJECTED'>('ALL');
+  const [findingsSeverityFilter, setFindingsSeverityFilter] = useState<Set<Severity>>(new Set());
+  const [findingsSearch, setFindingsSearch] = useState('');
+  // PR-B：「负样本库」筛选器。
+  const [negRuleFilter, setNegRuleFilter] = useState<string>('');
+  const [negSearch, setNegSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -272,14 +296,13 @@ function App() {
       } else if (page === 'reviews') {
         setReviewRecordsPage(await fetchReviewRecords());
       } else if (page === 'findings') {
-        const [allFindings, negativeExamples] = await Promise.all([
-          fetchFindings(),
-          fetchNegativeExamples(),
-        ]);
-        setFindingsPage(allFindings);
-        setNegativeExamplesPage(negativeExamples);
+        // PR-B：负样本迁到独立页，问题与误报页只拉 findings。
+        setFindingsPage(await fetchFindings());
       } else if (page === 'falsePositives') {
         setPendingFpPage(await fetchPendingFalsePositives());
+      } else if (page === 'negativeExamples') {
+        // PR-B：新页——从后端拉全部批准负样本，前端做 rule_id / 关键字过滤。
+        setNegativeExamplesPage(await fetchNegativeExamples());
       } else if (page === 'dashboard') {
         const [records, pendingFp] = await Promise.all([
           fetchReviewRecords(),
@@ -589,27 +612,48 @@ function App() {
     }
   }
 
-  async function handleMarkFalsePositive(finding: FindingRecord) {
+  // PR-B：改为打开弹窗，弹窗提交时再走后端 API。
+  function openMarkDialog(finding: FindingRecord) {
     setError(null);
     setMessage(null);
+    setMarkDialogFinding(finding);
+  }
+
+  async function submitMarkFalsePositive(
+    finding: FindingRecord,
+    payload: { marked_by: string; reason: string },
+  ) {
+    // 让弹窗自己 catch 错误做提示；这里失败时也让父页展示错误 banner。
     try {
-      await markFalsePositive(finding.id, { marked_by: operator, reason: reviewNote || 'MVP 管理台标记' });
+      await markFalsePositive(finding.id, payload);
       setFindingsPage(await fetchFindings());
+      setMarkDialogFinding(null);
       setMessage('问题已标记为待确认误报。');
     } catch (caught) {
       handleCaughtError(caught);
+      // 抛出让弹窗内部 setSubmitting(false) 复位 + 显示行内错误。
+      throw caught;
     }
   }
 
-  async function handleReviewFalsePositive(finding: FindingRecord, action: 'confirm' | 'reject') {
+  function openReviewDialog(finding: FindingRecord, action: 'confirm' | 'reject') {
     setError(null);
     setMessage(null);
+    setReviewDialog({ finding, action });
+  }
+
+  async function submitReviewFalsePositive(
+    finding: FindingRecord,
+    action: 'confirm' | 'reject',
+    payload: { reviewed_by: string; note: string },
+  ) {
+    // note 可能是空串（confirm 时非必填），发到后端时统一转 undefined 与旧行为一致。
+    const apiPayload = { reviewed_by: payload.reviewed_by, note: payload.note || undefined };
     try {
-      const payload = { reviewed_by: operator, note: reviewNote || undefined };
       if (action === 'confirm') {
-        await confirmFalsePositive(finding.id, payload);
+        await confirmFalsePositive(finding.id, apiPayload);
       } else {
-        await rejectFalsePositive(finding.id, payload);
+        await rejectFalsePositive(finding.id, apiPayload);
       }
       const [pending, negativeExamples] = await Promise.all([
         fetchPendingFalsePositives(),
@@ -617,9 +661,11 @@ function App() {
       ]);
       setPendingFpPage(pending);
       setNegativeExamplesPage(negativeExamples);
+      setReviewDialog(null);
       setMessage(action === 'confirm' ? '误报已确认并沉淀为负例。' : '误报申请已驳回。');
     } catch (caught) {
       handleCaughtError(caught);
+      throw caught;
     }
   }
 
@@ -636,6 +682,9 @@ function App() {
     );
   }
 
+  // PR-B：弹窗默认值走 sessionStorage 里存的登录用户名，缺省兜底 admin。
+  const defaultOperator = getStoredAdminUsername() || 'admin';
+
   return (
     <AppShell activePage={activePage} onNavigate={setActivePage} health={health} onLogout={handleLogout}>
       {error ? <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">{error}</div> : null}
@@ -648,7 +697,35 @@ function App() {
       {activePage === 'statistics' ? <StatisticsPage /> : null}
       {activePage === 'findings' ? renderFindings() : null}
       {activePage === 'falsePositives' ? renderFalsePositives() : null}
+      {activePage === 'negativeExamples' ? renderNegativeExamples() : null}
       {activePage === 'engines' ? renderEngineConfigs() : null}
+
+      {/* PR-B：误报处理弹窗。挂在 AppShell 里，便于任何页面上的按钮触发。 */}
+      <MarkFalsePositiveDialog
+        open={markDialogFinding !== null}
+        finding={markDialogFinding}
+        defaultMarkedBy={defaultOperator}
+        onCancel={() => setMarkDialogFinding(null)}
+        onSubmit={(payload) => {
+          if (markDialogFinding) {
+            return submitMarkFalsePositive(markDialogFinding, payload);
+          }
+          return Promise.resolve();
+        }}
+      />
+      <ReviewFalsePositiveDialog
+        open={reviewDialog !== null}
+        finding={reviewDialog?.finding ?? null}
+        action={reviewDialog?.action ?? 'confirm'}
+        defaultReviewedBy={defaultOperator}
+        onCancel={() => setReviewDialog(null)}
+        onSubmit={(payload) => {
+          if (reviewDialog) {
+            return submitReviewFalsePositive(reviewDialog.finding, reviewDialog.action, payload);
+          }
+          return Promise.resolve();
+        }}
+      />
     </AppShell>
   );
 
@@ -982,14 +1059,98 @@ function App() {
 
   function renderFindings() {
     const items = findingsPage?.items ?? [];
-    const negativeExamples = negativeExamplesPage?.items ?? [];
+    // PR-B：前端筛选（fp_status / 严重度 / 搜索），量级几百条内在前端做就够。
+    const q = findingsSearch.trim().toLowerCase();
+    const filtered = items.filter((finding) => {
+      if (findingsFpFilter !== 'ALL') {
+        const status = finding.fp_status || 'NONE';
+        if (status !== findingsFpFilter) return false;
+      }
+      if (findingsSeverityFilter.size > 0) {
+        const upper = (finding.severity ?? '').toUpperCase();
+        if (!isKnownSeverity(upper) || !findingsSeverityFilter.has(upper as Severity)) {
+          return false;
+        }
+      }
+      if (q) {
+        const haystack = `${finding.title ?? ''} ${finding.rule_id ?? ''} ${finding.file_path ?? ''}`.toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      return true;
+    });
     return (
       <div className="space-y-4">
+        {/* PR-B：筛选栏——误报状态单选、严重度多选、关键字搜索，全前端 filter。 */}
         <Card>
-          <CardContent className="p-4">
-            <div className="grid grid-cols-2 gap-3">
-              <TextInput label="操作人" value={operator} onChange={setOperator} />
-              <TextInput label="处理说明" value={reviewNote} onChange={setReviewNote} />
+          <CardContent className="p-3 space-y-2">
+            <div className="flex items-center flex-wrap gap-1.5">
+              <span className="text-[11px] text-zinc-500 mr-1">误报状态：</span>
+              {(['ALL', 'NONE', 'PENDING', 'CONFIRMED', 'REJECTED'] as const).map((option) => {
+                const active = findingsFpFilter === option;
+                const label = option === 'ALL'
+                  ? '全部'
+                  : option === 'NONE'
+                    ? '未处理'
+                    : option === 'PENDING'
+                      ? '待审核'
+                      : option === 'CONFIRMED'
+                        ? '已确认'
+                        : '已驳回';
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setFindingsFpFilter(option)}
+                    className={cn(
+                      'inline-flex items-center gap-1 px-2 py-[3px] rounded-full border text-[12px] leading-none transition-colors',
+                      active
+                        ? 'bg-zinc-900 text-white border-zinc-900'
+                        : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50',
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center flex-wrap gap-1.5">
+              <span className="text-[11px] text-zinc-500 mr-1">严重度：</span>
+              {SEVERITY_ORDER.map((sev) => {
+                const disp = severityDisplay(sev);
+                const active = findingsSeverityFilter.has(sev);
+                return (
+                  <button
+                    key={sev}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setFindingsSeverityFilter((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(sev)) next.delete(sev); else next.add(sev);
+                      return next;
+                    })}
+                    className={cn(
+                      'inline-flex items-center gap-1 px-2 py-[3px] rounded-full border text-[12px] leading-none transition-colors',
+                      active
+                        ? 'bg-zinc-900 text-white border-zinc-900'
+                        : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50',
+                    )}
+                  >
+                    <span aria-hidden>{disp.emoji}</span>
+                    <span>{disp.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div>
+              <input
+                type="text"
+                value={findingsSearch}
+                onChange={(event) => setFindingsSearch(event.target.value)}
+                placeholder="🔍 搜索标题 / rule_id / 文件路径"
+                aria-label="搜索问题"
+                className="w-full rounded-md border border-zinc-200 px-3 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-200"
+              />
             </div>
           </CardContent>
         </Card>
@@ -998,14 +1159,16 @@ function App() {
           <CardHeader>
             <div>
               <CardTitle>问题与误报</CardTitle>
-              <CardDescription>{items.length} 条问题记录</CardDescription>
+              <CardDescription>{filtered.length} / {items.length} 条问题记录</CardDescription>
             </div>
           </CardHeader>
           <CardContent className="p-0">
-            {items.length === 0 ? (
-              <div className="p-6 text-center text-[13px] text-zinc-500">暂无问题记录</div>
+            {filtered.length === 0 ? (
+              <div className="p-6 text-center text-[13px] text-zinc-500">
+                {items.length === 0 ? '暂无问题记录' : '当前筛选条件无匹配'}
+              </div>
             ) : (
-              items.map((finding) => {
+              filtered.map((finding) => {
                 // fp_status 决定"标记误报"按钮是否可点：只有 NONE 才允许再标一次。
                 // PENDING / CONFIRMED / REJECTED 都是终态或已入队，再点没意义。
                 const fpBadge = fpStatusBadgeProps(finding.fp_status);
@@ -1059,7 +1222,7 @@ function App() {
                         type="button"
                         disabled={!canMark}
                         title={markTitle}
-                        onClick={() => void handleMarkFalsePositive(finding)}
+                        onClick={() => openMarkDialog(finding)}
                       >
                         {markLabel}
                       </Button>
@@ -1070,45 +1233,15 @@ function App() {
             )}
           </CardContent>
         </Card>
-
-        {negativeExamples.length > 0 ? (
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>负样本</CardTitle>
-                <CardDescription>{negativeExamples.length} 条已批准</CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              {negativeExamples.map((example) => (
-                <div key={example.id} className="px-4 py-3 border-b border-zinc-100 last:border-b-0">
-                  <div className="text-[12px] font-mono bg-zinc-50 rounded p-2 mb-2 whitespace-pre-wrap break-all">
-                    {example.code_snippet}
-                  </div>
-                  {example.explanation ? <div className="text-[12px] text-zinc-600">{example.explanation}</div> : null}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        ) : null}
       </div>
     );
   }
 
   function renderFalsePositives() {
     const items = pendingFpPage?.items ?? [];
-    const negativeExamples = negativeExamplesPage?.items ?? [];
     return (
       <div className="space-y-4">
-        <Card>
-          <CardContent className="p-4">
-            <div className="grid grid-cols-2 gap-3">
-              <TextInput label="审核人" value={operator} onChange={setOperator} />
-              <TextInput label="审核备注" value={reviewNote} onChange={setReviewNote} />
-            </div>
-          </CardContent>
-        </Card>
-
+        {/* PR-B：顶部审核人/备注卡片已移除，改由 ReviewFalsePositiveDialog 内部收集。 */}
         <Card>
           <CardHeader>
             <div>
@@ -1120,42 +1253,152 @@ function App() {
             {items.length === 0 ? (
               <div className="p-6 text-center text-[13px] text-zinc-500">暂无待确认误报</div>
             ) : (
-              items.map((finding) => (
-                <div key={finding.id} className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-zinc-900 truncate">{finding.title}</div>
-                    <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{finding.file_path}:{finding.line_number ?? '-'} · 提交人 {finding.fp_marked_by ?? '未知'} · {finding.fp_marked_reason ?? '无原因'}</div>
+              items.map((finding) => {
+                const projectLabel = finding.project_name ?? '未知项目';
+                const mrLabel = finding.mr_iid ? `MR !${finding.mr_iid}` : 'MR !-';
+                const markedRel = relativeTime(finding.fp_marked_at ?? undefined);
+                return (
+                  <div key={finding.id} className="flex items-start justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="text-[13px] font-medium text-zinc-900 truncate">{finding.title}</div>
+                      <div className="text-[11px] text-zinc-500 truncate">
+                        <span>{projectLabel}</span>
+                        <span className="mx-1">·</span>
+                        <span className="font-mono">{mrLabel}</span>
+                        <span className="mx-1">·</span>
+                        <span className="font-mono">{finding.rule_id}</span>
+                      </div>
+                      <div className="text-[11px] text-zinc-500 font-mono truncate">
+                        {finding.file_path}:{finding.line_number ?? '-'}
+                      </div>
+                      <div className="text-[11px] text-zinc-500 truncate">
+                        提交人 <span className="text-zinc-700">{finding.fp_marked_by ?? '未知'}</span>
+                        {markedRel ? (
+                          <>
+                            <span className="mx-1">·</span>
+                            <span>{markedRel}</span>
+                          </>
+                        ) : null}
+                      </div>
+                      <div className="text-[12px] text-zinc-700 line-clamp-2 whitespace-pre-wrap break-words">
+                        <span className="text-zinc-500">提交原因：</span>
+                        {finding.fp_marked_reason ?? '（未填写）'}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 ml-3">
+                      <Button size="sm" type="button" onClick={() => openReviewDialog(finding, 'confirm')}>确认误报</Button>
+                      <Button variant="secondary" size="sm" type="button" onClick={() => openReviewDialog(finding, 'reject')}>驳回</Button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Button size="sm" type="button" onClick={() => void handleReviewFalsePositive(finding, 'confirm')}>确认误报</Button>
-                    <Button variant="secondary" size="sm" type="button" onClick={() => void handleReviewFalsePositive(finding, 'reject')}>驳回</Button>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </CardContent>
         </Card>
+      </div>
+    );
+  }
 
-        {negativeExamples.length > 0 ? (
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>负样本</CardTitle>
-                <CardDescription>{negativeExamples.length} 条已批准</CardDescription>
+  function renderNegativeExamples() {
+    const items = negativeExamplesPage?.items ?? [];
+    // rule_id 下拉候选：从已加载数据里去重，避免额外接口。keyword 搜索：rule_id / project_name / explanation / snippet。
+    const ruleOptions = Array.from(new Set(items.map((it) => it.rule_id).filter(Boolean))).sort();
+    const q = negSearch.trim().toLowerCase();
+    const filtered = items.filter((example) => {
+      if (negRuleFilter && example.rule_id !== negRuleFilter) return false;
+      if (q) {
+        const haystack = [
+          example.rule_id ?? '',
+          example.explanation ?? '',
+          example.code_snippet ?? '',
+        ].join(' ').toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      return true;
+    });
+    return (
+      <div className="space-y-4">
+        <Card>
+          <CardContent className="p-3 space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] text-zinc-500">规则：</span>
+              <select
+                aria-label="按规则筛选"
+                value={negRuleFilter}
+                onChange={(event) => setNegRuleFilter(event.target.value)}
+                className="h-8 rounded-md border border-zinc-200 bg-white px-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-200"
+              >
+                <option value="">全部规则</option>
+                {ruleOptions.map((rid) => (
+                  <option key={rid} value={rid}>{rid}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <input
+                type="text"
+                value={negSearch}
+                onChange={(event) => setNegSearch(event.target.value)}
+                placeholder="🔍 搜索规则 / 项目 / 说明 / 片段"
+                aria-label="搜索负样本"
+                className="w-full rounded-md border border-zinc-200 px-3 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-200"
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>负样本库</CardTitle>
+              <CardDescription>
+                {filtered.length} / {items.length} 条已批准
+              </CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            {filtered.length === 0 ? (
+              <div className="p-6 text-center text-[13px] text-zinc-500">
+                {items.length === 0 ? '暂无负样本' : '当前筛选条件无匹配'}
               </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              {negativeExamples.map((example) => (
-                <div key={example.id} className="px-4 py-3 border-b border-zinc-100 last:border-b-0">
-                  <div className="text-[12px] font-mono bg-zinc-50 rounded p-2 mb-2 whitespace-pre-wrap break-all">
-                    {example.code_snippet}
+            ) : (
+              filtered.map((example) => {
+                const createdRel = relativeTime(example.created_at ?? undefined);
+                return (
+                  <div key={example.id} className="px-4 py-3 border-b border-zinc-100 last:border-b-0 space-y-2">
+                    <div className="flex items-center gap-2 flex-wrap text-[11px] text-zinc-500">
+                      <span className="font-mono text-zinc-700">{example.rule_id}</span>
+                      {example.approved_by ? (
+                        <>
+                          <span>·</span>
+                          <span>批准人 <span className="text-zinc-700">{example.approved_by}</span></span>
+                        </>
+                      ) : null}
+                      {createdRel ? (
+                        <>
+                          <span>·</span>
+                          <span>{createdRel}</span>
+                        </>
+                      ) : null}
+                      {example.source_finding_id ? (
+                        <>
+                          <span>·</span>
+                          <span className="font-mono">来源 finding #{example.source_finding_id}</span>
+                        </>
+                      ) : null}
+                    </div>
+                    <div className="text-[12px] font-mono bg-zinc-50 rounded p-2 whitespace-pre-wrap break-all">
+                      {example.code_snippet}
+                    </div>
+                    {example.explanation ? (
+                      <div className="text-[12px] text-zinc-600 whitespace-pre-wrap">{example.explanation}</div>
+                    ) : null}
                   </div>
-                  {example.explanation ? <div className="text-[12px] text-zinc-600">{example.explanation}</div> : null}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        ) : null}
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
       </div>
     );
   }

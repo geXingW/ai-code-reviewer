@@ -525,3 +525,84 @@ describe('statusBadgeProps', () => {
     expect(unknown?.className).toContain('bg-zinc-50');
   });
 });
+
+// PR-B：从问题列表点"标记误报"应该唤起 MarkFalsePositiveDialog；从误报队列点
+// "确认误报"应该唤起 ReviewFalsePositiveDialog（action=confirm）。做集成级 smoke。
+describe('PR-B 误报处理弹窗集成', () => {
+  function mountAppMock(finding: Record<string, unknown>, pendingFinding: Record<string, unknown>): void {
+    mockFetch(async (url) => {
+      if (url === '/health') {
+        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok', redis: 'ok' });
+      }
+      if (url === '/api/auth/login') {
+        return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400, username: 'admin' });
+      }
+      if (url === '/api/engines') return jsonResponse([]);
+      if (url === '/api/reviews/recent') return jsonResponse([]);
+      if (url.startsWith('/api/findings')) {
+        return jsonResponse({ items: [finding], total: 1, limit: 50, offset: 0 });
+      }
+      if (url.startsWith('/api/false-positives/pending')) {
+        return jsonResponse({ items: [pendingFinding], total: 1, limit: 50, offset: 0 });
+      }
+      if (url.startsWith('/api/negative-examples')) {
+        return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
+      }
+      return jsonResponse({ detail: 'not found' }, false, 404);
+    });
+  }
+
+  it('点击「标记误报」按钮打开 MarkFalsePositiveDialog', async () => {
+    mountAppMock(
+      {
+        id: 'f-1', review_id: 'r-1', rule_id: 'no-print',
+        title: 'print 未清理', severity: 'WARNING',
+        file_path: 'src/foo.py', line_number: 3,
+        fp_status: 'NONE', status: 'open',
+      },
+      {
+        id: 'f-x', review_id: 'r-x', rule_id: 'no-eval',
+        title: 'x', severity: 'WARNING',
+        file_path: 'x.py', line_number: 1,
+        fp_status: 'PENDING', status: 'open',
+      },
+    );
+    render(<App />);
+    await loginAsAdmin();
+    await userEvent.click(screen.getByRole('button', { name: '问题与误报' }));
+    const markBtn = await screen.findByRole('button', { name: '标记误报' });
+    await userEvent.click(markBtn);
+    // 弹窗打开：出现标题 + 标记人默认值 admin。
+    expect(await screen.findByText('标记为误报')).toBeInTheDocument();
+    expect(screen.getByLabelText('标记人')).toHaveValue('admin');
+  });
+
+  it('点击「确认误报」按钮打开 ReviewFalsePositiveDialog（action=confirm）', async () => {
+    mountAppMock(
+      {
+        id: 'f-1', review_id: 'r-1', rule_id: 'no-print',
+        title: 't', severity: 'WARNING',
+        file_path: 'a.py', line_number: 1,
+        fp_status: 'NONE', status: 'open',
+      },
+      {
+        id: 'f-p', review_id: 'r-p', rule_id: 'no-eval',
+        title: 'eval 存在风险', severity: 'BLOCKER',
+        file_path: 'src/bar.py', line_number: 9,
+        fp_status: 'PENDING', status: 'open',
+        fp_marked_by: 'bob', fp_marked_reason: '走白名单',
+        fp_marked_at: '2026-07-19T00:00:00Z',
+      },
+    );
+    render(<App />);
+    await loginAsAdmin();
+    await userEvent.click(screen.getByRole('button', { name: /误报队列/ }));
+    const confirmBtn = await screen.findByRole('button', { name: '确认误报' });
+    await userEvent.click(confirmBtn);
+    expect(await screen.findByText(/确认误报（将沉淀为负例）/)).toBeInTheDocument();
+    // 弹窗内出现二次确认按钮："确认误报"（作为 primary label）。
+    const dialogButtons = screen.getAllByRole('button', { name: '确认误报' });
+    // 一个是列表里那颗，一个是弹窗 primary；数量应该 >= 2。
+    expect(dialogButtons.length).toBeGreaterThanOrEqual(2);
+  });
+});
