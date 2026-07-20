@@ -617,3 +617,95 @@ export async function fetchEngineConfigs(): Promise<Page<EngineConfig>> {
   const response = await adminFetch('/api/engines/configs');
   return parseJsonResponse<Page<EngineConfig>>(response, true);
 }
+
+// ---------------- 统计聚合 API（/api/stats/*）----------------
+//
+// 后端聚合口径：
+// - review 相关统计已排除 lifecycle_event NOT NULL 的 MR 生命周期记账。
+// - engine/provider 缺失归入 "unknown"。
+// - fp_rate / percentage 分母为 0 时后端返回 0.0（前端不再兜底除零）。
+
+export type EngineUsageStat = { engine: string; count: number };
+export type ProviderUsageStat = { provider: string; count: number };
+export type StatusBreakdownStat = { status: string; count: number };
+
+export type StatsOverview = {
+  days: number;
+  since: string;
+  total_reviews: number;
+  total_findings: number;
+  total_blockers: number;
+  total_resolved: number;
+  avg_duration_ms: number | null;
+  active_projects: number;
+  fp_pending: number;
+  fp_confirmed: number;
+  fp_rejected: number;
+  engine_usage: EngineUsageStat[];
+  provider_usage: ProviderUsageStat[];
+  status_breakdown: StatusBreakdownStat[];
+};
+
+export type RuleStat = {
+  rule_id: string;
+  title: string | null;
+  severity_default: string | null;
+  category_default: string | null;
+  finding_count: number;
+  blocker_count: number;
+  projects_hit: number;
+  fp_confirmed: number;
+  fp_rejected: number;
+  fp_pending: number;
+  fp_rate: number;
+  resolved_count: number;
+};
+
+export type ProjectStat = {
+  project_id: string;
+  project_name: string;
+  review_count: number;
+  finding_count: number;
+  blocker_count: number;
+  fp_confirmed: number;
+  avg_duration_ms: number | null;
+  last_reviewed_at: string | null;
+};
+
+export type CategoryStat = {
+  category: string;
+  count: number;
+  percentage: number;
+};
+
+export type TimeseriesPoint = {
+  date: string;
+  review_count: number;
+  finding_count: number;
+  blocker_count: number;
+};
+
+export async function fetchStatsOverview(days = 30): Promise<StatsOverview> {
+  const response = await adminFetch(`/api/stats/overview?days=${days}`);
+  return parseJsonResponse<StatsOverview>(response, true);
+}
+
+export async function fetchStatsRules(days = 30, limit = 50): Promise<RuleStat[]> {
+  const response = await adminFetch(`/api/stats/rules?days=${days}&limit=${limit}`);
+  return parseJsonResponse<RuleStat[]>(response, true);
+}
+
+export async function fetchStatsProjects(days = 30, limit = 50): Promise<ProjectStat[]> {
+  const response = await adminFetch(`/api/stats/projects?days=${days}&limit=${limit}`);
+  return parseJsonResponse<ProjectStat[]>(response, true);
+}
+
+export async function fetchStatsCategories(days = 30): Promise<CategoryStat[]> {
+  const response = await adminFetch(`/api/stats/categories?days=${days}`);
+  return parseJsonResponse<CategoryStat[]>(response, true);
+}
+
+export async function fetchStatsTimeseries(days = 30): Promise<TimeseriesPoint[]> {
+  const response = await adminFetch(`/api/stats/timeseries?days=${days}`);
+  return parseJsonResponse<TimeseriesPoint[]>(response, true);
+}

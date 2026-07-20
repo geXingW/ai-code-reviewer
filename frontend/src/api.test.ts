@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createRule, deleteProject, fetchRules, setStoredAdminAccessToken, updateProvider, updateProject } from './api';
+import { createRule, deleteProject, fetchRules, fetchStatsRules, setStoredAdminAccessToken, updateProvider, updateProject } from './api';
 
 type Captured = { url?: string; init?: RequestInit };
 
@@ -132,5 +132,15 @@ describe('API 客户端 payload 处理', () => {
       '/api/rules?limit=100&offset=0',
       '/api/rules?limit=100&offset=100',
     ]);
+  });
+
+  it('fetchStatsRules 拼接 days 与 limit 到 query string 上', async () => {
+    setStoredAdminAccessToken('admin-token');
+    const captured = mockFetchAndCapture();
+
+    await fetchStatsRules(30, 50);
+    expect(captured.url).toBe('/api/stats/rules?days=30&limit=50');
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer admin-token');
   });
 });

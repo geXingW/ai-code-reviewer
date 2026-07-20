@@ -64,6 +64,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { RuleSelector } from './components/RuleSelector';
 import { LoginPage } from './pages/LoginPage';
+import { StatisticsPage } from './pages/StatisticsPage';
 
 type PageKey =
   | 'dashboard'
@@ -71,6 +72,7 @@ type PageKey =
   | 'rules'
   | 'projects'
   | 'reviews'
+  | 'statistics'
   | 'findings'
   | 'falsePositives'
   | 'engines';
@@ -156,6 +158,7 @@ const navItems: Array<{ key: PageKey; label: string }> = [
   { key: 'rules', label: '审查规则' },
   { key: 'projects', label: 'GitLab 项目' },
   { key: 'reviews', label: '审查记录' },
+  { key: 'statistics', label: '统计' },
   { key: 'findings', label: '问题与误报' },
   { key: 'falsePositives', label: '误报队列' },
   { key: 'engines', label: '引擎配置' },
@@ -642,6 +645,7 @@ function App() {
       {activePage === 'rules' ? renderRules() : null}
       {activePage === 'projects' ? renderProjects() : null}
       {activePage === 'reviews' ? renderReviewRecords() : null}
+      {activePage === 'statistics' ? <StatisticsPage /> : null}
       {activePage === 'findings' ? renderFindings() : null}
       {activePage === 'falsePositives' ? renderFalsePositives() : null}
       {activePage === 'engines' ? renderEngineConfigs() : null}

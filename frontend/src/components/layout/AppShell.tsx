@@ -1,6 +1,7 @@
 import * as React from 'react';
 import {
   AlertTriangle,
+  BarChart3,
   Boxes,
   Cpu,
   Filter,
@@ -20,6 +21,7 @@ export type PageKey =
   | 'rules'
   | 'projects'
   | 'reviews'
+  | 'statistics'
   | 'findings'
   | 'falsePositives'
   | 'engines';
@@ -54,6 +56,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard },
       { key: 'reviews', label: '审查记录', icon: ScrollText },
+      { key: 'statistics', label: '统计', icon: BarChart3 },
       { key: 'falsePositives', label: '误报队列', icon: Filter, badge: '3' },
       { key: 'findings', label: '问题与误报', icon: AlertTriangle },
     ],
