@@ -315,7 +315,7 @@ describe('MVP 管理台', () => {
       if (url === '/api/engines/configs') {
         return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
       }
-      if (url === '/api/rules') {
+      if (url === '/api/rules' || url.startsWith('/api/rules?')) {
         return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
       }
       if (url.startsWith('/api/projects/') && init?.method === 'PATCH') {

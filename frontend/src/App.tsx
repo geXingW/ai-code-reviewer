@@ -62,6 +62,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { RuleSelector } from './components/RuleSelector';
 import { LoginPage } from './pages/LoginPage';
 
 type PageKey =
@@ -895,26 +896,22 @@ function App() {
               </div>
               <SelectInput label="默认阻断级别" value={projectForm.default_block_severity} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setProjectForm({ ...projectForm, default_block_severity: value as ProjectFormPayload['default_block_severity'] })} />
               <div>
-                <label className="text-[12px] font-medium text-zinc-600 mb-2 block">启用规则</label>
-                <div className="rounded-md border border-zinc-200 max-h-48 overflow-y-auto">
-                  {(rulesPage?.items ?? []).length === 0 ? (
-                    <div className="p-3 text-[12px] text-zinc-500">暂无规则，请先到"审查规则"页面创建。</div>
-                  ) : (
-                    (rulesPage?.items ?? []).map((rule) => (
-                      <label key={rule.id} className="flex items-center gap-2 px-3 py-2 border-b border-zinc-100 last:border-b-0 text-[13px] cursor-pointer hover:bg-zinc-50">
-                        <input
-                          type="checkbox"
-                          className="size-4 rounded border-zinc-300 accent-indigo-600"
-                          checked={projectForm.rules.some((selected) => selected.rule_id === rule.id)}
-                          onChange={(event) => setProjectForm((prev) => ({ ...prev, rules: toggleRuleSelection(prev.rules, rule.id, event.target.checked) }))}
-                        />
-                        <span className="text-zinc-900">{rule.rule_id}</span>
-                        <span className="text-zinc-500">·</span>
-                        <span className="text-zinc-600 truncate">{rule.title}</span>
-                      </label>
-                    ))
-                  )}
-                </div>
+                <RuleSelector
+                  rules={rulesPage?.items ?? []}
+                  selectedRuleIds={projectForm.rules.map((r) => r.rule_id)}
+                  onToggle={(ruleId, enabled) =>
+                    setProjectForm((prev) => ({
+                      ...prev,
+                      rules: toggleRuleSelection(prev.rules, ruleId, enabled),
+                    }))
+                  }
+                  onBulkReplace={(ruleIds) =>
+                    setProjectForm((prev) => ({
+                      ...prev,
+                      rules: ruleIds.map((id) => ({ rule_id: id, enabled: true })),
+                    }))
+                  }
+                />
               </div>
               <div className="pt-3 flex items-center justify-end gap-2 border-t border-zinc-100 mt-4">
                 <Button type="button" variant="secondary" onClick={() => setProjectForm(initialProjectForm)}>重置</Button>
@@ -1728,28 +1725,22 @@ function ProjectCard({ project, providerOptions, rules, onSavePolicies, onSavePr
           <TextInput label="Webhook Secret" type="password" placeholder="留空则不修改" value={editForm.webhook_secret} onChange={(value) => setEditForm({ ...editForm, webhook_secret: value })} />
           <SelectInput label="AI 供应商" value={editForm.provider_id} options={providerOptions} onChange={(value) => setEditForm({ ...editForm, provider_id: value })} />
           {/* Issue #73：启用规则多选列表，样式与"新建项目"表单对齐。 */}
-          <div>
-            <label className="text-[12px] font-medium text-zinc-600 mb-2 block">启用规则</label>
-            <div className="rounded-md border border-zinc-200 max-h-48 overflow-y-auto">
-              {rules.length === 0 ? (
-                <div className="p-3 text-[12px] text-zinc-500">暂无规则，请先到"审查规则"页面创建。</div>
-              ) : (
-                rules.map((rule) => (
-                  <label key={rule.id} className="flex items-center gap-2 px-3 py-2 border-b border-zinc-100 last:border-b-0 text-[13px] cursor-pointer hover:bg-white">
-                    <input
-                      type="checkbox"
-                      className="size-4 rounded border-zinc-300 accent-indigo-600"
-                      checked={editForm.rules.some((selected) => selected.rule_id === rule.id)}
-                      onChange={(event) => setEditForm((prev) => ({ ...prev, rules: toggleRuleSelection(prev.rules, rule.id, event.target.checked) }))}
-                    />
-                    <span className="text-zinc-900">{rule.rule_id}</span>
-                    <span className="text-zinc-500">·</span>
-                    <span className="text-zinc-600 truncate">{rule.title}</span>
-                  </label>
-                ))
-              )}
-            </div>
-          </div>
+          <RuleSelector
+            rules={rules}
+            selectedRuleIds={editForm.rules.map((r) => r.rule_id)}
+            onToggle={(ruleId, enabled) =>
+              setEditForm((prev) => ({
+                ...prev,
+                rules: toggleRuleSelection(prev.rules, ruleId, enabled),
+              }))
+            }
+            onBulkReplace={(ruleIds) =>
+              setEditForm((prev) => ({
+                ...prev,
+                rules: ruleIds.map((id) => ({ rule_id: id, enabled: true })),
+              }))
+            }
+          />
           <div className="flex items-center justify-end gap-2 pt-1">
             <Button variant="secondary" size="sm" type="button" disabled={editSaving} onClick={() => setEditing(false)}>取消</Button>
             <Button size="sm" type="button" disabled={editSaving} onClick={() => void handleSaveEdit()}>{editSaving ? '保存中…' : '保存'}</Button>
