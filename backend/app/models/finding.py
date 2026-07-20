@@ -37,6 +37,9 @@ class Finding(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
     existing_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # LLM 输出的 finding 分类。老数据 NULL；渲染层缺失时 fallback 到 rule_id 推断。
+    # 允许值参考 backend/app/core/finding_taxonomy.py::FindingCategory（枚举）。
+    category: Mapped[str | None] = mapped_column(String(20), nullable=True)
     confidence: Mapped[float] = mapped_column(
         Float,
         default=0.0,

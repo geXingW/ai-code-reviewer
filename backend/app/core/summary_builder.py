@@ -46,6 +46,27 @@ def _suggestion_looks_like_code(text: str) -> bool:
     return bool(_CODE_STRUCTURAL_PATTERN.search(text))
 
 
+def _resolve_finding_category(finding: Finding) -> FindingCategory:
+    """优先用 ``finding.category``（LLM 输出）；无效或缺失时 fallback 到 rule_id 推断。
+
+    PR-B 之后 finding.category 是一等公民字段，但 DB / API 边界为了兼容老数据
+    与 LLM 偶发"发挥"，允许存储任意字符串或 None。这里把这三种情况都收敛成
+    一个 :class:`FindingCategory`：
+
+    - 有值且能解析成合法枚举 → 直接返回；
+    - 有值但不在枚举内（或类型不对）→ 忽略，走 rule_id 推断；
+    - 为 None / 空 → 走 rule_id 推断。
+    """
+
+    raw = getattr(finding, "category", None)
+    if raw:
+        try:
+            return FindingCategory(raw)
+        except ValueError:
+            pass
+    return infer_category(finding.rule_id)
+
+
 def build_review_summary_note(
     *,
     review_id: UUID,
@@ -221,7 +242,7 @@ def build_finding_discussion_body(finding: Finding) -> str:
     """
 
     sev_emoji, sev_label = severity_display(finding.severity)
-    cat = infer_category(finding.rule_id)
+    cat = _resolve_finding_category(finding)
     cat_emoji, cat_label = category_display(cat)
 
     lines: list[str] = [
@@ -314,7 +335,7 @@ def _render_findings_section(findings: Sequence[Finding]) -> list[str]:
         for finding in ordered:
             severity_label = finding.severity.upper()
             sev_emoji, _ = severity_display(finding.severity)
-            cat_emoji, _ = category_display(infer_category(finding.rule_id))
+            cat_emoji, _ = category_display(_resolve_finding_category(finding))
             lines.append(
                 f"- {sev_emoji} {cat_emoji} **[{severity_label}] {finding.title}**"
             )
@@ -374,7 +395,7 @@ def _compute_category_distribution(
 
     counter: dict[FindingCategory, int] = defaultdict(int)
     for f in findings:
-        counter[infer_category(f.rule_id)] += 1
+        counter[_resolve_finding_category(f)] += 1
 
     def _sort_key(item: tuple[FindingCategory, int]) -> tuple[int, int]:
         cat, count = item

@@ -202,6 +202,12 @@ class Finding(BaseModel):
     suggestion: str | None = None
     existing_code: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # LLM 输出的分类（``security`` / ``bug`` / ``performance`` /
+    # ``maintainability`` / ``style`` / ``other``）。保留 ``str | None`` 而不是
+    # 收窄到 Literal——模型可能返回不在枚举内的值或缺省，渲染层会 fallback 到
+    # rule_id 推断；这里的宽松让 ``Finding.model_validate_json`` 不因单条 finding
+    # 的分类字段而拒收整个响应。
+    category: str | None = None
     # 打上 finding 的来源标签，Filter 阶段据此分级处理：用户明确配的规则命中
     # 时默认保留，LLM 自己发挥出来的 finding 才走强对抗证伪。默认值刻意
     # 选最不受保护的 ``LLM_INFERRED``，避免调用方忘了打标签导致"误保护"。

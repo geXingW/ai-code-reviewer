@@ -33,6 +33,10 @@ class Rule(Base, TimestampMixin):
         server_default=text("'WARNING'"),
         nullable=False,
     )
+    # 规则的默认分类；LLM 会以此作为参考直接照抄到 finding.category。
+    # 老数据 NULL；seed_rules.py 从 docs/rules-catalog.json 的 category_default
+    # 字段读入。允许值参考 FindingCategory 枚举。
+    category_default: Mapped[str | None] = mapped_column(String(20), nullable=True)
     languages: Mapped[list[Any]] = mapped_column(
         JSON,
         default=list,

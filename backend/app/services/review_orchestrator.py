@@ -639,6 +639,10 @@ class ReviewOrchestrator:
                             title=rule.title,
                             description=rule.prompt_snippet,
                             severity=severity_upper,
+                            # rule.category_default 可能为 None（老数据未回填）；
+                            # 让 engine 侧的 _format_rules 用 'other' 兜底以对齐
+                            # FindingCategory 枚举，'general' 不在合法值内。
+                            category=rule.category_default,
                             enabled=True,
                         )
                     )
@@ -1357,6 +1361,9 @@ class ReviewOrchestrator:
                             description=finding.description,
                             suggestion=finding.suggestion,
                             existing_code=finding.existing_code,
+                            # LLM 输出的分类原样落库；缺失/无效不做兜底——渲染层
+                            # 会 fallback 到 rule_id 推断，避免在这里错误锁死。
+                            category=finding.category,
                             confidence=float(finding.confidence or 0.0),
                             # 本次新出现的 finding：first_seen 指向自己。
                             first_seen_review_id=review_id,

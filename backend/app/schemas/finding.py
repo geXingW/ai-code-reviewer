@@ -30,6 +30,10 @@ class FindingCreate(BaseModel):
     description: str | None = None
     suggestion: str | None = None
     existing_code: str | None = None
+    # LLM 输出的分类字段；未在此约束枚举——渲染层收到无效值会 fallback 到
+    # rule_id 推断，避免因为 LLM 偶发"发挥"打断整个 finding 落库。允许值请
+    # 参考 app.core.finding_taxonomy.FindingCategory。
+    category: str | None = None
     confidence: float = 0.0
     gitlab_discussion_id: str | None = None
     fp_status: FalsePositiveStatus = "NONE"
@@ -53,6 +57,7 @@ class FindingUpdate(BaseModel):
     description: str | None = None
     suggestion: str | None = None
     existing_code: str | None = None
+    category: str | None = None
     confidence: float | None = None
     gitlab_discussion_id: str | None = None
     fp_status: FalsePositiveStatus | None = None
@@ -79,6 +84,8 @@ class FindingRead(BaseModel):
     description: str | None
     suggestion: str | None
     existing_code: str | None
+    # 与 FindingCreate 同源：无效值会在渲染层 fallback 到 rule_id 推断。
+    category: str | None = None
     confidence: float
     gitlab_discussion_id: str | None
     fp_status: FalsePositiveStatus

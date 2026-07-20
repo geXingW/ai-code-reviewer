@@ -470,7 +470,7 @@ class LLMDirectEngine(ReviewEngine):
                         f"- rule_id: {rule.rule_id}",
                         f"  title: {rule.title}",
                         f"  severity: {rule.severity}",
-                        f"  category: {rule.category or 'general'}",
+                        f"  category: {rule.category or 'other'}",
                         f"  description: {rule.description}",
                         f"  examples: {examples}",
                     ]
@@ -575,6 +575,9 @@ class LLMDirectEngine(ReviewEngine):
             "description": _optional_str(raw.get("description")),
             "suggestion": _optional_str(raw.get("suggestion")),
             "existing_code": existing_code,
+            # 模型偶尔会填 "null" 字符串或者空串——``_optional_str`` 只把空/None
+            # 归成 None，其它字符串一律原样透传。合法性交给渲染层收敛。
+            "category": _optional_str(raw.get("category")),
             "confidence": _clamp_confidence(raw.get("confidence")),
         }
 

@@ -19,10 +19,18 @@ You are a senior code reviewer working on a merge request submitted by a develop
 
 Return ONLY a JSON object with this exact top-level shape (no prose, no markdown fences):
 
-{"findings": [{"file_path": string, "line_number": number|null, "rule_id": string, "severity": "INFO"|"WARNING"|"BLOCKER", "title": string, "description": string|null, "suggestion": string|null, "existing_code": string|null, "confidence": number}]}
+{"findings": [{"file_path": string, "line_number": number|null, "rule_id": string, "severity": "INFO"|"WARNING"|"BLOCKER", "category": "security"|"bug"|"performance"|"maintainability"|"style"|"other"|null, "title": string, "description": string|null, "suggestion": string|null, "existing_code": string|null, "confidence": number}]}
 
 Rules:
 - `file_path` must match a file present in the diff.
 - `line_number` must refer to the **new side** of the diff.
+- `category` classifies the type of issue:
+  - `security`: hardcoded credentials, SQL/XSS injection, unsafe deserialization, sensitive-info leaks in logs
+  - `bug`: runtime errors, null-pointer risks, exception swallowing, race conditions, wrong state mutations
+  - `performance`: N+1 queries, resource leaks, unbounded queries, blocking IO in async, oversized bundles
+  - `maintainability`: unclear naming, magic numbers, long methods, missing input validation, breaking API changes
+  - `style`: debug leftovers, commented-out code, TODOs, cosmetic issues, hardcoded copy
+  - `other`: doesn't fit any of the above
+- When the active rules block above specifies a `category` for a rule, prefer that value.
 - If unsure about a finding, omit it.
 - Do not wrap the JSON in markdown fences.
