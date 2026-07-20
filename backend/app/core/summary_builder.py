@@ -2,11 +2,48 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Sequence
 from uuid import UUID
 
+from app.core.finding_taxonomy import (
+    FindingCategory,
+    category_display,
+    infer_category,
+    severity_display,
+)
 from app.engines import Finding
+
+# AI 声明脚注：在每条行级 discussion 尾部渲染成小字，提示这是 AI 输出。
+_AI_FOOTER = (
+    "<sub>🤖 由 AI 生成，可能存在误报。"
+    "请通过管理后台反馈误报以帮助模型收敛。</sub>"
+)
+
+# 判断 suggestion 文本"看起来像代码"的启发式：包含换行，或者以典型的语言
+# 关键词开头（考虑 py/js/ts/java 常见起手式），或包含赋值/成员访问/调用等
+# 明显的代码结构。命中即用 fenced block 渲染，否则视为普通建议文字直接
+# 一行输出，避免"从环境变量读取"这种一句话被折叠塞进代码块。
+_CODE_LIKE_PATTERN = re.compile(
+    r"^\s*(def |class |function |const |let |var |import |from |"
+    r"if |for |while |return |# |// |@|<)"
+)
+
+# 结构性代码信号（对单行 suggestion 生效）：``x = y`` / ``obj.method(...)`` / 括号调用等。
+_CODE_STRUCTURAL_PATTERN = re.compile(r"[=({\[;]|\w+\.\w+")
+
+
+def _suggestion_looks_like_code(text: str) -> bool:
+    """启发式判断 suggestion 是否是代码片段。"""
+
+    if not text:
+        return False
+    if "\n" in text:
+        return True
+    if _CODE_LIKE_PATTERN.match(text):
+        return True
+    return bool(_CODE_STRUCTURAL_PATTERN.search(text))
 
 
 def build_review_summary_note(
@@ -107,9 +144,26 @@ def build_review_summary_note(
             f"- Review ID: `{review_id}`",
             f"- Result: {'BLOCKED' if has_blocker else 'PASSED'}",
             f"- Findings: {len(findings)} finding(s)",
-            f"- Blocking findings: {blocker_count} blocking finding(s)",
         ]
     )
+    # 分布行：只在 findings 非空时插入，且严格夹在 Findings 与 Blocking findings
+    # 之间，方便 reviewer 一眼扫到重度/类别的构成。
+    if findings:
+        sev_dist = _compute_severity_distribution(findings)
+        cat_dist = _compute_category_distribution(findings)
+        if sev_dist:
+            output.append(
+                "  - " + " · ".join(
+                    f"{emoji} {label}: {count}" for emoji, label, count in sev_dist
+                )
+            )
+        if cat_dist:
+            output.append(
+                "  - " + " · ".join(
+                    f"{emoji} {label}: {count}" for emoji, label, count in cat_dist
+                )
+            )
+    output.append(f"- Blocking findings: {blocker_count} blocking finding(s)")
     if policy_applied:
         output.append(f"- Policy: `{policy_applied}`")
     if detail_url:
@@ -153,13 +207,52 @@ def build_review_summary_note(
 
 
 def build_finding_discussion_body(finding: Finding) -> str:
-    """Render one line-level GitLab discussion body for a finding."""
+    """Render one line-level GitLab discussion body for a finding.
 
-    lines = [f"**[{finding.severity}] {finding.title}**"]
+    模板结构（PR-A）：
+      1. 首行：``{severity_emoji} **[{SEV}] · {cat_emoji} {cat_label}** — {title}``
+      2. rule_id 行：``\\`{rule_id}\\```
+      3. description（若有）
+      4. Suggestion 块——按 existing_code / suggestion 组合分三种渲染：
+         - 有 existing_code 或 suggestion 像代码：``<details>`` 折叠 + fenced block
+         - 只有 suggestion 且是纯文字：一行 ``**建议**：...``
+         - 什么都没有：跳过
+      5. AI 声明脚注（永远出现，作为误报反馈入口）
+    """
+
+    sev_emoji, sev_label = severity_display(finding.severity)
+    cat = infer_category(finding.rule_id)
+    cat_emoji, cat_label = category_display(cat)
+
+    lines: list[str] = [
+        f"{sev_emoji} **[{sev_label}] · {cat_emoji} {cat_label}** — {finding.title}",
+        "",
+        f"`{finding.rule_id}`",
+    ]
     if finding.description:
         lines.extend(["", finding.description])
-    if finding.suggestion:
-        lines.extend(["", f"Suggestion: {finding.suggestion}"])
+
+    suggestion = finding.suggestion
+    existing = finding.existing_code
+    if existing or (suggestion and _suggestion_looks_like_code(suggestion)):
+        # 走折叠对比：有 existing_code 就出「当前代码」块；有 suggestion 且是代码
+        # 就出「建议改为」块。fenced block 不指定语言，让 GitLab 自动 detect。
+        lines.extend(["", "<details><summary>💡 建议修复</summary>", ""])
+        if existing:
+            lines.extend(["**当前代码：**", "", "```", existing, "```", ""])
+        if suggestion:
+            if _suggestion_looks_like_code(suggestion):
+                lines.extend(["**建议改为：**", "", "```", suggestion, "```", ""])
+            else:
+                # existing_code + 一行文字 suggestion 的混合情况：文字直接放进
+                # details 里，避免 UI 出两个层级。
+                lines.extend([f"**建议**：{suggestion}", ""])
+        lines.append("</details>")
+    elif suggestion:
+        # 只有一行文字建议，不折叠，节省点击。
+        lines.extend(["", f"**建议**：{suggestion}"])
+
+    lines.extend(["", _AI_FOOTER])
     return "\n".join(lines)
 
 
@@ -220,7 +313,11 @@ def _render_findings_section(findings: Sequence[Finding]) -> list[str]:
         )
         for finding in ordered:
             severity_label = finding.severity.upper()
-            lines.append(f"- **[{severity_label}] {finding.title}**")
+            sev_emoji, _ = severity_display(finding.severity)
+            cat_emoji, _ = category_display(infer_category(finding.rule_id))
+            lines.append(
+                f"- {sev_emoji} {cat_emoji} **[{severity_label}] {finding.title}**"
+            )
             if finding.line_number is not None:
                 # 保留 file:line 完整定位——分组标题只有文件名，遗漏行号会让
                 # 用户在长文件里找不着；同时兼容旧断言 ``file.py:LINE``。
@@ -232,6 +329,65 @@ def _render_findings_section(findings: Sequence[Finding]) -> list[str]:
                 lines.append(f"  - Suggestion: {finding.suggestion}")
         lines.append("")
     return lines
+
+
+# 严重度分布展示时的固定顺序：从严到轻。
+_SEVERITY_ORDER: tuple[str, ...] = ("BLOCKER", "WARNING", "INFO")
+
+# 类别在 count 相同时的稳定次序：安全 > 缺陷 > 性能 > 可维护性 > 风格 > 其他。
+_CATEGORY_ORDER: tuple[FindingCategory, ...] = (
+    FindingCategory.SECURITY,
+    FindingCategory.BUG,
+    FindingCategory.PERFORMANCE,
+    FindingCategory.MAINTAINABILITY,
+    FindingCategory.STYLE,
+    FindingCategory.OTHER,
+)
+
+
+def _compute_severity_distribution(
+    findings: Sequence[Finding],
+) -> list[tuple[str, str, int]]:
+    """返回 [(emoji, label, count)]，按 BLOCKER/WARNING/INFO 固定顺序。
+
+    count 为 0 的档次会被跳过，避免视觉噪声。
+    """
+
+    counter: dict[str, int] = defaultdict(int)
+    for f in findings:
+        counter[f.severity.upper()] += 1
+    result: list[tuple[str, str, int]] = []
+    for sev in _SEVERITY_ORDER:
+        if counter.get(sev, 0) > 0:
+            emoji, label = severity_display(sev)
+            result.append((emoji, label, counter[sev]))
+    return result
+
+
+def _compute_category_distribution(
+    findings: Sequence[Finding],
+) -> list[tuple[str, str, int]]:
+    """返回 [(emoji, label, count)]，按 count 降序 + 类别稳定序。
+
+    count 为 0 的类别不出现。
+    """
+
+    counter: dict[FindingCategory, int] = defaultdict(int)
+    for f in findings:
+        counter[infer_category(f.rule_id)] += 1
+
+    def _sort_key(item: tuple[FindingCategory, int]) -> tuple[int, int]:
+        cat, count = item
+        # count 降序 → 负号；同 count 时按 _CATEGORY_ORDER 稳定排。
+        return (-count, _CATEGORY_ORDER.index(cat))
+
+    result: list[tuple[str, str, int]] = []
+    for cat, count in sorted(counter.items(), key=_sort_key):
+        if count <= 0:
+            continue
+        emoji, label = category_display(cat)
+        result.append((emoji, label, count))
+    return result
 
 
 def _build_mode_banner(
