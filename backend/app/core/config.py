@@ -1,7 +1,7 @@
 """Application configuration loaded from environment variables."""
 
 from functools import lru_cache
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from cryptography.fernet import Fernet
 from pydantic import Field, RedisDsn, SecretStr
@@ -116,6 +116,30 @@ class Settings(BaseSettings):
             ),
         ),
     ] = 32000
+    # PR-B2：负例反哺 prompt 的两项开关。0 表示彻底禁用负例注入，让 context.history
+    # 保持空；> 0 时按 scope 从 negative_examples 表拉批准过的负例。
+    llm_history_max_items: Annotated[
+        int,
+        Field(
+            ge=0,
+            le=100,
+            description=(
+                "从 negative_examples 表向 ReviewContext.history 注入的最大条数。"
+                "0 表示禁用负例反哺，engine 侧的历史段落将保持空。范围 [0, 100]。"
+            ),
+        ),
+    ] = 20
+    llm_history_scope: Annotated[
+        Literal["project", "rule", "both"],
+        Field(
+            description=(
+                "负例反哺的圈选范围。"
+                "'project' 只拉当前项目的负例；"
+                "'rule' 只拉当前启用规则命中的负例（含全局负例 project_id=NULL）；"
+                "'both' 取并集，按 id 去重。默认 'both'。"
+            ),
+        ),
+    ] = "both"
     cors_origins: Annotated[
         list[str],
         Field(description="Allowed CORS origins."),
