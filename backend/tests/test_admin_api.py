@@ -144,6 +144,8 @@ async def test_login_returns_bearer_token_for_valid_credentials(client: AsyncCli
     assert isinstance(payload["access_token"], str)
     # Standard JWT has three dot-separated segments: header.payload.signature
     assert payload["access_token"].count(".") == 2
+    # PR-B：LoginResponse 增加 username 字段，前端会存 sessionStorage 用作默认标记人。
+    assert payload["username"] == "admin"
 
 
 @pytest.mark.asyncio

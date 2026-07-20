@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createRule, deleteProject, fetchRules, fetchStatsRules, setStoredAdminAccessToken, updateProvider, updateProject } from './api';
+import { createRule, deleteProject, fetchRules, fetchStatsRules, getStoredAdminUsername, loginAdmin, setStoredAdminAccessToken, updateProvider, updateProject } from './api';
 
 type Captured = { url?: string; init?: RequestInit };
 
@@ -142,5 +142,25 @@ describe('API 客户端 payload 处理', () => {
     expect(captured.url).toBe('/api/stats/rules?days=30&limit=50');
     const headers = captured.init?.headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer admin-token');
+  });
+
+  // PR-B：登录响应带回 username，供前端弹窗默认标记人使用。
+  it('loginAdmin 成功后把 username 写入 sessionStorage，getStoredAdminUsername 能读到', async () => {
+    globalThis.fetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          access_token: 'tk',
+          token_type: 'bearer',
+          expires_in: 86400,
+          username: 'alice',
+        }),
+      } as unknown as Response),
+    );
+
+    const payload = await loginAdmin('alice', 'pwd');
+    expect(payload.username).toBe('alice');
+    expect(getStoredAdminUsername()).toBe('alice');
   });
 });

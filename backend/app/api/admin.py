@@ -121,11 +121,17 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    """MVP bearer token response."""
+    """MVP bearer token response.
+
+    ``username`` 是随登录一起返回的当前用户名，前端会存到 sessionStorage 后
+    在误报处理弹窗里作为「标记人 / 审核人」的默认值。仅用于前端展示与默认值
+    预填，不参与服务端鉴权（鉴权仍走 Authorization 头里的 JWT）。
+    """
 
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     expires_in: int
+    username: str
 
 
 class FalsePositiveMarkRequest(BaseModel):
@@ -160,6 +166,7 @@ async def login(payload: LoginRequest) -> LoginResponse:
     return LoginResponse(
         access_token=_sign_token(payload.username, expires_at),
         expires_in=expires_in,
+        username=payload.username,
     )
 
 
