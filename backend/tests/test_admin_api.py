@@ -16,8 +16,10 @@ from app.api.admin import (
     confirm_false_positive,
     mark_false_positive,
     reject_false_positive,
+    reset_false_positive_review,
 )
 from app.models.negative_example import NegativeExample
+from fastapi import HTTPException
 
 
 @dataclass
@@ -76,29 +78,68 @@ class FakeFinding:
     review: FakeReview | None = None
 
 
+@dataclass
+class FakeNegativeExample:
+    """Minimal negative example test double matching fields used by admin FP endpoints."""
+
+    id: UUID
+    source_finding_id: UUID
+    rule_id: str = "test-rule"
+    project_id: UUID | None = None
+    code_snippet: str | None = None
+    explanation: str | None = None
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
 class FakeSession:
     """Tiny async session fake for endpoint-level false-positive tests."""
 
-    def __init__(self, finding: FakeFinding, review: FakeReview | None = None) -> None:
+    def __init__(self, finding: FakeFinding, *extra_objects: object) -> None:
         self.finding = finding
-        self.review = review
+        self.objects: list[object] = [finding] + list(extra_objects)
         self.added: list[object] = []
+        self.deleted: list[object] = []
         self.committed = False
         self.refreshed: list[object] = []
 
     async def get(self, model_type: type[object], model_id: UUID) -> object | None:
-        """Return fake objects by SQLAlchemy model class name and ID."""
+        """Return fake objects by SQLAlchemy model class name and ID.
 
-        if model_type.__name__ == "Finding" and model_id == self.finding.id:
-            return self.finding
-        if self.review and model_type.__name__ == "Review" and model_id == self.review.id:
-            return self.review
+        特殊处理：Finding 模型匹配 FakeFinding，NegativeExample 匹配 FakeNegativeExample。
+        """
+
+        for obj in self.objects:
+            obj_type_name = type(obj).__name__
+            model_type_name = model_type.__name__
+
+            # FakeXXX 对应真实 XXX 模型
+            if obj_type_name == f"Fake{model_type_name}" and getattr(obj, "id", None) == model_id:
+                return obj
+            # 精确匹配（比如 FakeReview 匹配 Review，因为我们的测试用 FakeReview 但名字就是 FakeReview）
+            if obj_type_name == model_type_name and getattr(obj, "id", None) == model_id:
+                return obj
         return None
 
     def add(self, model: object) -> None:
         """Capture ORM objects that would be persisted."""
 
         self.added.append(model)
+
+    async def delete(self, model: object) -> None:
+        """Capture ORM objects that would be deleted."""
+
+        self.deleted.append(model)
+
+    async def scalar(self, stmt: object) -> object | None:
+        """Fake scalar() for NegativeExample queries: return first matching FakeNegativeExample."""
+
+        for obj in self.objects:
+            if isinstance(obj, FakeNegativeExample):
+                return obj
+        return None
 
     async def commit(self) -> None:
         """Record successful commit."""
@@ -263,6 +304,72 @@ async def test_reject_false_positive_keeps_finding_out_of_negative_examples() ->
     assert response.fp_reviewed_by == "lead@example.com"
     assert response.fp_review_note == "Real blocker"
     assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_reset_reviewed_false_positive_restores_pending_status() -> None:
+    """Resetting a CONFIRMED/REJECTED FP reverts to PENDING and clears audit fields."""
+
+    # Case 1: CONFIRMED → should delete associated NegativeExample
+    confirmed_finding = FakeFinding(
+        id=uuid4(),
+        review_id=uuid4(),
+        fp_status="CONFIRMED",
+        fp_reviewed_by="lead@example.com",
+        fp_review_note="False positive",
+    )
+    negative_example = FakeNegativeExample(
+        id=uuid4(),
+        source_finding_id=confirmed_finding.id,
+        rule_id="test-rule",
+    )
+    session1 = FakeSession(confirmed_finding, negative_example)
+
+    response1 = await reset_false_positive_review(
+        confirmed_finding.id,
+        session1,  # type: ignore[arg-type]
+    )
+
+    assert response1.fp_status == "PENDING"
+    assert response1.fp_reviewed_by is None
+    assert response1.fp_review_note is None
+    assert negative_example in session1.deleted  # CONFIRMED → delete NegativeExample
+
+    # Case 2: REJECTED → no NegativeExample to delete, just reset fields
+    rejected_finding = FakeFinding(
+        id=uuid4(),
+        review_id=uuid4(),
+        fp_status="REJECTED",
+        fp_reviewed_by="lead@example.com",
+        fp_review_note="Real issue",
+    )
+    session2 = FakeSession(rejected_finding)
+
+    response2 = await reset_false_positive_review(
+        rejected_finding.id,
+        session2,  # type: ignore[arg-type]
+    )
+
+    assert response2.fp_status == "PENDING"
+    assert response2.fp_reviewed_by is None
+    assert response2.fp_review_note is None
+    assert session2.deleted == []  # REJECTED → nothing to delete
+
+
+@pytest.mark.asyncio
+async def test_reset_pending_false_positive_fails() -> None:
+    """Resetting a PENDING FP (not yet reviewed) should fail."""
+
+    finding = FakeFinding(id=uuid4(), review_id=uuid4(), fp_status="PENDING")
+    session = FakeSession(finding)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await reset_false_positive_review(
+            finding.id,
+            session,  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 400
 
 
 @pytest.mark.asyncio
