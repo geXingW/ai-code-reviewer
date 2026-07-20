@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createRule, deleteProject, setStoredAdminAccessToken, updateProvider, updateProject } from './api';
+import { createRule, deleteProject, fetchRules, setStoredAdminAccessToken, updateProvider, updateProject } from './api';
 
 type Captured = { url?: string; init?: RequestInit };
 
@@ -106,5 +106,31 @@ describe('API 客户端 payload 处理', () => {
     expect(captured.init?.method).toBe('DELETE');
     const headers = captured.init?.headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer admin-token');
+  });
+
+  it('fetchRules 分页拉取：第一页满 100 条时继续翻页直到累计 total', async () => {
+    setStoredAdminAccessToken('admin-token');
+    const urls: string[] = [];
+    const firstPage = Array.from({ length: 100 }, (_, i) => ({ id: `r${i}` }));
+    const secondPage = Array.from({ length: 80 }, (_, i) => ({ id: `r${100 + i}` }));
+    globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      urls.push(url);
+      const isFirst = url.includes('offset=0');
+      const body = { items: isFirst ? firstPage : secondPage, total: 180, limit: 100, offset: isFirst ? 0 : 100 };
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => body,
+      } as unknown as Response);
+    });
+
+    const page = await fetchRules();
+    expect(page.items).toHaveLength(180);
+    expect(page.total).toBe(180);
+    expect(urls).toEqual([
+      '/api/rules?limit=100&offset=0',
+      '/api/rules?limit=100&offset=100',
+    ]);
   });
 });

@@ -82,6 +82,7 @@ export type RuleConfig = {
   title: string;
   prompt_snippet: string;
   severity_default: string;
+  category_default?: string | null;  // PR #100 引入：规则默认分类（security/bug/…）。
   languages: unknown[];
   path_patterns: unknown[];
   enabled: boolean;
@@ -445,9 +446,26 @@ export async function updateProvider(
   return parseJsonResponse<ProviderConfig>(response, true);
 }
 
+/**
+ * 拉规则列表。规则关联面板要显示所有规则，后端 `limit` 上限 100，
+ * 超过 100 条时循环 offset 拿全。避免面板显示不全导致老 UI 漏勾选。
+ */
 export async function fetchRules(): Promise<Page<RuleConfig>> {
-  const response = await adminFetch('/api/rules');
-  return parseJsonResponse<Page<RuleConfig>>(response, true);
+  const pageSize = 100;
+  let offset = 0;
+  const items: RuleConfig[] = [];
+  let total = 0;
+  while (true) {
+    const response = await adminFetch(`/api/rules?limit=${pageSize}&offset=${offset}`);
+    const page = await parseJsonResponse<Page<RuleConfig>>(response, true);
+    items.push(...page.items);
+    total = page.total;
+    if (page.items.length < pageSize || items.length >= total) {
+      break;
+    }
+    offset += pageSize;
+  }
+  return { items, total, limit: pageSize, offset: 0 };
 }
 
 // Issue #69：rule_id 可选，留空时由后端从标题自动生成 slug。
