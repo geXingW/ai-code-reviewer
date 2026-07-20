@@ -296,11 +296,21 @@ async def list_projects(
 
 @router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 async def create_project(payload: ProjectCreate, db: DbSession) -> ProjectRead:
-    """Create a project with optional nested rules and block policies."""
+    """Create a project with optional nested rules and block policies.
+
+    「安全默认」策略：``payload.rules is None`` 表示前端未显式传规则关联，
+    此时后端自动把所有 ``enabled=true && severity_default=BLOCKER`` 的规则关联
+    到新项目上——保证新项目开箱就有基础安全规则在跑。显式传 ``[]``
+    代表用户 opt out，不做自动关联。显式传非空数组则以传入内容为准。
+    """
 
     data = payload.model_dump(exclude={"rules", "block_policies"})
     project = Project(**data)
-    _replace_project_rules(project, payload.rules or [])
+    if payload.rules is None:
+        rules = await _default_blocker_project_rules(db)
+    else:
+        rules = list(payload.rules)
+    _replace_project_rules(project, rules)
     _replace_block_policies(project, payload.block_policies or [])
     db.add(project)
     await _commit_or_400(db, "Project create failed")
@@ -777,6 +787,31 @@ def _replace_project_rules(project: Project, rules: Sequence[ProjectRuleCreate])
     project.project_rules = [
         ProjectRule(**rule.model_dump(exclude={"project_id"}))
         for rule in rules
+    ]
+
+
+async def _default_blocker_project_rules(db: AsyncSession) -> list[ProjectRuleCreate]:
+    """默认关联规则：所有 ``enabled && severity_default='BLOCKER'`` 的规则。
+
+    只在 ``ProjectCreate.rules is None`` 时（前端未显式传规则关联）触发，
+    保证新项目「安全默认」——一进来就有基础安全规则在跑。
+
+    - ``enabled=True``：跟随 payload 默认；
+    - ``severity_override=None``：使用规则自己的 severity_default，不覆盖。
+    - 未来 seed 更多 BLOCKER 规则会自动生效。
+
+    只查 ID 减少内存占用；`RuleRepository` 目前没有专用方法就直接构造语句。
+    """
+
+    stmt = select(Rule.id).where(
+        Rule.enabled.is_(True),
+        Rule.severity_default == "BLOCKER",
+    )
+    result = await db.execute(stmt)
+    rule_ids = [row[0] for row in result.all()]
+    return [
+        ProjectRuleCreate(rule_id=rule_id, enabled=True, severity_override=None)
+        for rule_id in rule_ids
     ]
 
 

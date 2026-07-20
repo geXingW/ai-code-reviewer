@@ -28,7 +28,9 @@ class ProjectCreate(BaseModel):
     ignore_paths: list[Any] | None = None
     default_block_severity: BlockSeverity = "BLOCKER"
     deleted_at: datetime | None = None
-    rules: list[ProjectRuleCreate] = Field(default_factory=list)
+    # rules 默认 None（未传）——create 时会自动关联所有启用的 BLOCKER 规则，
+    # 实现「安全默认」。若前端显式传 [] 则代表 opt out，不做自动关联。
+    rules: list[ProjectRuleCreate] | None = None
     block_policies: list[ProjectBlockPolicyCreate] = Field(default_factory=list)
 
 

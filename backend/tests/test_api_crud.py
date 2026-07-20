@@ -218,6 +218,146 @@ async def test_project_nested_rules_and_block_policies_crud(admin_client: AsyncC
 
 
 @pytest.mark.asyncio
+async def test_project_create_auto_attaches_blocker_rules_when_rules_omitted(
+    admin_client: AsyncClient,
+) -> None:
+    """未传 rules 时，新项目应自动关联所有启用的 BLOCKER 规则。"""
+
+    # 建 3 条不同 severity 的规则；期望只有 2 条 BLOCKER 被自动关联，
+    # WARNING 那条不进。
+    b1 = await admin_client.post(
+        "/api/rules",
+        json={
+            "rule_id": "sec.hardcoded-secret",
+            "title": "硬编码密钥",
+            "prompt_snippet": "检查硬编码密钥",
+            "severity_default": "BLOCKER",
+        },
+    )
+    b2 = await admin_client.post(
+        "/api/rules",
+        json={
+            "rule_id": "sec.sql-injection",
+            "title": "SQL 注入",
+            "prompt_snippet": "检查 SQL 注入",
+            "severity_default": "BLOCKER",
+        },
+    )
+    w1 = await admin_client.post(
+        "/api/rules",
+        json={
+            "rule_id": "style.magic-number",
+            "title": "Magic Number",
+            "prompt_snippet": "检查 magic number",
+            "severity_default": "WARNING",
+        },
+    )
+    # 建一条 BLOCKER 但 enabled=false 的规则，不应被自动关联。
+    b_disabled = await admin_client.post(
+        "/api/rules",
+        json={
+            "rule_id": "sec.disabled",
+            "title": "已禁用规则",
+            "prompt_snippet": "test",
+            "severity_default": "BLOCKER",
+            "enabled": False,
+        },
+    )
+    assert b1.status_code == b2.status_code == w1.status_code == b_disabled.status_code == 201
+
+    project_response = await admin_client.post(
+        "/api/projects",
+        json={
+            "name": "auto-default",
+            "gitlab_project_id": "1",
+            "gitlab_access_token": "tok",
+            "webhook_secret": "hs",
+        },
+    )
+    assert project_response.status_code == 201
+    project = project_response.json()
+    assert len(project["rules"]) == 2  # 只关联启用的 BLOCKER
+    attached_rule_ids = {r["rule_id"] for r in project["rules"]}
+    assert attached_rule_ids == {b1.json()["id"], b2.json()["id"]}
+    # severity_override 保持 None，用规则自己的 default。
+    assert all(r["severity_override"] is None for r in project["rules"])
+    # enabled=True 默认。
+    assert all(r["enabled"] is True for r in project["rules"])
+
+
+@pytest.mark.asyncio
+async def test_project_create_respects_explicit_empty_rules_optout(
+    admin_client: AsyncClient,
+) -> None:
+    """显式传空数组 rules=[] 时应视为 opt out，不做自动关联。"""
+
+    await admin_client.post(
+        "/api/rules",
+        json={
+            "rule_id": "sec.hs",
+            "title": "硬编码密钥",
+            "prompt_snippet": "test",
+            "severity_default": "BLOCKER",
+        },
+    )
+    project_response = await admin_client.post(
+        "/api/projects",
+        json={
+            "name": "opt-out",
+            "gitlab_project_id": "2",
+            "gitlab_access_token": "tok",
+            "webhook_secret": "hs",
+            "rules": [],
+        },
+    )
+    assert project_response.status_code == 201
+    assert project_response.json()["rules"] == []
+
+
+@pytest.mark.asyncio
+async def test_project_create_with_explicit_rules_ignores_default_attach(
+    admin_client: AsyncClient,
+) -> None:
+    """显式传 rules 时以传入内容为准，不追加默认 BLOCKER。"""
+
+    b1 = await admin_client.post(
+        "/api/rules",
+        json={
+            "rule_id": "sec.hs2",
+            "title": "硬编码密钥",
+            "prompt_snippet": "test",
+            "severity_default": "BLOCKER",
+        },
+    )
+    w1 = await admin_client.post(
+        "/api/rules",
+        json={
+            "rule_id": "style.mn2",
+            "title": "Magic Number",
+            "prompt_snippet": "test",
+            "severity_default": "WARNING",
+        },
+    )
+    # 只显式关联那条 WARNING 规则；就算库里有 BLOCKER 规则也不应被追加。
+    project_response = await admin_client.post(
+        "/api/projects",
+        json={
+            "name": "explicit",
+            "gitlab_project_id": "3",
+            "gitlab_access_token": "tok",
+            "webhook_secret": "hs",
+            "rules": [{"rule_id": w1.json()["id"], "enabled": True}],
+        },
+    )
+    assert project_response.status_code == 201
+    project = project_response.json()
+    assert len(project["rules"]) == 1
+    assert project["rules"][0]["rule_id"] == w1.json()["id"]
+    # b1 存在但没被自动关联。
+    assert b1.json()["id"] not in {r["rule_id"] for r in project["rules"]}
+
+
+@pytest.mark.asyncio
 async def test_review_and_finding_filters_are_readable(admin_client: AsyncClient) -> None:
     """Review and finding APIs expose filterable records for the management UI."""
 
