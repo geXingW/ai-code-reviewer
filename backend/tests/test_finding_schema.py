@@ -64,3 +64,32 @@ def test_finding_read_defaults_context_fields_to_none() -> None:
     assert read.mr_iid is None
     assert read.mr_title is None
     assert read.review_created_at is None
+
+
+def test_finding_read_accepts_category_field() -> None:
+    """PR-B: FindingRead 承接 LLM 输出的 category；缺失时保持 None。"""
+
+    with_category = FindingRead.model_validate({**_BASE_PAYLOAD, "category": "security"})
+    assert with_category.category == "security"
+
+    without_category = FindingRead.model_validate(_BASE_PAYLOAD)
+    assert without_category.category is None
+
+
+def test_finding_create_accepts_category_field() -> None:
+    """PR-B: FindingCreate 承接 category，且缺省为 None。"""
+
+    from app.schemas.finding import FindingCreate
+
+    base = {
+        "review_id": _BASE_PAYLOAD["review_id"],
+        "file_path": "app/main.py",
+        "rule_id": "rule-example",
+        "severity": "WARNING",
+        "title": "示例问题",
+    }
+    with_category = FindingCreate.model_validate({**base, "category": "performance"})
+    assert with_category.category == "performance"
+
+    without_category = FindingCreate.model_validate(base)
+    assert without_category.category is None

@@ -19,6 +19,10 @@ class RuleCreate(BaseModel):
     title: str
     prompt_snippet: str
     severity_default: Severity = "WARNING"
+    # 规则的默认分类；LLM 以此为参考写入 finding.category。允许值参考
+    # app.core.finding_taxonomy.FindingCategory；schema 层留 str 以便
+    # seed / API 侧扩展新枚举时不用同步改一遍 Literal。
+    category_default: str | None = None
     languages: list[Any] = Field(default_factory=list)
     path_patterns: list[Any] = Field(default_factory=list)
     enabled: bool = True
@@ -32,6 +36,7 @@ class RuleUpdate(BaseModel):
     title: str | None = None
     prompt_snippet: str | None = None
     severity_default: Severity | None = None
+    category_default: str | None = None
     languages: list[Any] | None = None
     path_patterns: list[Any] | None = None
     enabled: bool | None = None
@@ -48,6 +53,7 @@ class RuleRead(BaseModel):
     title: str
     prompt_snippet: str
     severity_default: Severity
+    category_default: str | None
     languages: list[Any]
     path_patterns: list[Any]
     enabled: bool

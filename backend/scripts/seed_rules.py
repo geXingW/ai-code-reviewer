@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 
 from app.core.db import AsyncSessionLocal
+from app.core.finding_taxonomy import FindingCategory
 from app.models.rule import Rule
 from app.repositories.rule import RuleRepository
 
@@ -34,11 +35,16 @@ _ALLOWED_FIELDS = {
     "title",
     "prompt_snippet",
     "severity_default",
+    "category_default",
     "languages",
     "path_patterns",
     "enabled",
     "grace_period_until",
 }
+
+# category_default 的合法值集合；与 FindingCategory 枚举严格对齐，避免 seed
+# 阶段就把无效值写进库。
+_ALLOWED_CATEGORY_DEFAULTS: frozenset[str] = frozenset(c.value for c in FindingCategory)
 
 
 def _load_catalog(path: Path) -> list[dict[str, Any]]:
@@ -64,6 +70,17 @@ def _load_catalog(path: Path) -> list[dict[str, Any]]:
         for key in ("title", "prompt_snippet", "severity_default"):
             if not raw.get(key):
                 raise ValueError(f"{rid} missing required field: {key}")
+        # category_default 是 PR-B 引入的新字段。允许缺失（老 catalog / 手写
+        # 规则可以先不填，运行时靠 rule_id 推断兜底），但一旦提供就必须在
+        # FindingCategory 枚举内，避免拼错落库。
+        cat_default = raw.get("category_default")
+        if cat_default is not None:
+            if not isinstance(cat_default, str) or cat_default not in _ALLOWED_CATEGORY_DEFAULTS:
+                allowed = ", ".join(sorted(_ALLOWED_CATEGORY_DEFAULTS))
+                raise ValueError(
+                    f"{rid} has invalid category_default={cat_default!r}; "
+                    f"allowed values: {allowed}"
+                )
         cleaned.append({k: v for k, v in raw.items() if k in _ALLOWED_FIELDS})
     return cleaned
 

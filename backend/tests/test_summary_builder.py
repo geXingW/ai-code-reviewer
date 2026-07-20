@@ -468,3 +468,93 @@ def test_findings_section_prefixes_each_item_with_severity_and_category_emoji() 
     ]
     body = _build(findings, new_findings=findings, carried_findings=[])
     assert "- 🔴 🔒 **[BLOCKER] secret**" in body
+
+
+# ---------------------------------------------------------------------------
+# PR-B: finding.category 优先于 rule_id 推断
+# ---------------------------------------------------------------------------
+
+
+def _finding_with_category(*, rule_id: str, category: str | None) -> Finding:
+    """构造带指定 category 的 Finding，其它字段用最小填充。"""
+
+    return Finding(
+        file_path="app.py",
+        line_number=1,
+        rule_id=rule_id,
+        severity="WARNING",
+        title="cat test",
+        description="d",
+        suggestion=None,
+        category=category,
+    )
+
+
+def test_discussion_body_uses_finding_category_over_rule_id_inference() -> None:
+    """PR-B: finding.category 优先。rule_id 是 security 类，但 category=performance
+    应渲染成 ⚡ 性能 而不是 🔒 安全。"""
+
+    finding = _finding_with_category(
+        rule_id="general.hardcoded-secret",  # 推断会给 security
+        category="performance",
+    )
+    body = build_finding_discussion_body(finding)
+    assert "⚡" in body
+    assert "性能" in body
+    assert "🔒" not in body
+    assert "安全" not in body
+
+
+def test_discussion_body_falls_back_when_finding_category_invalid() -> None:
+    """PR-B: finding.category 是无效枚举值时，走 rule_id 推断兜底。"""
+
+    finding = _finding_with_category(
+        rule_id="general.hardcoded-secret",
+        category="TOTALLY_BOGUS",
+    )
+    body = build_finding_discussion_body(finding)
+    # 走推断 → security → 🔒 安全
+    assert "🔒" in body
+    assert "安全" in body
+
+
+def test_discussion_body_falls_back_when_finding_category_none() -> None:
+    """PR-B: finding.category 为 None 时走 rule_id 推断（历史默认行为）。"""
+
+    finding = _finding_with_category(
+        rule_id="general.hardcoded-secret",
+        category=None,
+    )
+    body = build_finding_discussion_body(finding)
+    assert "🔒" in body
+    assert "安全" in body
+
+
+def test_summary_note_category_distribution_prefers_finding_category() -> None:
+    """PR-B: 分布行按 finding.category 统计。构造 1 条 rule_id=security 但
+    category=performance 的 finding，应记入 ⚡ 性能: 1 而不是 🔒 安全: 1。"""
+
+    findings = [
+        _finding_with_category(
+            rule_id="general.hardcoded-secret",
+            category="performance",
+        ),
+    ]
+    body = _build(findings, new_findings=findings, carried_findings=[])
+    assert "⚡ 性能: 1" in body
+    assert "🔒 安全: 1" not in body
+
+
+def test_findings_section_prefix_prefers_finding_category() -> None:
+    """PR-B: 分区列表里每条 finding 的分类 emoji 也应优先取 finding.category。"""
+
+    findings = [
+        _finding_with_category(
+            rule_id="general.hardcoded-secret",
+            category="performance",
+        ),
+    ]
+    body = _build(findings, new_findings=findings, carried_findings=[])
+    # 单条 finding 走 - {sev} {cat} **[..] title** 模板；⚡ 出现代表拿到 category。
+    assert "⚡" in body
+    assert " 🔒 " not in body

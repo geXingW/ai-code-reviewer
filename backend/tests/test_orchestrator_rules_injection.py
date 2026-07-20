@@ -172,6 +172,9 @@ async def test_rules_injected_when_project_has_enabled_rules(
     assert sql_spec.title == "SQL 注入风险"
     assert sql_spec.description == "警惕拼接 SQL，优先使用参数化。"
     assert sql_spec.severity == "BLOCKER"
+    # PR-B: Rule 未填 category_default 时 RuleSpec.category 应为 None——
+    # engine 侧 _format_rules 会兜底成 "other"。
+    assert sql_spec.category is None
 
 
 @pytest.mark.asyncio

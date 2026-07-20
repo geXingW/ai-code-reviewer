@@ -4,6 +4,8 @@
 >
 > 覆盖 40 条规则，按「通用 / 后端 / 前端」三层组织；严重度按 `BLOCKER / WARNING / INFO` 三档分级。规则编写规范见 [rule-authoring.md](rule-authoring.md)，机器可读的批量导入载荷见 [rules-catalog.json](rules-catalog.json)。
 
+> 每条规则的 `category_default` 决定 finding 的分类标签，可选值：`security` / `bug` / `performance` / `maintainability` / `style` / `other`。LLM 会以 `category_default` 作为参考直接填入 `finding.category`。前端评论渲染时优先用 `finding.category`，缺失时 fallback 到 rule_id 推断。
+
 ## 目录
 
 - [一、通用规则（general.\*）](#一通用规则general)

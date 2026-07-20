@@ -3,6 +3,7 @@
     "rule_id": "general.hardcoded-secret",
     "title": "硬编码密钥/凭据",
     "severity_default": "BLOCKER",
+    "category_default": "security",
     "languages": [
       "*"
     ],
@@ -14,6 +15,7 @@
     "rule_id": "general.sql-injection",
     "title": "SQL 注入风险",
     "severity_default": "BLOCKER",
+    "category_default": "security",
     "languages": [
       "*"
     ],
@@ -25,6 +27,7 @@
     "rule_id": "general.log-sensitive-info",
     "title": "日志输出敏感信息",
     "severity_default": "BLOCKER",
+    "category_default": "security",
     "languages": [
       "*"
     ],
@@ -36,6 +39,7 @@
     "rule_id": "general.swallowed-exception",
     "title": "异常被静默吞噬",
     "severity_default": "WARNING",
+    "category_default": "bug",
     "languages": [
       "*"
     ],
@@ -47,6 +51,7 @@
     "rule_id": "general.magic-number",
     "title": "魔法数字/魔法字符串",
     "severity_default": "INFO",
+    "category_default": "maintainability",
     "languages": [
       "*"
     ],
@@ -58,6 +63,7 @@
     "rule_id": "general.long-method",
     "title": "方法过长/文件过大",
     "severity_default": "INFO",
+    "category_default": "maintainability",
     "languages": [
       "*"
     ],
@@ -69,6 +75,7 @@
     "rule_id": "general.commented-code",
     "title": "注释掉的代码",
     "severity_default": "INFO",
+    "category_default": "style",
     "languages": [
       "*"
     ],
@@ -80,6 +87,7 @@
     "rule_id": "general.todo-in-critical-path",
     "title": "TODO/FIXME 遗留关键路径",
     "severity_default": "INFO",
+    "category_default": "maintainability",
     "languages": [
       "*"
     ],
@@ -91,6 +99,7 @@
     "rule_id": "backend.n-plus-one",
     "title": "N+1 查询",
     "severity_default": "WARNING",
+    "category_default": "performance",
     "languages": [
       "python",
       "java",
@@ -106,6 +115,7 @@
     "rule_id": "backend.transaction-boundary",
     "title": "事务边界不清",
     "severity_default": "WARNING",
+    "category_default": "maintainability",
     "languages": [
       "python",
       "java",
@@ -119,6 +129,7 @@
     "rule_id": "backend.unbounded-query",
     "title": "无分页查询",
     "severity_default": "WARNING",
+    "category_default": "performance",
     "languages": [
       "python",
       "java",
@@ -134,6 +145,7 @@
     "rule_id": "backend.resource-leak",
     "title": "资源未关闭/连接泄漏",
     "severity_default": "BLOCKER",
+    "category_default": "performance",
     "languages": [
       "python",
       "java",
@@ -147,6 +159,7 @@
     "rule_id": "backend.thread-safety",
     "title": "并发/线程安全",
     "severity_default": "WARNING",
+    "category_default": "bug",
     "languages": [
       "java",
       "python",
@@ -160,6 +173,7 @@
     "rule_id": "backend.breaking-api-change",
     "title": "破坏性 API 变更",
     "severity_default": "WARNING",
+    "category_default": "maintainability",
     "languages": [
       "*"
     ],
@@ -171,6 +185,7 @@
     "rule_id": "backend.missing-input-validation",
     "title": "入参未校验",
     "severity_default": "WARNING",
+    "category_default": "maintainability",
     "languages": [
       "python",
       "java",
@@ -186,6 +201,7 @@
     "rule_id": "backend.timezone-naive",
     "title": "时区不安全",
     "severity_default": "WARNING",
+    "category_default": "maintainability",
     "languages": [
       "python",
       "java",
@@ -201,6 +217,7 @@
     "rule_id": "backend.log-level-abuse",
     "title": "日志级别滥用",
     "severity_default": "INFO",
+    "category_default": "maintainability",
     "languages": [
       "*"
     ],
@@ -212,6 +229,7 @@
     "rule_id": "backend.cache-invalidation",
     "title": "缓存一致性/未失效",
     "severity_default": "WARNING",
+    "category_default": "performance",
     "languages": [
       "*"
     ],
@@ -223,6 +241,7 @@
     "rule_id": "backend.retry-without-backoff",
     "title": "重试无退避/无上限",
     "severity_default": "WARNING",
+    "category_default": "performance",
     "languages": [
       "*"
     ],
@@ -234,6 +253,7 @@
     "rule_id": "python.exception-handling",
     "title": "异常处理不当",
     "severity_default": "WARNING",
+    "category_default": "bug",
     "languages": [
       "python"
     ],
@@ -247,6 +267,7 @@
     "rule_id": "python.mutable-default-arg",
     "title": "可变默认参数",
     "severity_default": "BLOCKER",
+    "category_default": "bug",
     "languages": [
       "python"
     ],
@@ -260,6 +281,7 @@
     "rule_id": "python.async-blocking",
     "title": "async 里执行同步阻塞 IO",
     "severity_default": "WARNING",
+    "category_default": "performance",
     "languages": [
       "python"
     ],
@@ -273,6 +295,7 @@
     "rule_id": "python.fstring-sql",
     "title": "f-string/format 拼接 SQL",
     "severity_default": "BLOCKER",
+    "category_default": "security",
     "languages": [
       "python"
     ],
@@ -286,6 +309,7 @@
     "rule_id": "python.type-hint-missing",
     "title": "类型注解缺失",
     "severity_default": "INFO",
+    "category_default": "maintainability",
     "languages": [
       "python"
     ],
@@ -299,6 +323,7 @@
     "rule_id": "java.null-safety",
     "title": "潜在空指针",
     "severity_default": "WARNING",
+    "category_default": "bug",
     "languages": [
       "java",
       "kotlin"
@@ -314,6 +339,7 @@
     "rule_id": "java.string-concat-loop",
     "title": "循环内字符串拼接",
     "severity_default": "INFO",
+    "category_default": "performance",
     "languages": [
       "java"
     ],
@@ -327,6 +353,7 @@
     "rule_id": "java.equals-hashcode",
     "title": "equals/hashCode 对称性",
     "severity_default": "WARNING",
+    "category_default": "bug",
     "languages": [
       "java",
       "kotlin"
@@ -342,6 +369,7 @@
     "rule_id": "java.stream-close",
     "title": "Stream/IO 未关闭",
     "severity_default": "BLOCKER",
+    "category_default": "performance",
     "languages": [
       "java"
     ],
@@ -355,6 +383,7 @@
     "rule_id": "java.lombok-data-jpa",
     "title": "Lombok @Data 与 JPA 实体混用",
     "severity_default": "WARNING",
+    "category_default": "maintainability",
     "languages": [
       "java"
     ],
@@ -368,6 +397,7 @@
     "rule_id": "js.debug-leftover",
     "title": "调试代码残留",
     "severity_default": "INFO",
+    "category_default": "style",
     "languages": [
       "javascript",
       "typescript"
@@ -386,6 +416,7 @@
     "rule_id": "frontend.hardcoded-api-url",
     "title": "硬编码接口地址",
     "severity_default": "WARNING",
+    "category_default": "maintainability",
     "languages": [
       "javascript",
       "typescript"
@@ -404,6 +435,7 @@
     "rule_id": "frontend.xss-innerHTML",
     "title": "innerHTML/dangerouslySetInnerHTML XSS 风险",
     "severity_default": "BLOCKER",
+    "category_default": "security",
     "languages": [
       "javascript",
       "typescript"
@@ -422,6 +454,7 @@
     "rule_id": "frontend.i18n-hardcoded-copy",
     "title": "文案硬编码（i18n 未走）",
     "severity_default": "INFO",
+    "category_default": "style",
     "languages": [
       "javascript",
       "typescript"
@@ -440,6 +473,7 @@
     "rule_id": "frontend.large-bundle-import",
     "title": "全量引入大体积库",
     "severity_default": "INFO",
+    "category_default": "performance",
     "languages": [
       "javascript",
       "typescript"
@@ -458,6 +492,7 @@
     "rule_id": "frontend.missing-loading-error-state",
     "title": "缺失 loading/error 态",
     "severity_default": "INFO",
+    "category_default": "maintainability",
     "languages": [
       "javascript",
       "typescript"
@@ -474,6 +509,7 @@
     "rule_id": "react.list-key",
     "title": "列表 key 缺失或不稳定",
     "severity_default": "WARNING",
+    "category_default": "bug",
     "languages": [
       "javascript",
       "typescript"
@@ -489,6 +525,7 @@
     "rule_id": "react.effect-deps",
     "title": "useEffect 依赖漏项/过多",
     "severity_default": "WARNING",
+    "category_default": "bug",
     "languages": [
       "javascript",
       "typescript"
@@ -504,6 +541,7 @@
     "rule_id": "react.state-mutation",
     "title": "直接修改 state",
     "severity_default": "BLOCKER",
+    "category_default": "bug",
     "languages": [
       "javascript",
       "typescript"
@@ -519,6 +557,7 @@
     "rule_id": "react.effect-cleanup",
     "title": "副作用未清理",
     "severity_default": "WARNING",
+    "category_default": "performance",
     "languages": [
       "javascript",
       "typescript"
@@ -534,6 +573,7 @@
     "rule_id": "react.large-inline-render",
     "title": "大组件内联渲染/缺少拆分",
     "severity_default": "INFO",
+    "category_default": "maintainability",
     "languages": [
       "javascript",
       "typescript"
@@ -549,6 +589,7 @@
     "rule_id": "ts.any-abuse",
     "title": "any 滥用",
     "severity_default": "INFO",
+    "category_default": "style",
     "languages": [
       "typescript"
     ],
@@ -563,6 +604,7 @@
     "rule_id": "ts.non-null-assertion",
     "title": "非空断言滥用",
     "severity_default": "INFO",
+    "category_default": "style",
     "languages": [
       "typescript"
     ],
