@@ -257,21 +257,22 @@ async def test_orchestrator_posts_blocking_status_when_default_policy_blocks_mas
     assert result.finding_count == 1
     assert "Secret leaked" in gitlab.notes[0]
     assert "app.py:10" in gitlab.notes[0]
-    assert gitlab.discussions == [
-        {
-            "body": (
-                "**[BLOCKER] Secret leaked**\n\n"
-                "Hard-coded secret detected.\n\n"
-                "Suggestion: Move it to environment variables."
-            ),
-            "base_sha": "base-diff-sha",
-            "start_sha": "start-diff-sha",
-            "head_sha": "head-diff-sha",
-            "old_path": "old-app.py",
-            "new_path": "app.py",
-            "line_number": 10,
-        }
-    ]
+    assert len(gitlab.discussions) == 1
+    d = gitlab.discussions[0]
+    assert d["base_sha"] == "base-diff-sha"
+    assert d["start_sha"] == "start-diff-sha"
+    assert d["head_sha"] == "head-diff-sha"
+    assert d["old_path"] == "old-app.py"
+    assert d["new_path"] == "app.py"
+    assert d["line_number"] == 10
+    body = d["body"]
+    # PR-A 升级后的 discussion body：severity emoji + [SEV] 标签 + title + description
+    # + suggestion 都要在。完整等值断言会因为模板每次微调而抖动，改为包含式。
+    assert "🔴" in body
+    assert "[BLOCKER]" in body
+    assert "Secret leaked" in body
+    assert "Hard-coded secret detected." in body
+    assert "Move it to environment variables." in body
     assert gitlab.statuses[0]["state"] == "failed"
     assert "1 blocking" in gitlab.statuses[0]["description"]
 
