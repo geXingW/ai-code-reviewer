@@ -1,4 +1,5 @@
 import { FormEvent, DragEvent, useEffect, useId, useMemo, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 
 import {
   BlockPolicy,
@@ -177,9 +178,39 @@ const navItems: Array<{ key: PageKey; label: string }> = [
 ];
 
 function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [adminToken, setAdminToken] = useState(() => getStoredAdminAccessToken());
   const [loginForm, setLoginForm] = useState<LoginFormState>(initialLoginForm);
-  const [activePage, setActivePage] = useState<PageKey>('dashboard');
+
+  // 从 URL ?page=xxx 读取初始页面，刷新保持不变
+  const getInitialPage = (): PageKey => {
+    const params = new URLSearchParams(location.search);
+    const pageFromUrl = params.get('page') as PageKey;
+    if (pageFromUrl && navItems.some((item) => item.key === pageFromUrl)) {
+      return pageFromUrl;
+    }
+    return 'dashboard';
+  };
+
+  const [activePage, setActivePageState] = useState<PageKey>(getInitialPage);
+
+  // setActivePage 同时更新 URL
+  const setActivePage = (page: PageKey) => {
+    setActivePageState(page);
+    const params = new URLSearchParams(location.search);
+    params.set('page', page);
+    navigate(`?${params.toString()}`, { replace: true });
+  };
+
+  // URL 变化（浏览器后退/前进）时同步 activePage
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const pageFromUrl = params.get('page') as PageKey;
+    if (pageFromUrl && navItems.some((item) => item.key === pageFromUrl)) {
+      setActivePageState(pageFromUrl);
+    }
+  }, [location.search]);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [engines, setEngines] = useState<EngineSummary[]>([]);
   const [reviews, setReviews] = useState<RecentReview[]>([]);
