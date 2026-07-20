@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hmac
+import logging
+import os
 import re
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -19,6 +21,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.db import Base, DbSession
+from app.integrations.gitlab.client import GitLabClient
 from app.models.engine import Engine
 from app.models.finding import Finding
 from app.models.negative_example import NegativeExample
@@ -38,6 +41,8 @@ from app.schemas.project_rule import ProjectRuleCreate
 from app.schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
 from app.schemas.review import ReviewCreate, ReviewRead, ReviewUpdate
 from app.schemas.rule import RuleCreate, RuleRead, RuleUpdate
+
+logger = logging.getLogger(__name__)
 
 ModelT = TypeVar("ModelT", bound=Base)
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -493,6 +498,59 @@ async def mark_false_positive(
     return _finding_to_read(finding)
 
 
+def _build_gitlab_client(project: Project) -> GitLabClient | None:
+    """
+    从 Project 构造 GitLabClient，用于后续操作 discussion。
+    如果 project.gitlab_access_token 为空，返回 None（skip 操作）。
+    方便测试 monkeypatch 替换。
+    """
+    if not project.gitlab_access_token:
+        return None
+    return GitLabClient(
+        base_url=os.getenv("GITLAB_BASE_URL", "http://gitlab:18080"),
+        token=project.gitlab_access_token,
+    )
+
+
+async def _resolve_finding_discussion(finding: Finding, db: AsyncSession) -> None:
+    """
+    确认 / 驳回误报后，尝试 resolve GitLab MR 里的原始 discussion。
+
+    无 gitlab_discussion_id 或 GitLabClient 无法构造 → 直接跳过（老数据兼容）。
+    任何 GitLab API 异常 → warning 吞掉，不阻断主流程（误报状态已提交，不回滚）。
+    """
+    if not finding.gitlab_discussion_id:
+        return
+    review = await db.get(Review, finding.review_id)
+    if not review:
+        return
+    project_repo = ProjectRepository(db)
+    project = await project_repo.get(review.project_id)
+    if not project:
+        return
+    client = _build_gitlab_client(project)
+    if client is None:
+        return
+    try:
+        await client.resolve_discussion(
+            project_id=int(project.gitlab_project_id),
+            mr_iid=int(review.mr_iid),
+            discussion_id=finding.gitlab_discussion_id,
+            resolved=True,
+        )
+    except Exception:
+        logger.warning(
+            "failed to resolve gitlab discussion after fp review",
+            extra={
+                "finding_id": str(finding.id),
+                "gitlab_discussion_id": finding.gitlab_discussion_id,
+                "project_id": str(review.project_id),
+                "mr_iid": review.mr_iid,
+            },
+            exc_info=True,
+        )
+
+
 @router.get("/false-positives/pending", response_model=Page)
 async def list_pending_false_positives(
     db: DbSession,
@@ -534,6 +592,7 @@ async def confirm_false_positive(
     )
     await _commit_or_400(db, "False-positive confirm failed")
     await db.refresh(finding, attribute_names=["review"])
+    await _resolve_finding_discussion(finding, db)
     return _finding_to_read(finding)
 
 
@@ -552,6 +611,7 @@ async def reject_false_positive(
     finding.fp_review_note = payload.note
     await _commit_or_400(db, "False-positive reject failed")
     await db.refresh(finding, attribute_names=["review"])
+    await _resolve_finding_discussion(finding, db)
     return _finding_to_read(finding)
 
 
