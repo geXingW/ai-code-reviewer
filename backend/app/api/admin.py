@@ -615,6 +615,52 @@ async def reject_false_positive(
     return _finding_to_read(finding)
 
 
+async def _get_reviewed_finding(db: AsyncSession, finding_id: UUID) -> Finding:
+    """获取已评审的 finding（CONFIRMED 或 REJECTED），否则抛 400。"""
+    finding = await _get_or_404(db, Finding, finding_id, "False-positive candidate")
+    if finding.fp_status not in ("CONFIRMED", "REJECTED"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Finding is not reviewed (status: {finding.fp_status})",
+        )
+    return finding
+
+
+@router.post("/false-positives/{finding_id}/reset", response_model=FindingRead)
+async def reset_false_positive_review(
+    finding_id: UUID,
+    db: DbSession,
+) -> FindingRead:
+    """撤销误报评审结果，状态变回 PENDING，可重新走评审流程。"""
+    finding = await _get_reviewed_finding(db, finding_id)
+
+    # 如果是 CONFIRMED 状态，需要删除对应的 NegativeExample
+    if finding.fp_status == "CONFIRMED":
+        negative_example = await db.scalar(
+            select(NegativeExample).where(NegativeExample.source_finding_id == finding.id)
+        )
+        if negative_example:
+            await db.delete(negative_example)
+
+    # 重置评审字段
+    old_status = finding.fp_status
+    finding.fp_status = "PENDING"
+    finding.fp_reviewed_by = None
+    finding.fp_reviewed_at = None
+    finding.fp_review_note = None
+
+    await _commit_or_400(db, "False-positive reset failed")
+    logger.info(
+        "Reset false-positive review",
+        extra={
+            "finding_id": str(finding.id),
+            "old_status": old_status,
+        },
+    )
+    await db.refresh(finding, attribute_names=["review"])
+    return _finding_to_read(finding)
+
+
 @router.get("/negative-examples", response_model=Page)
 async def list_negative_examples(
     db: DbSession,

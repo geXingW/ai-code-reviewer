@@ -453,11 +453,11 @@ async def test_incremental_rescans_changed_files_and_resolves_stale_discussions(
             # 第一次 push：app.py 与 other.py 各一条 finding。
             [
                 _finding(file_path="app.py", line=2, rule_id="rule-a"),
-                _finding(file_path="other.py", line=5, rule_id="rule-b"),
+                _finding(file_path="other.py", line=4, rule_id="rule-b"),
             ],
             # 第二次 push：只改 app.py；重审后 LLM 只报了新位置的问题。
             [
-                _finding(file_path="app.py", line=20, rule_id="rule-c"),
+                _finding(file_path="app.py", line=3, rule_id="rule-c"),
             ],
         ]
     )
@@ -474,7 +474,7 @@ async def test_incremental_rescans_changed_files_and_resolves_stale_discussions(
         (f.file_path, f.line_number): f.gitlab_discussion_id for f in first_findings
     }
     assert disc_ids_after_first[("app.py", 2)] == "disc-1"
-    assert disc_ids_after_first[("other.py", 5)] == "disc-2"
+    assert disc_ids_after_first[("other.py", 4)] == "disc-2"
 
     result = await orch.review_merge_request(_event(commit_sha="head-b"))
 
@@ -486,12 +486,12 @@ async def test_incremental_rescans_changed_files_and_resolves_stale_discussions(
     # app.py:2 老 finding 被 resolved（属于改动文件）。
     assert by_key[("app.py", 2, "rule-a")].status == "resolved"
     assert by_key[("app.py", 2, "rule-a")].resolved_in_review_id is not None
-    # other.py:5 未动 → 保持 open。
-    assert by_key[("other.py", 5, "rule-b")].status == "open"
+    # other.py:4 未动 → 保持 open。
+    assert by_key[("other.py", 4, "rule-b")].status == "open"
     # app.py:20 本次新增，first_seen 指向第二次 review。
     reviews = await _list_reviews(factory)
     reviews_by_sha = {r.commit_sha: r for r in reviews}
-    new_finding = by_key[("app.py", 20, "rule-c")]
+    new_finding = by_key[("app.py", 3, "rule-c")]
     assert new_finding.first_seen_review_id == reviews_by_sha["head-b"].id
     assert new_finding.status == "open"
     # 新 finding 的 discussion id 也应被回写：本次 create 顺序上是第 3 条 → disc-3。
@@ -533,7 +533,7 @@ async def test_incremental_carries_over_untouched_file_findings_as_open(
                 _finding(file_path="B.java", line=2, rule_id="rb2"),
             ],
             # 第二次 push：B.java 报一条新问题。
-            [_finding(file_path="B.java", line=99, rule_id="rb-new")],
+            [_finding(file_path="B.java", line=3, rule_id="rb-new")],
         ]
     )
     orch = ReviewOrchestrator(
@@ -557,7 +557,7 @@ async def test_incremental_carries_over_untouched_file_findings_as_open(
     assert by_key[("B.java", 1, "rb1")].status == "resolved"
     assert by_key[("B.java", 2, "rb2")].status == "resolved"
     # 新的 B.java:99 落成 open。
-    assert by_key[("B.java", 99, "rb-new")].status == "open"
+    assert by_key[("B.java", 3, "rb-new")].status == "open"
 
     # resolve_discussion 只对 B.java 历史 finding（2 条）调用。
     assert gitlab.resolve_discussion.await_count == 2
@@ -589,7 +589,7 @@ async def test_resolve_discussion_api_failure_does_not_block_flow(
     engine = _StubEngine(
         [
             [_finding(file_path="app.py", line=2, rule_id="rule-a")],
-            [_finding(file_path="app.py", line=20, rule_id="rule-c")],
+            [_finding(file_path="app.py", line=3, rule_id="rule-c")],
         ]
     )
     orch = ReviewOrchestrator(
@@ -606,7 +606,7 @@ async def test_resolve_discussion_api_failure_does_not_block_flow(
     findings = await _list_findings(factory)
     by_key = {(f.file_path, f.line_number, f.rule_id): f for f in findings}
     assert by_key[("app.py", 2, "rule-a")].status == "resolved"
-    assert by_key[("app.py", 20, "rule-c")].status == "open"
+    assert by_key[("app.py", 3, "rule-c")].status == "open"
 
 
 @pytest.mark.asyncio

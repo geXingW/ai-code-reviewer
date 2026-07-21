@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 
 import App, { fpStatusBadgeProps, lifecycleEventBadgeProps, reviewModeBadgeProps, statusBadgeProps } from './App';
 
@@ -68,7 +69,7 @@ describe('MVP 管理台', () => {
       return jsonResponse({ detail: 'not found' }, false, 404);
     });
 
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
 
     expect(await screen.findByText('管理台登录')).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText('管理员账号'), 'admin');
@@ -171,7 +172,7 @@ describe('MVP 管理台', () => {
       return jsonResponse({ detail: 'not found' }, false, 404);
     });
 
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
 
     expect(await screen.findByText('AI Code Reviewer')).toBeInTheDocument();
     await loginAsAdmin();
@@ -231,7 +232,7 @@ describe('MVP 管理台', () => {
       return jsonResponse({ detail: 'not found' }, false, 404);
     });
 
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
 
     await loginAsAdmin();
     await userEvent.type(await screen.findByLabelText('内部调用 Token'), 'test-internal-token');
@@ -334,7 +335,7 @@ describe('MVP 管理台', () => {
       return jsonResponse({ detail: 'not found' }, false, 404);
     });
 
-    const { container } = render(<App />);
+    const { container } = render(<MemoryRouter><App /></MemoryRouter>);
     await loginAsAdmin();
     await userEvent.click(screen.getByRole('button', { name: 'GitLab 项目' }));
     await screen.findByText('demo-project');
@@ -567,7 +568,7 @@ describe('PR-B 误报处理弹窗集成', () => {
         fp_status: 'PENDING', status: 'open',
       },
     );
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
     await loginAsAdmin();
     await userEvent.click(screen.getByRole('button', { name: '问题与误报' }));
     const markBtn = await screen.findByRole('button', { name: '标记误报' });
@@ -594,7 +595,7 @@ describe('PR-B 误报处理弹窗集成', () => {
         fp_marked_at: '2026-07-19T00:00:00Z',
       },
     );
-    render(<App />);
+    render(<MemoryRouter><App /></MemoryRouter>);
     await loginAsAdmin();
     await userEvent.click(screen.getByRole('button', { name: /误报队列/ }));
     const confirmBtn = await screen.findByRole('button', { name: '确认误报' });

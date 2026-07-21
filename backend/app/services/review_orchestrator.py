@@ -435,6 +435,27 @@ class ReviewOrchestrator:
                 discussion_ids.append(None)
                 continue
             old_path, new_path = _resolve_finding_paths(changes_payload, finding.file_path)
+
+            # MR 重开 / force push 后旧 finding 的行号可能已失效，
+            # 不在当前 diff 有效范围内 → 降级成全局评论，避免贴到错误行
+            is_valid_line = _is_line_number_valid_for_current_diff(
+                changes_payload,
+                new_path,
+                finding.line_number,
+            )
+            if not is_valid_line:
+                logger.warning(
+                    "finding line_number out of current diff range; skipping line-level discussion",
+                    extra={
+                        "project_id": event.project_id,
+                        "mr_iid": event.mr_iid,
+                        "file_path": finding.file_path,
+                        "line_number": finding.line_number,
+                    },
+                )
+                discussion_ids.append(None)
+                continue
+
             try:
                 response = await self._gitlab_client.create_merge_request_discussion(
                     project_id=event.project_id,
@@ -1585,6 +1606,57 @@ def _extract_diff_refs(
     start_sha = str(refs.get("start_sha") or event.target_commit_sha)
     head_sha = str(refs.get("head_sha") or event.source_commit_sha)
     return {"base_sha": base_sha, "start_sha": start_sha, "head_sha": head_sha}
+
+
+def _is_line_number_valid_for_current_diff(
+    changes_payload: dict[str, Any],
+    file_path: str,
+    line_number: int,
+) -> bool:
+    """
+    检查 line_number 是否在当前 diff 对应文件的有效范围内。
+
+    MR 关闭后再 push 新代码、重开 MR 时，旧 finding 的 line_number 可能已经
+    和最新 diff 对不上。此时强行贴到旧行号会显示错误的代码区域，甚至
+    完全不显示。
+
+    返回 True：行号在当前 diff 的某个 hunk 范围内，可以安全贴行级评论。
+    返回 False：行号已失效，降级成全局 MR 备注。
+    """
+    for change in changes_payload.get("changes", []):
+        change_new_path = change.get("new_path")
+        if change_new_path != file_path:
+            continue
+
+        # 文件已删除，肯定不能贴行级评论
+        if change.get("deleted_file"):
+            return False
+
+        diff = change.get("diff", "")
+
+        # 空 diff → 无代码改动，拒绝行级评论
+        if not diff:
+            return False
+
+        # 有 hunk 才校验，不可解析的 diff → 保守允许创建（无法证实行号失效）
+        has_hunks = _DIFF_HEADER_RE.search(diff) is not None
+        if not has_hunks:
+            return True
+
+        # 解析 diff header，检查行号是否在某个 hunk 的 new_line 范围内
+        for match in _DIFF_HEADER_RE.finditer(diff):
+            new_start = int(match.group("new_start"))
+            new_lines = int(match.group("new_lines") or 1)
+            new_end = new_start + new_lines - 1
+
+            if new_start <= line_number <= new_end:
+                return True
+
+        # 有 hunk 但行号不在范围内 → 真正失效了，降级成全局评论
+        return False
+
+    # 文件不在本次 diff 里 → 降级
+    return False
 
 
 def _resolve_finding_paths(changes_payload: dict[str, Any], file_path: str) -> tuple[str, str]:
