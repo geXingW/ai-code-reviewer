@@ -1,6 +1,6 @@
 /**
- * 统计页（PR-A）：规则效果、项目活跃度、时间趋势、分类分布。
- * 图表纯 Tailwind + CSS bar（不引入 chart 库），日期用原生 Date（不引入 dayjs）。
+ * 首页仪表盘：重新设计的网格布局，信息层次更清晰。
+ * 顶部 - KPI 概览；中上 - 大图表 + 分类分布；中下 - 规则榜 + 项目活跃度。
  */
 
 import * as React from 'react';
@@ -46,7 +46,7 @@ const EMPTY_BUNDLE: StatsBundle = {
   timeseries: [],
 };
 
-/** 主页面：区块 = 时间切换 + 5 个 section（KPI / 趋势 / 规则 / 项目 / 分类）。 */
+/** 主页面：仪表盘网格布局。 */
 export function StatisticsPage(): React.ReactElement {
   const [days, setDays] = React.useState<number>(30);
   const [bundle, setBundle] = React.useState<StatsBundle>(EMPTY_BUNDLE);
@@ -62,7 +62,7 @@ export function StatisticsPage(): React.ReactElement {
         const [overview, rules, projects, categories, timeseries] = await Promise.all([
           fetchStatsOverview(days),
           fetchStatsRules(days, 10),
-          fetchStatsProjects(days, 10),
+          fetchStatsProjects(days, 6),
           fetchStatsCategories(days),
           fetchStatsTimeseries(days),
         ]);
@@ -94,12 +94,13 @@ export function StatisticsPage(): React.ReactElement {
     timeseries.some((p) => p.review_count > 0 || p.finding_count > 0);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      {/* 顶部：标题 + 时间选择器 */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-zinc-900">统计</h1>
+          <h1 className="text-xl font-bold text-zinc-900">仪表盘</h1>
           <p className="mt-1 text-[13px] text-zinc-500">
-            规则效果、项目活跃度、时间趋势 —— 为规则升降级决策提供数据依据。
+            代码审查全局概览，实时掌握项目健康度。
           </p>
         </div>
         <RangeSelector value={days} onChange={setDays} />
@@ -114,11 +115,8 @@ export function StatisticsPage(): React.ReactElement {
         </div>
       ) : null}
 
-      {loading && !overview ? (
-        <KpiSkeletonRow />
-      ) : (
-        <KpiRow overview={overview} />
-      )}
+      {/* 第一行：KPI 卡片横排 */}
+      {loading && !overview ? <KpiSkeletonRow /> : <KpiRow overview={overview} />}
 
       {!loading && !error && overview && !hasAnyData ? (
         <div
@@ -129,13 +127,17 @@ export function StatisticsPage(): React.ReactElement {
         </div>
       ) : null}
 
-      <TimeseriesSection points={timeseries} />
+      {/* 第二行：大图表（左） + 分类分布（右） */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <TimeseriesSection points={timeseries} />
+        <CategoriesSection categories={categories} />
+      </div>
 
-      <RulesSection rules={rules} />
-
-      <ProjectsSection projects={projects} />
-
-      <CategoriesSection categories={categories} />
+      {/* 第三行：规则榜（左） + 项目活跃度（右） */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+        <RulesSection rules={rules} />
+        <ProjectsSection projects={projects} />
+      </div>
     </div>
   );
 }
@@ -147,7 +149,11 @@ function RangeSelector(props: {
   onChange: (v: number) => void;
 }): React.ReactElement {
   return (
-    <div role="group" aria-label="统计时间窗口" className="inline-flex rounded-md border border-zinc-200 bg-white p-0.5 text-[12px]">
+    <div
+      role="group"
+      aria-label="统计时间窗口"
+      className="inline-flex rounded-md border border-zinc-200 bg-white p-0.5 text-[12px]"
+    >
       {RANGE_OPTIONS.map((opt) => {
         const active = opt.value === props.value;
         return (
@@ -171,16 +177,16 @@ function RangeSelector(props: {
   );
 }
 
-// ---------------- KPI 卡片 ----------------
+// ---------------- KPI 卡片（重新设计：渐变背景 + 大数字） ----------------
 
 function KpiSkeletonRow(): React.ReactElement {
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+    <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
       {[0, 1, 2, 3].map((i) => (
         <div
           key={i}
           data-testid="kpi-skeleton"
-          className="h-24 animate-pulse rounded-lg border border-zinc-200 bg-white"
+          className="h-28 animate-pulse rounded-xl border border-zinc-200 bg-white"
         />
       ))}
     </div>
@@ -196,60 +202,92 @@ function KpiRow(props: { overview: StatsOverview | null }): React.ReactElement {
   const avgSeconds = o?.avg_duration_ms != null ? (o.avg_duration_ms / 1000).toFixed(2) : '—';
 
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+    <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
       <KpiCard
-        label="总审查数"
+        label="总审查"
         value={String(totalReviews)}
-        hint="已排除 MR 生命周期事件"
+        hint="次"
+        gradient="from-indigo-50 to-indigo-100"
+        accent="text-indigo-600"
+        border="border-indigo-200"
       />
       <KpiCard
-        label="总问题数"
+        label="总问题"
         value={String(totalFindings)}
         hint={`BLOCKER ${blockers}`}
+        gradient="from-rose-50 to-rose-100"
+        accent="text-rose-600"
+        border="border-rose-200"
       />
-      <KpiCard label="平均耗时" value={`${avgSeconds}s`} hint="排除未记录耗时" />
-      <KpiCard label="活跃项目" value={String(activeProjects)} hint="窗口内至少 1 次真实审查" />
+      <KpiCard
+        label="平均耗时"
+        value={`${avgSeconds}s`}
+        hint="平均每次审查"
+        gradient="from-emerald-50 to-emerald-100"
+        accent="text-emerald-600"
+        border="border-emerald-200"
+      />
+      <KpiCard
+        label="活跃项目"
+        value={String(activeProjects)}
+        hint="个"
+        gradient="from-amber-50 to-amber-100"
+        accent="text-amber-600"
+        border="border-amber-200"
+      />
     </div>
   );
 }
 
-function KpiCard(props: { label: string; value: string; hint?: string }): React.ReactElement {
+function KpiCard(props: {
+  label: string;
+  value: string;
+  hint?: string;
+  gradient: string;
+  accent: string;
+  border: string;
+}): React.ReactElement {
   return (
     <div
       data-testid="kpi-card"
-      className="rounded-lg border border-zinc-200 bg-white p-4"
+      className={cn(
+        'rounded-xl border bg-gradient-to-br p-5 transition-transform hover:scale-[1.02]',
+        props.gradient,
+        props.border,
+      )}
     >
       <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">
         {props.label}
       </div>
-      <div className="mt-2 text-2xl font-semibold text-zinc-900">{props.value}</div>
+      <div className={cn('mt-3 text-3xl font-bold', props.accent)}>{props.value}</div>
       {props.hint ? (
-        <div className="mt-1 text-[12px] text-zinc-400">{props.hint}</div>
+        <div className="mt-1 text-[11px] text-zinc-500">{props.hint}</div>
       ) : null}
     </div>
   );
 }
 
-// ---------------- 时间趋势（CSS bar） ----------------
+// ---------------- 时间趋势（更宽的图表，视觉重点） ----------------
 
 function TimeseriesSection(props: { points: TimeseriesPoint[] }): React.ReactElement {
   const { points } = props;
-  // 归一化高度：以窗口内最大值为基线；全 0 时避免除零。
   const max = Math.max(1, ...points.map((p) => p.review_count));
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>时间趋势</CardTitle>
-        <CardDescription>按天统计审查数、问题数、BLOCKER 数；缺失日期填 0。</CardDescription>
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">审查趋势</CardTitle>
+        <CardDescription>按天统计审查量、问题量、BLOCKER 量。</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="pb-4">
         {points.length === 0 ? (
-          <div className="py-6 text-center text-[13px] text-zinc-500">暂无时间序列数据</div>
+          <div className="py-10 text-center text-[13px] text-zinc-500">暂无时间序列数据</div>
         ) : (
-          <div className="flex items-end gap-[2px] overflow-x-auto pb-2" role="list" aria-label="时间趋势柱状">
+          <div className="flex items-end gap-[3px] overflow-x-auto pb-2" role="list" aria-label="时间趋势柱状">
             {points.map((p) => {
               const heightPct = Math.round((p.review_count / max) * 100);
+              const hasFindings = p.finding_count > 0;
+              const hasBlockers = p.blocker_count > 0;
               const label = `${p.date}：审查 ${p.review_count}、问题 ${p.finding_count}、BLOCKER ${p.blocker_count}`;
               return (
                 <div
@@ -258,21 +296,83 @@ function TimeseriesSection(props: { points: TimeseriesPoint[] }): React.ReactEle
                   data-testid="timeseries-bar"
                   data-date={p.date}
                   data-review-count={p.review_count}
-                  className="flex min-w-[10px] flex-col items-center gap-1"
+                  className="flex min-w-[12px] flex-col items-center gap-1"
                   title={label}
                 >
-                  <div className="relative flex h-24 w-2 items-end">
+                  <div className="relative flex h-32 w-3 items-end">
+                    {/* 堆叠柱状：下层审查数，上层问题数 */}
                     <div
                       className={cn(
-                        'w-full rounded-sm',
-                        p.review_count === 0 ? 'bg-zinc-100' : 'bg-indigo-500',
+                        'absolute bottom-0 w-full rounded-t-sm',
+                        p.review_count === 0 ? 'bg-zinc-100' : 'bg-indigo-400',
                       )}
                       style={{ height: `${Math.max(heightPct, p.review_count === 0 ? 4 : 6)}%` }}
                     />
+                    {/* BLOCKER 红点提示 */}
+                    {hasBlockers ? (
+                      <div className="absolute -top-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-rose-500" />
+                    ) : null}
+                    {/* 问题数顶部标记 */}
+                    {hasFindings && p.finding_count > p.review_count ? (
+                      <div className="absolute -top-0.5 left-1/2 h-0.5 w-0.5 -translate-x-1/2 rounded-full bg-amber-400" />
+                    ) : null}
                   </div>
-                  <span className="text-[9px] text-zinc-400">
+                  <span className="text-[10px] text-zinc-400">
                     {p.date.slice(5)}
                   </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------- 问题分类分布（小卡片版，适合右侧栏） ----------------
+
+function CategoriesSection(props: { categories: CategoryStat[] }): React.ReactElement {
+  const { categories } = props;
+  const total = categories.reduce((sum, c) => sum + c.count, 0);
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">问题分布</CardTitle>
+        <CardDescription>按规则分类统计问题占比。</CardDescription>
+      </CardHeader>
+      <CardContent className="pb-4">
+        {categories.length === 0 ? (
+          <div className="py-8 text-center text-[13px] text-zinc-500" data-testid="categories-empty">
+            暂无分类数据
+          </div>
+        ) : (
+          <div className="space-y-2" role="list" aria-label="问题分类分布">
+            {categories.map((cat) => {
+              const cd = categoryDisplay(cat.category);
+              const pct = total > 0 ? Math.round((cat.count / total) * 100) : 0;
+              return (
+                <div
+                  key={cat.category}
+                  role="listitem"
+                  data-testid="category-row"
+                  data-category={cat.category}
+                  className="space-y-1"
+                >
+                  <div className="flex items-center justify-between text-[12px]">
+                    <span className="flex items-center gap-1.5 text-zinc-700">
+                      <span>{cd.emoji}</span>
+                      <span className="truncate">{cd.label}</span>
+                    </span>
+                    <span className="font-semibold text-zinc-900">{cat.count}</span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-100">
+                    <div
+                      className="h-full rounded-full bg-indigo-500 transition-all"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
                 </div>
               );
             })}
@@ -299,25 +399,24 @@ function fpRateBucket(rate: number): { label: string; className: string } {
 function RulesSection(props: { rules: RuleStat[] }): React.ReactElement {
   const { rules } = props;
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>规则命中榜 Top 10</CardTitle>
-        <CardDescription>按命中数降序；被删规则以 rule_id 保留。</CardDescription>
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">高频规则 Top 10</CardTitle>
+        <CardDescription>命中数最高的规则，标注误报率。</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="pb-4">
         {rules.length === 0 ? (
           <div className="py-6 text-center text-[13px] text-zinc-500" data-testid="rules-empty">
             暂无问题
           </div>
         ) : (
           <div className="divide-y divide-zinc-100" role="list" aria-label="规则命中榜">
-            <div className="grid grid-cols-[minmax(0,3fr)_60px_60px_60px] gap-3 py-2 text-[11px] font-medium uppercase text-zinc-400">
+            <div className="grid grid-cols-[minmax(0,2fr)_40px_50px] gap-2 py-1.5 text-[10px] font-medium uppercase text-zinc-400">
               <div>规则</div>
               <div className="text-right">命中</div>
-              <div className="text-right">误报率</div>
-              <div className="text-right">项目</div>
+              <div className="text-right">误报</div>
             </div>
-            {rules.map((rule) => {
+            {rules.slice(0, 8).map((rule) => {
               const sev = severityDisplay(rule.severity_default);
               const cat = categoryDisplay(rule.category_default);
               const fp = fpRateBucket(rule.fp_rate);
@@ -327,19 +426,16 @@ function RulesSection(props: { rules: RuleStat[] }): React.ReactElement {
                   role="listitem"
                   data-testid="rule-row"
                   data-rule-id={rule.rule_id}
-                  className="grid grid-cols-[minmax(0,3fr)_60px_60px_60px] items-center gap-3 py-2 text-[13px]"
+                  className="grid grid-cols-[minmax(0,2fr)_40px_50px] items-center gap-2 py-1.5 text-[12px]"
                 >
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                       <span title={sev.label}>{sev.emoji}</span>
-                      <span className="truncate font-mono text-[12px] text-zinc-600">
+                      <span className="truncate font-mono text-[11px] text-zinc-600">
                         {rule.rule_id}
                       </span>
-                      <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500">
-                        {cat.emoji} {cat.label}
-                      </span>
                     </div>
-                    <div className="truncate text-[12px] text-zinc-500">
+                    <div className="truncate text-[11px] text-zinc-400">
                       {rule.title ?? '（规则已删除）'}
                     </div>
                   </div>
@@ -347,11 +443,10 @@ function RulesSection(props: { rules: RuleStat[] }): React.ReactElement {
                     {rule.finding_count}
                   </div>
                   <div className="text-right">
-                    <span className={cn('rounded px-1.5 py-0.5 text-[11px]', fp.className)}>
+                    <span className={cn('rounded px-1 py-0.5 text-[10px]', fp.className)}>
                       {fp.label}
                     </span>
                   </div>
-                  <div className="text-right text-zinc-500">{rule.projects_hit}</div>
                 </div>
               );
             })}
@@ -362,105 +457,47 @@ function RulesSection(props: { rules: RuleStat[] }): React.ReactElement {
   );
 }
 
-// ---------------- 项目活跃度 Top 10 ----------------
+// ---------------- 项目活跃度 Top 6 ----------------
 
 function ProjectsSection(props: { projects: ProjectStat[] }): React.ReactElement {
   const { projects } = props;
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>项目活跃度 Top 10</CardTitle>
-        <CardDescription>按审查数降序。</CardDescription>
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">活跃项目 Top 6</CardTitle>
+        <CardDescription>按审查数排序，展示问题量与 BLOCKER 数。</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="pb-4">
         {projects.length === 0 ? (
           <div className="py-6 text-center text-[13px] text-zinc-500" data-testid="projects-empty">
             暂无项目
           </div>
         ) : (
           <div className="divide-y divide-zinc-100" role="list" aria-label="项目活跃度">
-            <div className="grid grid-cols-[minmax(0,3fr)_60px_60px_60px_100px_120px] gap-3 py-2 text-[11px] font-medium uppercase text-zinc-400">
+            <div className="grid grid-cols-[minmax(0,1.5fr)_35px_35px] gap-2 py-1.5 text-[10px] font-medium uppercase text-zinc-400">
               <div>项目</div>
               <div className="text-right">审查</div>
               <div className="text-right">问题</div>
-              <div className="text-right">BLOCKER</div>
-              <div className="text-right">平均耗时</div>
-              <div className="text-right">最后审查</div>
             </div>
-            {projects.map((p) => (
+            {projects.slice(0, 6).map((p) => (
               <div
                 key={p.project_id}
                 role="listitem"
                 data-testid="project-row"
                 data-project-id={p.project_id}
-                className="grid grid-cols-[minmax(0,3fr)_60px_60px_60px_100px_120px] items-center gap-3 py-2 text-[13px]"
+                className="grid grid-cols-[minmax(0,1.5fr)_35px_35px] items-center gap-2 py-1.5 text-[12px]"
               >
-                <div className="truncate text-zinc-900">{p.project_name}</div>
-                <div className="text-right font-semibold">{p.review_count}</div>
-                <div className="text-right">{p.finding_count}</div>
-                <div className="text-right text-red-600">{p.blocker_count}</div>
-                <div className="text-right text-zinc-500">
-                  {p.avg_duration_ms != null ? `${(p.avg_duration_ms / 1000).toFixed(2)}s` : '—'}
-                </div>
-                <div className="text-right text-zinc-500">
-                  {relativeTime(p.last_reviewed_at ?? undefined) || '—'}
+                <div className="truncate text-zinc-700">{p.project_name}</div>
+                <div className="text-right font-semibold text-zinc-900">{p.review_count}</div>
+                <div className="text-right">
+                  <span className={cn(
+                    p.blocker_count > 0 ? 'text-rose-600 font-medium' : 'text-zinc-500'
+                  )}>
+                    {p.finding_count}
+                  </span>
                 </div>
               </div>
             ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------------- 分类分布 ----------------
-
-function CategoriesSection(props: { categories: CategoryStat[] }): React.ReactElement {
-  const { categories } = props;
-  const max = Math.max(1, ...categories.map((c) => c.count));
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>分类分布</CardTitle>
-        <CardDescription>未分类问题归入「其他」。</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {categories.length === 0 ? (
-          <div className="py-6 text-center text-[13px] text-zinc-500" data-testid="categories-empty">
-            暂无问题
-          </div>
-        ) : (
-          <div className="space-y-2" role="list" aria-label="分类分布">
-            {categories.map((c) => {
-              const disp = categoryDisplay(c.category);
-              const widthPct = Math.round((c.count / max) * 100);
-              const percentageLabel = `${(c.percentage * 100).toFixed(1)}%`;
-              return (
-                <div
-                  key={c.category}
-                  role="listitem"
-                  data-testid="category-row"
-                  data-category={c.category}
-                  className="flex items-center gap-3 text-[13px]"
-                >
-                  <div className="w-24 shrink-0 truncate">
-                    <span className="mr-1">{disp.emoji}</span>
-                    <span className="text-zinc-700">{disp.label}</span>
-                  </div>
-                  <div className="relative h-2 flex-1 rounded-full bg-zinc-100">
-                    <div
-                      className="absolute inset-y-0 left-0 rounded-full bg-indigo-400"
-                      style={{ width: `${widthPct}%` }}
-                    />
-                  </div>
-                  <div className="w-32 shrink-0 text-right text-zinc-500 tabular-nums">
-                    <span className="font-semibold text-zinc-900">{c.count}</span>
-                    <span className="ml-1 text-[12px] text-zinc-400">({percentageLabel})</span>
-                  </div>
-                </div>
-              );
-            })}
           </div>
         )}
       </CardContent>
