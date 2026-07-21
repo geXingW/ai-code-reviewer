@@ -78,7 +78,6 @@ import { RuleSelector } from './components/RuleSelector';
 import { MarkFalsePositiveDialog } from './components/dialogs/MarkFalsePositiveDialog';
 import { ReviewFalsePositiveDialog } from './components/dialogs/ReviewFalsePositiveDialog';
 import { LoginPage } from './pages/LoginPage';
-import { StatisticsPage } from './pages/StatisticsPage';
 import { categoryDisplay, severityDisplay, SEVERITY_ORDER, Severity, isKnownSeverity } from './lib/findingTaxonomy';
 
 // PR-B：新增独立页「负样本库」，放在「误报队列」之后。
@@ -88,7 +87,6 @@ type PageKey =
   | 'rules'
   | 'projects'
   | 'reviews'
-  | 'statistics'
   | 'findings'
   | 'falsePositives'
   | 'negativeExamples'
@@ -753,7 +751,6 @@ function App() {
       {activePage === 'rules' ? renderRules() : null}
       {activePage === 'projects' ? renderProjects() : null}
       {activePage === 'reviews' ? renderReviewRecords() : null}
-      {activePage === 'statistics' ? <StatisticsPage /> : null}
       {activePage === 'findings' ? renderFindings() : null}
       {activePage === 'falsePositives' ? renderFalsePositives() : null}
       {activePage === 'negativeExamples' ? renderNegativeExamples() : null}
@@ -848,28 +845,6 @@ function App() {
                   {opt.label}
                 </button>
               ))}
-            </div>
-          </div>
-
-          {/* 统计 KPI 行 */}
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4 mb-4">
-            <div className="rounded-lg border border-zinc-200 bg-white p-4">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">总审查数</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-900">{statsBundle.overview?.total_reviews ?? 0}</div>
-            </div>
-            <div className="rounded-lg border border-zinc-200 bg-white p-4">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">总问题数</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-900">{statsBundle.overview?.total_findings ?? 0}</div>
-            </div>
-            <div className="rounded-lg border border-zinc-200 bg-white p-4">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">平均耗时</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-900">
-                {statsBundle.overview?.avg_duration_ms != null ? `${(statsBundle.overview.avg_duration_ms / 1000).toFixed(2)}s` : '—'}
-              </div>
-            </div>
-            <div className="rounded-lg border border-zinc-200 bg-white p-4">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">活跃项目</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-900">{statsBundle.overview?.active_projects ?? 0}</div>
             </div>
           </div>
         </section>
