@@ -645,7 +645,7 @@ async def reset_false_positive_review(
     # 重置评审字段
     old_status = finding.fp_status
     finding.fp_status = "PENDING"
-    finding.fp_reviewed_by = None  # type: ignore[assignment]
+    finding.fp_reviewed_by = None
     finding.fp_reviewed_at = None
     finding.fp_review_note = None
 
