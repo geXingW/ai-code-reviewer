@@ -1633,10 +1633,13 @@ def _is_line_number_valid_for_current_diff(
             return False
 
         diff = change.get("diff", "")
-        if not diff:
-            return False
 
-        # 解析 diff header，收集所有有效的 new_line 范围
+        # 有 hunk 才校验，空 diff / 不可解析的 diff → 保守允许创建（无法证实行号失效）
+        has_hunks = _DIFF_HEADER_RE.search(diff) is not None
+        if not has_hunks:
+            return True
+
+        # 解析 diff header，检查行号是否在某个 hunk 的 new_line 范围内
         for match in _DIFF_HEADER_RE.finditer(diff):
             new_start = int(match.group("new_start"))
             new_lines = int(match.group("new_lines") or 1)
@@ -1645,10 +1648,10 @@ def _is_line_number_valid_for_current_diff(
             if new_start <= line_number <= new_end:
                 return True
 
-        # 文件在 diff 里但行号不在任何 hunk 范围内
+        # 有 hunk 但行号不在范围内 → 真正失效了，降级成全局评论
         return False
 
-    # 文件根本不在本次 diff 里
+    # 文件不在本次 diff 里 → 降级
     return False
 
 
