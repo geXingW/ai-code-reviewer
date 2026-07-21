@@ -61,8 +61,9 @@ class TestIsLineNumberValidForCurrentDiff:
     def test_file_not_in_changes_returns_false(self) -> None:
         """File not present in changes payload should return False."""
 
-        changes_payload = {"changes": [{"new_path": "app/main.py", "deleted_file": False, "diff": ""}]}
-
+        changes_payload = {
+            "changes": [{"new_path": "app/main.py", "deleted_file": False, "diff": ""}]
+        }
         assert _is_line_number_valid_for_current_diff(changes_payload, "app/other.py", 1) is False
 
     def test_empty_diff_returns_false(self) -> None:

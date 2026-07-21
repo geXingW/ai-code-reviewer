@@ -118,7 +118,7 @@ class FakeSession:
             # FakeXXX 对应真实 XXX 模型
             if obj_type_name == f"Fake{model_type_name}" and getattr(obj, "id", None) == model_id:
                 return obj
-            # 精确匹配（比如 FakeReview 匹配 Review，因为我们的测试用 FakeReview 但名字就是 FakeReview）
+            # 精确匹配：FakeReview 匹配 Review
             if obj_type_name == model_type_name and getattr(obj, "id", None) == model_id:
                 return obj
         return None
