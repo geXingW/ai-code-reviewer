@@ -78,7 +78,6 @@ import { RuleSelector } from './components/RuleSelector';
 import { MarkFalsePositiveDialog } from './components/dialogs/MarkFalsePositiveDialog';
 import { ReviewFalsePositiveDialog } from './components/dialogs/ReviewFalsePositiveDialog';
 import { LoginPage } from './pages/LoginPage';
-import { StatisticsPage } from './pages/StatisticsPage';
 import { categoryDisplay, severityDisplay, SEVERITY_ORDER, Severity, isKnownSeverity } from './lib/findingTaxonomy';
 
 // PR-B：新增独立页「负样本库」，放在「误报队列」之后。
@@ -88,7 +87,6 @@ type PageKey =
   | 'rules'
   | 'projects'
   | 'reviews'
-  | 'statistics'
   | 'findings'
   | 'falsePositives'
   | 'negativeExamples'
@@ -753,7 +751,6 @@ function App() {
       {activePage === 'rules' ? renderRules() : null}
       {activePage === 'projects' ? renderProjects() : null}
       {activePage === 'reviews' ? renderReviewRecords() : null}
-      {activePage === 'statistics' ? <StatisticsPage /> : null}
       {activePage === 'findings' ? renderFindings() : null}
       {activePage === 'falsePositives' ? renderFalsePositives() : null}
       {activePage === 'negativeExamples' ? renderNegativeExamples() : null}
