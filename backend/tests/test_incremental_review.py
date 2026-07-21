@@ -453,7 +453,7 @@ async def test_incremental_rescans_changed_files_and_resolves_stale_discussions(
             # 第一次 push：app.py 与 other.py 各一条 finding。
             [
                 _finding(file_path="app.py", line=2, rule_id="rule-a"),
-                _finding(file_path="other.py", line=5, rule_id="rule-b"),
+                _finding(file_path="other.py", line=4, rule_id="rule-b"),
             ],
             # 第二次 push：只改 app.py；重审后 LLM 只报了新位置的问题。
             [

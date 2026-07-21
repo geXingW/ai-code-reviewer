@@ -1634,7 +1634,11 @@ def _is_line_number_valid_for_current_diff(
 
         diff = change.get("diff", "")
 
-        # 有 hunk 才校验，空 diff / 不可解析的 diff → 保守允许创建（无法证实行号失效）
+        # 空 diff → 无代码改动，拒绝行级评论
+        if not diff:
+            return False
+
+        # 有 hunk 才校验，不可解析的 diff → 保守允许创建（无法证实行号失效）
         has_hunks = _DIFF_HEADER_RE.search(diff) is not None
         if not has_hunks:
             return True
