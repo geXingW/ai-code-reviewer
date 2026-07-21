@@ -19,6 +19,11 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.block_policy import (
+    build_default_block_policies,
+    compute_has_blocker,
+    match_block_policy,
+)
 from app.core.config import get_settings
 from app.core.db import Base, DbSession
 from app.integrations.gitlab.client import GitLabClient
@@ -31,7 +36,13 @@ from app.models.project_rule import ProjectRule
 from app.models.provider import Provider
 from app.models.review import Review
 from app.models.rule import Rule
-from app.repositories import BaseRepository, ProjectRepository, RuleRepository
+from app.repositories import (
+    BaseRepository,
+    FindingRepository,
+    ProjectRepository,
+    ReviewRepository,
+    RuleRepository,
+)
 from app.schemas.engine import EngineCreate, EngineRead, EngineUpdate
 from app.schemas.finding import FindingCreate, FindingRead, FindingUpdate
 from app.schemas.negative_example import NegativeExampleRead
@@ -551,6 +562,96 @@ async def _resolve_finding_discussion(finding: Finding, db: AsyncSession) -> Non
         )
 
 
+async def _recompute_mr_block_status(finding: Finding, db: AsyncSession) -> None:
+    """误报确认/撤销后，重算所属 MR 的阻断状态并更新 GitLab commit status。
+
+    流程：
+      1. finding -> review -> project，拿到 block_policies；
+      2. 查 MR 最近一次完成的 review（``find_last_review_in_mr``），它的
+         ``commit_sha`` 是 GitLab 显示的当前 commit status 所在；
+      3. ``list_open_by_mr`` 拿该 MR 当前所有 ``status='open'`` 的 findings
+         --已确认误报的 finding 因 ``status='resolved'`` 被自然排除；
+      4. ``match_block_policy`` + ``compute_has_blocker`` 重算；
+      5. 更新 latest_review.has_blocker 并提交；
+      6. 更新 GitLab commit status（failed/success），解除阻断时发一条 note。
+
+    Best-effort：任何异常 warning 吞掉，不回滚已提交的误报状态变更（与
+    ``_resolve_finding_discussion`` 同策略）。
+    """
+
+    try:
+        review = await db.get(Review, finding.review_id)
+        if not review:
+            return
+        project_repo = ProjectRepository(db)
+        project = await project_repo.get(review.project_id)
+        if not project:
+            return
+
+        review_repo = ReviewRepository(db)
+        latest_review = await review_repo.find_last_review_in_mr(
+            review.project_id,
+            review.mr_iid,
+            exclude_status=("pending",),
+        )
+        if not latest_review:
+            return
+
+        finding_repo = FindingRepository(db)
+        open_findings = await finding_repo.list_open_by_mr(
+            review.project_id,
+            review.mr_iid,
+        )
+
+        policies = project.block_policies or []
+        if not policies:
+            policies = build_default_block_policies(project.id)
+        block_policy = match_block_policy(policies, latest_review.target_branch)
+        has_blocker, blocker_count = compute_has_blocker(open_findings, block_policy)
+
+        # 只在状态确实变化时才更新 DB + GitLab，避免无谓的 API 调用。
+        if latest_review.has_blocker == has_blocker:
+            return
+
+        latest_review.has_blocker = has_blocker
+        await db.commit()
+
+        client = _build_gitlab_client(project)
+        if client is None:
+            return
+        await client.set_commit_status(
+            project_id=int(project.gitlab_project_id),
+            commit_sha=latest_review.commit_sha,
+            state="failed" if has_blocker else "success",
+            name="ai-code-reviewer",
+            description=(
+                f"{len(open_findings)} finding(s), {blocker_count} blocking finding(s)"
+                if has_blocker
+                else f"AI Review: {len(open_findings)} finding(s) — false positive resolved"
+            ),
+            target_url=None,
+        )
+        if not has_blocker:
+            await client.create_merge_request_note(
+                project_id=int(project.gitlab_project_id),
+                mr_iid=int(latest_review.mr_iid),
+                body=(
+                    "✅ **误报已确认并解决**\n\n"
+                    f"Finding `{finding.rule_id}` 已标记为误报，"
+                    "本次 MR 不再被该问题阻断。"
+                ),
+            )
+    except Exception:
+        logger.warning(
+            "failed to recompute MR block status after fp review",
+            extra={
+                "finding_id": str(finding.id),
+                "review_id": str(finding.review_id),
+            },
+            exc_info=True,
+        )
+
+
 @router.get("/false-positives/pending", response_model=Page)
 async def list_pending_false_positives(
     db: DbSession,
@@ -570,13 +671,21 @@ async def confirm_false_positive(
     payload: FalsePositiveReviewRequest,
     db: DbSession,
 ) -> FindingRead:
-    """Confirm a false-positive and persist it as a negative prompt example."""
+    """Confirm a false-positive and persist it as a negative prompt example.
+
+    确认误报后同时把 finding 的 ``status`` 标记为 ``resolved``，使其不再
+    计入 MR 的阻断 finding 集合。随后调用 ``_recompute_mr_block_status``
+    重算 MR 最新 review 的 ``has_blocker`` 并更新 GitLab commit status。
+    """
 
     finding = await _get_pending_finding(db, finding_id)
     finding.fp_status = "CONFIRMED"
     finding.fp_reviewed_by = payload.reviewed_by
     finding.fp_reviewed_at = datetime.now(UTC)
     finding.fp_review_note = payload.note
+    # 确认误报 = 该问题不再是问题，标 resolved 让它退出阻断统计。
+    finding.status = "resolved"
+    finding.resolved_in_review_id = finding.review_id
     review = await db.get(Review, finding.review_id)
     existing_code = finding.existing_code or finding.description or finding.title
     db.add(
@@ -593,6 +702,7 @@ async def confirm_false_positive(
     await _commit_or_400(db, "False-positive confirm failed")
     await db.refresh(finding, attribute_names=["review"])
     await _resolve_finding_discussion(finding, db)
+    await _recompute_mr_block_status(finding, db)
     return _finding_to_read(finding)
 
 
@@ -625,13 +735,18 @@ async def _get_reviewed_finding(db: AsyncSession, finding_id: UUID) -> Finding:
         )
     return finding
 
-
 @router.post("/false-positives/{finding_id}/reset", response_model=FindingRead)
 async def reset_false_positive_review(
     finding_id: UUID,
     db: DbSession,
 ) -> FindingRead:
-    """撤销误报评审结果，状态变回 PENDING，可重新走评审流程。"""
+    """撤销误报评审结果，状态变回 PENDING，可重新走评审流程。
+
+    如果原状态是 CONFIRMED（finding ``status`` 被设为 ``resolved``），
+    撤销时需要重开 finding（``status='open'``）并重算 MR 阻断状态 --
+    因为该 finding 重新成为活跃问题，可能再次阻断 MR。
+    """
+
     finding = await _get_reviewed_finding(db, finding_id)
 
     # 如果是 CONFIRMED 状态，需要删除对应的 NegativeExample
@@ -649,6 +764,11 @@ async def reset_false_positive_review(
     finding.fp_reviewed_at = None
     finding.fp_review_note = None
 
+    # CONFIRMED -> PENDING：finding 从 resolved 重开为 open，重新计入阻断统计。
+    if old_status == "CONFIRMED":
+        finding.status = "open"
+        finding.resolved_in_review_id = None
+
     await _commit_or_400(db, "False-positive reset failed")
     logger.info(
         "Reset false-positive review",
@@ -658,6 +778,9 @@ async def reset_false_positive_review(
         },
     )
     await db.refresh(finding, attribute_names=["review"])
+    # CONFIRMED -> PENDING 时 finding 重新成为 blocker，需要重算 MR 状态。
+    if old_status == "CONFIRMED":
+        await _recompute_mr_block_status(finding, db)
     return _finding_to_read(finding)
 
 

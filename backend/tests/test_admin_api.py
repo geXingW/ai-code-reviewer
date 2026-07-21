@@ -70,6 +70,9 @@ class FakeFinding:
     fp_reviewed_by: str | None = None
     fp_reviewed_at: datetime | None = None
     fp_review_note: str | None = None
+    # Finding 生命周期状态：confirm FP 时设为 resolved，reset 时重开为 open。
+    status: str = "open"
+    resolved_in_review_id: UUID | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     # PR #92：admin _finding_to_read 会 finding.review 读关系里的 MR / project
@@ -173,14 +176,24 @@ def resolve_discussion_calls() -> list[dict[str, Any]]:
     return []
 
 
+@pytest.fixture
+def recompute_calls() -> list[dict[str, Any]]:
+    """记录 _recompute_mr_block_status 调用参数，方便 assert 重算是否被触发。"""
+    return []
+
+
 @pytest.fixture(autouse=True)
 def patch_gitlab_client(
     monkeypatch: pytest.MonkeyPatch,
     resolve_discussion_calls: list[dict[str, Any]],
+    recompute_calls: list[dict[str, Any]],
 ) -> None:
     """
     替换 admin.py 里的 _build_gitlab_client 工厂方法，让它返回一个 fake 客户端。
     每次 resolve_discussion 被调用就把参数记到 resolve_discussion_calls 里。
+
+    同时替换 _recompute_mr_block_status 为 no-op，避免 endpoint 单测触发
+    真实的 DB 查询 / GitLab API 调用（FakeSession 不支持 execute）。
     """
 
     class FakeGitLabClient:
@@ -200,6 +213,11 @@ def patch_gitlab_client(
         return FakeGitLabClient()
 
     monkeypatch.setattr("app.api.admin._build_gitlab_client", fake_build)
+
+    async def fake_recompute(finding: object, db: object) -> None:
+        recompute_calls.append({"finding_id": getattr(finding, "id", None)})
+
+    monkeypatch.setattr("app.api.admin._recompute_mr_block_status", fake_recompute)
 
 
 @pytest.mark.asyncio
@@ -241,8 +259,13 @@ async def test_admin_api_rejects_missing_bearer_token(client: AsyncClient) -> No
 
 
 @pytest.mark.asyncio
-async def test_mark_false_positive_sets_pending_audit_fields() -> None:
-    """Developers can mark a finding as pending false-positive review."""
+async def test_mark_false_positive_sets_pending_audit_fields(
+    recompute_calls: list[dict[str, Any]],
+) -> None:
+    """Developers can mark a finding as pending false-positive review.
+
+    Mark 只设 fp_status=PENDING，不改 finding.status，也不触发重算。
+    """
 
     finding = FakeFinding(id=uuid4(), review_id=uuid4())
     session = FakeSession(finding)
@@ -258,12 +281,20 @@ async def test_mark_false_positive_sets_pending_audit_fields() -> None:
     assert response.fp_marked_reason == "Generated file"
     assert response.fp_marked_at is not None
     assert response.fp_reviewed_by is None
+    assert response.status == "open"  # mark 不改 status
     assert session.committed is True
+    # mark 不触发重算
+    assert len(recompute_calls) == 0
 
 
 @pytest.mark.asyncio
-async def test_confirm_false_positive_creates_negative_example() -> None:
-    """Confirming a pending FP creates an approved negative example for prompting."""
+async def test_confirm_false_positive_creates_negative_example(
+    recompute_calls: list[dict[str, Any]],
+) -> None:
+    """Confirming a pending FP creates an approved negative example for prompting.
+
+    确认后 finding ``status`` 应变为 ``resolved``，且触发 MR 阻断状态重算。
+    """
 
     review = FakeReview(id=uuid4(), project_id=uuid4())
     finding = FakeFinding(id=uuid4(), review_id=review.id, fp_status="PENDING")
@@ -278,6 +309,7 @@ async def test_confirm_false_positive_creates_negative_example() -> None:
     assert response.fp_status == "CONFIRMED"
     assert response.fp_reviewed_by == "lead@example.com"
     assert response.fp_review_note == "Known safe wrapper"
+    assert response.status == "resolved"
     assert len(session.added) == 1
     negative_example = session.added[0]
     assert isinstance(negative_example, NegativeExample)
@@ -285,11 +317,19 @@ async def test_confirm_false_positive_creates_negative_example() -> None:
     assert negative_example.project_id == review.project_id
     assert negative_example.code_snippet == finding.existing_code
     assert negative_example.approved_by == "lead@example.com"
+    # 确认误报应触发 MR 阻断状态重算
+    assert len(recompute_calls) == 1
+    assert recompute_calls[0]["finding_id"] == finding.id
 
 
 @pytest.mark.asyncio
-async def test_reject_false_positive_keeps_finding_out_of_negative_examples() -> None:
-    """Rejecting a pending FP records audit fields without creating prompt examples."""
+async def test_reject_false_positive_keeps_finding_out_of_negative_examples(
+    recompute_calls: list[dict[str, Any]],
+) -> None:
+    """Rejecting a pending FP records audit fields without creating prompt examples.
+
+    Reject 不改变 finding ``status``（仍为 open），也不触发 MR 阻断状态重算。
+    """
 
     finding = FakeFinding(id=uuid4(), review_id=uuid4(), fp_status="PENDING")
     session = FakeSession(finding)
@@ -303,20 +343,30 @@ async def test_reject_false_positive_keeps_finding_out_of_negative_examples() ->
     assert response.fp_status == "REJECTED"
     assert response.fp_reviewed_by == "lead@example.com"
     assert response.fp_review_note == "Real blocker"
+    assert response.status == "open"  # reject 不改 status
     assert session.added == []
+    # reject 不触发重算（finding 状态未变，阻断状态无变化）
+    assert len(recompute_calls) == 0
 
 
 @pytest.mark.asyncio
-async def test_reset_reviewed_false_positive_restores_pending_status() -> None:
-    """Resetting a CONFIRMED/REJECTED FP reverts to PENDING and clears audit fields."""
+async def test_reset_reviewed_false_positive_restores_pending_status(
+    recompute_calls: list[dict[str, Any]],
+) -> None:
+    """Resetting a CONFIRMED/REJECTED FP reverts to PENDING and clears audit fields.
 
-    # Case 1: CONFIRMED → should delete associated NegativeExample
+    CONFIRMED -> PENDING：finding ``status`` 从 resolved 重开为 open，触发重算。
+    REJECTED -> PENDING：finding ``status`` 本就 open，不触发重算。
+    """
+
+    # Case 1: CONFIRMED -> should delete NegativeExample, reopen status, recompute
     confirmed_finding = FakeFinding(
         id=uuid4(),
         review_id=uuid4(),
         fp_status="CONFIRMED",
         fp_reviewed_by="lead@example.com",
         fp_review_note="False positive",
+        status="resolved",
     )
     negative_example = FakeNegativeExample(
         id=uuid4(),
@@ -333,15 +383,21 @@ async def test_reset_reviewed_false_positive_restores_pending_status() -> None:
     assert response1.fp_status == "PENDING"
     assert response1.fp_reviewed_by is None
     assert response1.fp_review_note is None
-    assert negative_example in session1.deleted  # CONFIRMED → delete NegativeExample
+    assert response1.status == "open"  # CONFIRMED -> PENDING: 重开 finding
+    assert negative_example in session1.deleted  # CONFIRMED -> delete NegativeExample
+    # CONFIRMED -> PENDING 触发重算
+    assert len(recompute_calls) == 1
+    assert recompute_calls[0]["finding_id"] == confirmed_finding.id
 
-    # Case 2: REJECTED → no NegativeExample to delete, just reset fields
+    # Case 2: REJECTED -> no NegativeExample to delete, status stays open, no recompute
+    recompute_calls.clear()  # 重置计数器
     rejected_finding = FakeFinding(
         id=uuid4(),
         review_id=uuid4(),
         fp_status="REJECTED",
         fp_reviewed_by="lead@example.com",
         fp_review_note="Real issue",
+        status="open",
     )
     session2 = FakeSession(rejected_finding)
 
@@ -353,11 +409,16 @@ async def test_reset_reviewed_false_positive_restores_pending_status() -> None:
     assert response2.fp_status == "PENDING"
     assert response2.fp_reviewed_by is None
     assert response2.fp_review_note is None
-    assert session2.deleted == []  # REJECTED → nothing to delete
+    assert response2.status == "open"  # REJECTED -> PENDING: status 不变
+    assert session2.deleted == []  # REJECTED -> nothing to delete
+    # REJECTED -> PENDING 不触发重算（status 本就 open，阻断状态无变化）
+    assert len(recompute_calls) == 0
 
 
 @pytest.mark.asyncio
-async def test_reset_pending_false_positive_fails() -> None:
+async def test_reset_pending_false_positive_fails(
+    recompute_calls: list[dict[str, Any]],
+) -> None:
     """Resetting a PENDING FP (not yet reviewed) should fail."""
 
     finding = FakeFinding(id=uuid4(), review_id=uuid4(), fp_status="PENDING")
@@ -370,6 +431,8 @@ async def test_reset_pending_false_positive_fails() -> None:
         )
 
     assert exc_info.value.status_code == 400
+    # 失败时不触发重算
+    assert len(recompute_calls) == 0
 
 
 @pytest.mark.asyncio
