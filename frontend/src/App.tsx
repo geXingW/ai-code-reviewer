@@ -175,7 +175,6 @@ const navItems: Array<{ key: PageKey; label: string }> = [
   { key: 'rules', label: '审查规则' },
   { key: 'projects', label: 'GitLab 项目' },
   { key: 'reviews', label: '审查记录' },
-  { key: 'statistics', label: '统计' },
   { key: 'findings', label: '问题与误报' },
   { key: 'falsePositives', label: '误报队列' },
   { key: 'negativeExamples', label: '负样本库' },
