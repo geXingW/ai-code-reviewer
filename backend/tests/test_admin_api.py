@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient
 
 from app.api.admin import (
@@ -19,7 +20,6 @@ from app.api.admin import (
     reset_false_positive_review,
 )
 from app.models.negative_example import NegativeExample
-from fastapi import HTTPException
 
 
 @dataclass
