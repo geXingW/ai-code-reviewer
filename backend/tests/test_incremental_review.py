@@ -474,7 +474,7 @@ async def test_incremental_rescans_changed_files_and_resolves_stale_discussions(
         (f.file_path, f.line_number): f.gitlab_discussion_id for f in first_findings
     }
     assert disc_ids_after_first[("app.py", 2)] == "disc-1"
-    assert disc_ids_after_first[("other.py", 5)] == "disc-2"
+    assert disc_ids_after_first[("other.py", 4)] == "disc-2"
 
     result = await orch.review_merge_request(_event(commit_sha="head-b"))
 
@@ -486,8 +486,8 @@ async def test_incremental_rescans_changed_files_and_resolves_stale_discussions(
     # app.py:2 老 finding 被 resolved（属于改动文件）。
     assert by_key[("app.py", 2, "rule-a")].status == "resolved"
     assert by_key[("app.py", 2, "rule-a")].resolved_in_review_id is not None
-    # other.py:5 未动 → 保持 open。
-    assert by_key[("other.py", 5, "rule-b")].status == "open"
+    # other.py:4 未动 → 保持 open。
+    assert by_key[("other.py", 4, "rule-b")].status == "open"
     # app.py:20 本次新增，first_seen 指向第二次 review。
     reviews = await _list_reviews(factory)
     reviews_by_sha = {r.commit_sha: r for r in reviews}
