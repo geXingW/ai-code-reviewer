@@ -790,26 +790,273 @@ function App() {
 
   function renderDashboard() {
     return (
-      <div className="space-y-6" aria-busy={loading}>
-        {/* KPI 行 */}
+      <div className="space-y-5" aria-busy={loading}>
+        {/* ========== 第一行：系统级 KPI ========== */}
         <section>
-          <div className="grid grid-cols-4 gap-3">
-            <KpiCard label="总审查数" value={reviewRecordsPage?.total ?? '—'} icon={ScrollText} />
-            <KpiCard
-              label="阻断问题"
-              value={blockerCount}
-              icon={AlertOctagon}
-              intent={blockerCount > 0 ? 'danger' : 'neutral'}
-            />
-            <KpiCard label="发现问题" value={totalFindings} icon={AlertTriangle} />
-            <KpiCard label="待处理误报" value={pendingFpPage?.total ?? 0} icon={Filter} hint="待处理" />
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            <div className="rounded-xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-indigo-100 p-5">
+              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">总审查</div>
+              <div className="mt-3 text-3xl font-bold text-indigo-600">{reviewRecordsPage?.total ?? '—'}</div>
+            </div>
+            <div className="rounded-xl border border-rose-200 bg-gradient-to-br from-rose-50 to-rose-100 p-5">
+              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">阻断问题</div>
+              <div className="mt-3 text-3xl font-bold text-rose-600">{blockerCount}</div>
+            </div>
+            <div className="rounded-xl border border-amber-200 bg-gradient-to-br from-amber-50 to-amber-100 p-5">
+              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">发现问题</div>
+              <div className="mt-3 text-3xl font-bold text-amber-600">{totalFindings}</div>
+            </div>
+            <div className="rounded-xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-emerald-100 p-5">
+              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">待处理误报</div>
+              <div className="mt-3 text-3xl font-bold text-emerald-600">{pendingFpPage?.total ?? 0}</div>
+              <div className="mt-1 text-[11px] text-zinc-500">待处理</div>
+            </div>
           </div>
         </section>
 
-        {/* 系统状态 + 最近审查 */}
-        <section className="grid grid-cols-3 gap-4">
+        {/* ========== 第二行：系统状态 + 最近审查 ========== */}
+        <section className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <SystemStatusCard health={health} engines={engines} />
           <RecentReviewsPanel reviews={reviews} onViewAll={() => setActivePage('reviews')} />
+        </section>
+
+        {/* ========== 第三行：统计时间选择器 ========== */}
+        <section>
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-zinc-900">数据统计</h2>
+            <div role="group" aria-label="统计时间窗口" className="inline-flex rounded-md border border-zinc-200 bg-white p-0.5 text-[12px]">
+              {[
+                { value: 7, label: '最近 7 天' },
+                { value: 30, label: '最近 30 天' },
+                { value: 90, label: '最近 90 天' },
+              ].map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => {
+                    setStatsDays(opt.value);
+                    void loadPage('dashboard');
+                  }}
+                  className={cn(
+                    'px-3 py-1.5 rounded-[4px] transition-colors',
+                    statsDays === opt.value
+                      ? 'bg-zinc-900 text-white'
+                      : 'text-zinc-600 hover:bg-zinc-100',
+                  )}
+                  aria-pressed={statsDays === opt.value}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 统计 KPI 行 */}
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4 mb-4">
+            <div className="rounded-lg border border-zinc-200 bg-white p-4">
+              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">总审查数</div>
+              <div className="mt-2 text-2xl font-semibold text-zinc-900">{statsBundle.overview?.total_reviews ?? 0}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-200 bg-white p-4">
+              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">总问题数</div>
+              <div className="mt-2 text-2xl font-semibold text-zinc-900">{statsBundle.overview?.total_findings ?? 0}</div>
+            </div>
+            <div className="rounded-lg border border-zinc-200 bg-white p-4">
+              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">平均耗时</div>
+              <div className="mt-2 text-2xl font-semibold text-zinc-900">
+                {statsBundle.overview?.avg_duration_ms != null ? `${(statsBundle.overview.avg_duration_ms / 1000).toFixed(2)}s` : '—'}
+              </div>
+            </div>
+            <div className="rounded-lg border border-zinc-200 bg-white p-4">
+              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">活跃项目</div>
+              <div className="mt-2 text-2xl font-semibold text-zinc-900">{statsBundle.overview?.active_projects ?? 0}</div>
+            </div>
+          </div>
+        </section>
+
+        {/* ========== 第四行：时间趋势 + 问题分类分布 ========== */}
+        <section className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          {/* 时间趋势 */}
+          <Card className="overflow-hidden">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">审查趋势</CardTitle>
+              <CardDescription>按天统计审查量、问题量、BLOCKER 量</CardDescription>
+            </CardHeader>
+            <CardContent className="pb-4">
+              {statsBundle.timeseries.length === 0 ? (
+                <div className="py-6 text-center text-[13px] text-zinc-500">暂无时间序列数据</div>
+              ) : (
+                <div className="flex items-end gap-[3px] overflow-x-auto pb-2" role="list" aria-label="时间趋势柱状">
+                  {statsBundle.timeseries.map((p) => {
+                    const max = Math.max(1, ...statsBundle.timeseries.map((t) => t.review_count));
+                    const heightPct = Math.round((p.review_count / max) * 100);
+                    const hasBlockers = p.blocker_count > 0;
+                    return (
+                      <div
+                        key={p.date}
+                        role="listitem"
+                        data-testid="timeseries-bar"
+                        data-date={p.date}
+                        data-review-count={p.review_count}
+                        className="flex min-w-[12px] flex-col items-center gap-1"
+                        title={`${p.date}：审查 ${p.review_count}、问题 ${p.finding_count}、BLOCKER ${p.blocker_count}`}
+                      >
+                        <div className="relative flex h-24 w-2 items-end">
+                          <div
+                            className={cn(
+                              'absolute bottom-0 w-full rounded-t-sm',
+                              p.review_count === 0 ? 'bg-zinc-100' : 'bg-indigo-500',
+                            )}
+                            style={{ height: `${Math.max(heightPct, p.review_count === 0 ? 4 : 6)}%` }}
+                          />
+                          {hasBlockers ? (
+                            <div className="absolute -top-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-rose-500" />
+                          ) : null}
+                        </div>
+                        <span className="text-[10px] text-zinc-400">{p.date.slice(5)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* 问题分类分布 */}
+          <Card className="overflow-hidden">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">问题分布</CardTitle>
+              <CardDescription>按规则分类统计问题占比</CardDescription>
+            </CardHeader>
+            <CardContent className="pb-4">
+              {statsBundle.categories.length === 0 ? (
+                <div className="py-6 text-center text-[13px] text-zinc-500">暂无分类数据</div>
+              ) : (
+                <div className="space-y-2">
+                  {statsBundle.categories.map((cat) => {
+                    const cd = categoryDisplay(cat.category);
+                    const total = statsBundle.categories.reduce((sum, c) => sum + c.count, 0);
+                    const pct = total > 0 ? Math.round((cat.count / total) * 100) : 0;
+                    return (
+                      <div key={cat.category} className="space-y-1">
+                        <div className="flex items-center justify-between text-[12px]">
+                          <span className="flex items-center gap-1.5 text-zinc-700">
+                            <span>{cd.emoji}</span>
+                            <span className="truncate">{cd.label}</span>
+                          </span>
+                          <span className="font-semibold text-zinc-900">{cat.count}</span>
+                        </div>
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-100">
+                          <div
+                            className="h-full rounded-full bg-indigo-500 transition-all"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* ========== 第五行：规则命中榜 + 项目活跃度 ========== */}
+        <section className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+          {/* 规则命中榜 Top 8 */}
+          <Card className="overflow-hidden">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">高频规则 Top 8</CardTitle>
+              <CardDescription>命中数最高的规则，标注误报率</CardDescription>
+            </CardHeader>
+            <CardContent className="pb-4">
+              {statsBundle.rules.length === 0 ? (
+                <div className="py-6 text-center text-[13px] text-zinc-500">暂无问题</div>
+              ) : (
+                <div className="divide-y divide-zinc-100">
+                  <div className="grid grid-cols-[minmax(0,2fr)_40px_50px] gap-2 py-1.5 text-[10px] font-medium uppercase text-zinc-400">
+                    <div>规则</div>
+                    <div className="text-right">命中</div>
+                    <div className="text-right">误报</div>
+                  </div>
+                  {statsBundle.rules.slice(0, 8).map((rule) => {
+                    const sev = severityDisplay(rule.severity_default);
+                    const pct = Math.round(rule.fp_rate * 100);
+                    return (
+                      <div
+                        key={rule.rule_id}
+                        data-rule-id={rule.rule_id}
+                        className="grid grid-cols-[minmax(0,2fr)_40px_50px] items-center gap-2 py-1.5 text-[12px]"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span title={sev.label}>{sev.emoji}</span>
+                            <span className="truncate font-mono text-[11px] text-zinc-600">
+                              {rule.rule_id}
+                            </span>
+                          </div>
+                          <div className="truncate text-[11px] text-zinc-400">
+                            {rule.title ?? '（规则已删除）'}
+                          </div>
+                        </div>
+                        <div className="text-right font-semibold text-zinc-900">
+                          {rule.finding_count}
+                        </div>
+                        <div className="text-right">
+                          <span className={cn(
+                            'rounded px-1 py-0.5 text-[10px]',
+                            pct >= 30 ? 'bg-red-100 text-red-700' :
+                            pct >= 10 ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-zinc-100 text-zinc-600'
+                          )}>
+                            {pct}%
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* 项目活跃度 Top 6 */}
+          <Card className="overflow-hidden">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">活跃项目 Top 6</CardTitle>
+              <CardDescription>按审查数排序，展示问题量与 BLOCKER 数</CardDescription>
+            </CardHeader>
+            <CardContent className="pb-4">
+              {statsBundle.projects.length === 0 ? (
+                <div className="py-6 text-center text-[13px] text-zinc-500">暂无项目</div>
+              ) : (
+                <div className="divide-y divide-zinc-100">
+                  <div className="grid grid-cols-[minmax(0,1.5fr)_35px_35px] gap-2 py-1.5 text-[10px] font-medium uppercase text-zinc-400">
+                    <div>项目</div>
+                    <div className="text-right">审查</div>
+                    <div className="text-right">问题</div>
+                  </div>
+                  {statsBundle.projects.slice(0, 6).map((p) => (
+                    <div
+                      key={p.project_id}
+                      data-project-id={p.project_id}
+                      className="grid grid-cols-[minmax(0,1.5fr)_35px_35px] items-center gap-2 py-1.5 text-[12px]"
+                    >
+                      <div className="truncate text-zinc-700">{p.project_name}</div>
+                      <div className="text-right font-semibold text-zinc-900">{p.review_count}</div>
+                      <div className="text-right">
+                        <span className={cn(
+                          p.blocker_count > 0 ? 'text-rose-600 font-medium' : 'text-zinc-500'
+                        )}>
+                          {p.finding_count}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </section>
 
         {/* 手动触发 MR 审查 */}
