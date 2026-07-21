@@ -850,28 +850,6 @@ function App() {
               ))}
             </div>
           </div>
-
-          {/* 统计 KPI 行 */}
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4 mb-4">
-            <div className="rounded-lg border border-zinc-200 bg-white p-4">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">总审查数</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-900">{statsBundle.overview?.total_reviews ?? 0}</div>
-            </div>
-            <div className="rounded-lg border border-zinc-200 bg-white p-4">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">总问题数</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-900">{statsBundle.overview?.total_findings ?? 0}</div>
-            </div>
-            <div className="rounded-lg border border-zinc-200 bg-white p-4">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">平均耗时</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-900">
-                {statsBundle.overview?.avg_duration_ms != null ? `${(statsBundle.overview.avg_duration_ms / 1000).toFixed(2)}s` : '—'}
-              </div>
-            </div>
-            <div className="rounded-lg border border-zinc-200 bg-white p-4">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">活跃项目</div>
-              <div className="mt-2 text-2xl font-semibold text-zinc-900">{statsBundle.overview?.active_projects ?? 0}</div>
-            </div>
-          </div>
         </section>
 
         {/* ========== 第四行：时间趋势 + 问题分类分布 ========== */}
