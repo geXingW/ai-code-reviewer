@@ -77,6 +77,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { RuleSelector } from './components/RuleSelector';
 import { MarkFalsePositiveDialog } from './components/dialogs/MarkFalsePositiveDialog';
 import { ReviewFalsePositiveDialog } from './components/dialogs/ReviewFalsePositiveDialog';
+import { ProviderDialog } from './components/dialogs/ProviderDialog';
+import { RuleDialog } from './components/dialogs/RuleDialog';
+import { ProjectDialog } from './components/dialogs/ProjectDialog';
 import { LoginPage } from './pages/LoginPage';
 import { categoryDisplay, severityDisplay, SEVERITY_ORDER, Severity, isKnownSeverity } from './lib/findingTaxonomy';
 
@@ -254,6 +257,16 @@ function App() {
     finding: FindingRecord;
     action: 'confirm' | 'reject';
   } | null>(null);
+  // 弹窗状态：null = 关闭，{ mode: 'create' } = 新增模式，{ mode: 'edit', data: ... } = 编辑模式
+  const [providerDialog, setProviderDialog] = useState<
+    { mode: 'create' } | { mode: 'edit'; data: ProviderConfig } | null
+  >(null);
+  const [ruleDialog, setRuleDialog] = useState<
+    { mode: 'create' } | { mode: 'edit'; data: RuleConfig } | null
+  >(null);
+  const [projectDialog, setProjectDialog] = useState<
+    { mode: 'create' } | { mode: 'edit'; data: ProjectConfig } | null
+  >(null);
   // PR-B：「问题与误报」页筛选器（前端 filter，findingsPage.items 量级不大）。
   const [findingsFpFilter, setFindingsFpFilter] = useState<'ALL' | 'NONE' | 'PENDING' | 'CONFIRMED' | 'REJECTED'>('ALL');
   const [findingsSeverityFilter, setFindingsSeverityFilter] = useState<Set<Severity>>(new Set());
@@ -496,6 +509,72 @@ function App() {
           : prev,
       );
       setMessage('模型供应商已更新。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
+  // === 弹窗用 handler（直接接收 payload，而非表单事件） ===
+  async function handleCreateProviderPayload(payload: ProviderFormPayload) {
+    setError(null);
+    setMessage(null);
+    try {
+      await createProvider(payload);
+      setProvidersPage(await fetchProviders());
+      setMessage('模型供应商已创建。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
+  async function handleCreateRulePayload(payload: RuleFormPayload) {
+    setError(null);
+    setMessage(null);
+    try {
+      if (!payload.title.trim() || !payload.prompt_snippet.trim()) {
+        throw new Error('规则标题和提示片段不能为空。');
+      }
+      // rule_id 可选：留空则不发送该字段，由后端从标题自动生成 slug。
+      const createPayload: RuleCreatePayload = {
+        ...payload,
+        rule_id: payload.rule_id.trim() || undefined,
+      };
+      await createRule(createPayload);
+      setRulesPage(await fetchRules());
+      setMessage('审查规则已创建。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
+  async function handleUpdateRulePayload(ruleId: string, payload: RuleFormPayload) {
+    setError(null);
+    setMessage(null);
+    try {
+      const updated = await updateRule(ruleId, payload);
+      setRulesPage((prev) =>
+        prev
+          ? {
+              ...prev,
+              items: prev.items.map((rule) =>
+                rule.id === updated.id ? updated : rule,
+              ),
+            }
+          : prev,
+      );
+      setMessage('审查规则已更新。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    }
+  }
+
+  async function handleCreateProjectPayload(payload: ProjectFormPayload) {
+    setError(null);
+    setMessage(null);
+    try {
+      await createProject(payload);
+      setProjectsPage(await fetchProjects());
+      setMessage('GitLab 项目已创建。');
     } catch (caught) {
       handleCaughtError(caught);
     }
@@ -780,6 +859,57 @@ function App() {
             return submitReviewFalsePositive(reviewDialog.finding, reviewDialog.action, payload);
           }
           return Promise.resolve();
+        }}
+      />
+      {/* 模型供应商弹窗 */}
+      <ProviderDialog
+        open={providerDialog !== null}
+        initialData={providerDialog?.mode === 'edit' ? providerDialog.data : null}
+        onCancel={() => setProviderDialog(null)}
+        onSubmit={async (payload) => {
+          if (providerDialog?.mode === 'create') {
+            await handleCreateProviderPayload(payload);
+          } else if (providerDialog?.mode === 'edit') {
+            await handleSaveProviderEdit(providerDialog.data.id, payload);
+          }
+          setProviderDialog(null);
+        }}
+      />
+      {/* 审查规则弹窗 */}
+      <RuleDialog
+        open={ruleDialog !== null}
+        initialData={ruleDialog?.mode === 'edit' ? ruleDialog.data : null}
+        onCancel={() => setRuleDialog(null)}
+        onSubmit={async (payload) => {
+          if (ruleDialog?.mode === 'create') {
+            await handleCreateRulePayload(payload);
+          } else if (ruleDialog?.mode === 'edit') {
+            await handleUpdateRulePayload(ruleDialog.data.id, payload);
+          }
+          setRuleDialog(null);
+        }}
+      />
+      {/* GitLab 项目弹窗 */}
+      <ProjectDialog
+        open={projectDialog !== null}
+        initialData={projectDialog?.mode === 'edit' ? projectDialog.data : null}
+        engineOptions={[
+          { value: '', label: '不指定' },
+          ...(engineConfigsPage?.items ?? []).map((engine) => ({ value: engine.id, label: engine.name })),
+        ]}
+        providerOptions={[
+          { value: '', label: '（不选择，使用默认）' },
+          ...(providersPage?.items ?? []).map((provider) => ({ value: provider.id, label: provider.name })),
+        ]}
+        rules={rulesPage?.items ?? []}
+        onCancel={() => setProjectDialog(null)}
+        onSubmit={async (payload) => {
+          if (projectDialog?.mode === 'create') {
+            await handleCreateProjectPayload(payload);
+          } else if (projectDialog?.mode === 'edit') {
+            await handleSaveProjectEdit(projectDialog.data.id, payload);
+          }
+          setProjectDialog(null);
         }}
       />
     </AppShell>
@@ -1085,39 +1215,16 @@ function App() {
     const enabledCount = items.filter((provider) => provider.enabled).length;
     return (
       <div className="grid grid-cols-5 gap-4">
-        {/* 左：表单卡 */}
-        <Card className="col-span-2">
-          <CardHeader>
-            <div>
-              <CardTitle>新增供应商</CardTitle>
-              <CardDescription>目前支持 OpenAI 兼容、Anthropic、Custom 协议</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <form onSubmit={handleCreateProvider} className="space-y-3">
-              <TextInput label="名称" value={providerForm.name} onChange={(value) => setProviderForm({ ...providerForm, name: value })} />
-              <SelectInput label="协议" value={providerForm.protocol} options={['openai_compatible', 'anthropic', 'custom']} onChange={(value) => setProviderForm({ ...providerForm, protocol: value as ProviderFormPayload['protocol'] })} />
-              <TextInput label="Base URL" value={providerForm.base_url} onChange={(value) => setProviderForm({ ...providerForm, base_url: value })} />
-              <TextInput label="API Key" type="password" value={providerForm.api_key} onChange={(value) => setProviderForm({ ...providerForm, api_key: value })} />
-              <div className="grid grid-cols-2 gap-3">
-                <TextInput label="模型" value={providerForm.model} onChange={(value) => setProviderForm({ ...providerForm, model: value })} />
-                <TextInput label="Max Tokens" value={String(providerForm.max_tokens)} onChange={(value) => setProviderForm({ ...providerForm, max_tokens: Number(value) || 0 })} />
-              </div>
-              <div className="pt-3 flex items-center justify-end gap-2 border-t border-zinc-100 mt-4">
-                <Button type="button" variant="secondary" onClick={() => setProviderForm(initialProviderForm)}>重置</Button>
-                <Button type="submit">保存供应商</Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-
-        {/* 右：列表卡 */}
-        <Card className="col-span-3">
-          <CardHeader>
+        {/* 全宽列表卡 */}
+        <Card className="col-span-5">
+          <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>已配置供应商</CardTitle>
               <CardDescription>{items.length} 个，其中 {enabledCount} 个已启用</CardDescription>
             </div>
+            <Button size="sm" onClick={() => setProviderDialog({ mode: 'create' })}>
+              新增供应商
+            </Button>
           </CardHeader>
           <CardContent className="p-0">
             {items.length === 0 ? (
@@ -1128,6 +1235,7 @@ function App() {
                   key={provider.id}
                   provider={provider}
                   onSave={handleSaveProviderEdit}
+                  onEdit={() => setProviderDialog({ mode: 'edit', data: provider })}
                 />
               ))
             )}
@@ -1142,83 +1250,40 @@ function App() {
     const enabledCount = items.filter((rule) => rule.enabled).length;
     return (
       <div className="grid grid-cols-5 gap-4">
-        {/* 左：表单卡 */}
-        <Card className="col-span-2">
-          <CardHeader>
-            <div>
-              <CardTitle>新增审查规则</CardTitle>
-              <CardDescription>定义 AI 审查依据的规则模板</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <form className="space-y-3" onSubmit={handleCreateRule}>
-              <TextInput label="规则 ID" hint="可选：留空则自动从标题生成" value={ruleForm.rule_id} onChange={(value) => setRuleForm({ ...ruleForm, rule_id: value })} />
-              <TextInput label="标题" value={ruleForm.title} onChange={(value) => setRuleForm({ ...ruleForm, title: value })} />
-              <TextAreaInput label="提示片段" value={ruleForm.prompt_snippet} onChange={(value) => setRuleForm({ ...ruleForm, prompt_snippet: value })} />
-              <SelectInput label="默认严重级别" value={ruleForm.severity_default} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setRuleForm({ ...ruleForm, severity_default: value as RuleFormPayload['severity_default'] })} />
-              <CheckboxInput label="启用规则" checked={ruleForm.enabled} onChange={(value) => setRuleForm({ ...ruleForm, enabled: value })} />
-              <div className="pt-3 flex items-center justify-end gap-2 border-t border-zinc-100 mt-4">
-                <Button type="button" variant="secondary" onClick={() => setRuleForm(initialRuleForm)}>重置</Button>
-                <Button type="submit">保存规则</Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-
-        {/* 右：列表卡 */}
-        <Card className="col-span-3">
-          <CardHeader>
+        {/* 全宽列表卡 */}
+        <Card className="col-span-5">
+          <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>审查规则</CardTitle>
               <CardDescription>{items.length} 条规则 · {enabledCount} 启用</CardDescription>
             </div>
+            <Button size="sm" onClick={() => setRuleDialog({ mode: 'create' })}>
+              新增规则
+            </Button>
           </CardHeader>
           <CardContent className="p-0">
             {items.length === 0 ? (
               <div className="p-6 text-center text-[13px] text-zinc-500">暂无审查规则</div>
             ) : (
-              items.map((rule) => {
-                const editForm = ruleEdits[rule.id] ?? null;
-                return (
-                  <div key={rule.id} className="border-b border-zinc-100 last:border-b-0">
-                    <div className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-medium text-zinc-900 truncate">
-                          <span className="font-mono">{rule.rule_id}</span><span className="font-normal text-zinc-600"> {rule.title}</span>
-                        </div>
-                        <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{rule.severity_default} · {truncate(rule.prompt_snippet, 60)}</div>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <UiBadge {...severityBadgeProps(rule.severity_default)}>{rule.severity_default}</UiBadge>
-                        <UiBadge variant={rule.enabled ? 'success' : 'default'}>
-                          <span className={cn('w-1.5 h-1.5 rounded-full', rule.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
-                          {rule.enabled ? '启用' : '停用'}
-                        </UiBadge>
-                        <Button variant="ghost" size="sm" type="button" onClick={() => startEditRule(rule)}>编辑</Button>
-                        <Button variant="destructive" size="sm" type="button" onClick={() => void handleDeleteRule(rule)}>删除</Button>
-                      </div>
+              items.map((rule) => (
+                <div key={rule.id} className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors border-b border-zinc-100 last:border-b-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-zinc-900 truncate">
+                      <span className="font-mono">{rule.rule_id}</span><span className="font-normal text-zinc-600"> {rule.title}</span>
                     </div>
-                    {editForm ? (
-                      <div className="space-y-3 border-t border-zinc-100 bg-zinc-50 px-4 pb-4 pt-3">
-                        <div className="space-y-1.5">
-                          <span className="block text-[12px] font-medium text-zinc-600">规则 ID（只读）</span>
-                          <div className="flex h-9 w-full items-center rounded-md border border-input bg-zinc-100 px-3 py-1 font-mono text-[13px] text-zinc-500">
-                            {editForm.rule_id}
-                          </div>
-                        </div>
-                        <TextInput label="标题" value={editForm.title} onChange={(value) => updateEditRule(rule.id, { title: value })} />
-                        <TextAreaInput label="提示片段" value={editForm.prompt_snippet} onChange={(value) => updateEditRule(rule.id, { prompt_snippet: value })} />
-                        <SelectInput label="默认严重级别" value={editForm.severity_default} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => updateEditRule(rule.id, { severity_default: value as RuleFormPayload['severity_default'] })} />
-                        <CheckboxInput label="启用规则" checked={editForm.enabled} onChange={(value) => updateEditRule(rule.id, { enabled: value })} />
-                        <div className="flex items-center justify-end gap-2 pt-1">
-                          <Button variant="secondary" size="sm" type="button" onClick={() => cancelEditRule(rule.id)}>取消</Button>
-                          <Button size="sm" type="button" onClick={() => void handleUpdateRule(rule.id)}>保存</Button>
-                        </div>
-                      </div>
-                    ) : null}
+                    <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{rule.severity_default} · {truncate(rule.prompt_snippet, 60)}</div>
                   </div>
-                );
-              })
+                  <div className="flex items-center gap-2 shrink-0">
+                    <UiBadge {...severityBadgeProps(rule.severity_default)}>{rule.severity_default}</UiBadge>
+                    <UiBadge variant={rule.enabled ? 'success' : 'default'}>
+                      <span className={cn('w-1.5 h-1.5 rounded-full', rule.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
+                      {rule.enabled ? '启用' : '停用'}
+                    </UiBadge>
+                    <Button variant="ghost" size="sm" type="button" onClick={() => setRuleDialog({ mode: 'edit', data: rule })}>编辑</Button>
+                    <Button variant="destructive" size="sm" type="button" onClick={() => void handleDeleteRule(rule)}>删除</Button>
+                  </div>
+                </div>
+              ))
             )}
           </CardContent>
         </Card>
@@ -1237,60 +1302,16 @@ function App() {
     ];
     return (
       <div className="grid grid-cols-5 gap-4">
-        {/* 左：表单卡 col-span-2 */}
-        <Card className="col-span-2">
-          <CardHeader>
-            <div>
-              <CardTitle>新增 GitLab 项目</CardTitle>
-              <CardDescription>接入项目后可通过 Webhook 自动触发 MR 审查</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <form onSubmit={handleCreateProject} className="space-y-3">
-              <TextInput label="项目名称" value={projectForm.name} onChange={(value) => setProjectForm({ ...projectForm, name: value })} />
-              <TextInput label="GitLab Project ID" value={projectForm.gitlab_project_id} onChange={(value) => setProjectForm({ ...projectForm, gitlab_project_id: value })} />
-              <TextInput label="GitLab Access Token" type="password" value={projectForm.gitlab_access_token} onChange={(value) => setProjectForm({ ...projectForm, gitlab_access_token: value })} />
-              <TextInput label="Webhook Secret" type="password" value={projectForm.webhook_secret} onChange={(value) => setProjectForm({ ...projectForm, webhook_secret: value })} />
-              <SelectInput label="默认审查引擎" value={projectForm.engine_id} options={engineOptions} onChange={(value) => setProjectForm({ ...projectForm, engine_id: value })} />
-              <SelectInput label="AI 供应商" value={projectForm.provider_id} options={providerOptions} onChange={(value) => setProjectForm({ ...projectForm, provider_id: value })} />
-              <div className="grid grid-cols-2 gap-3">
-                <TextInput label="超时秒数" value={String(projectForm.timeout_seconds)} onChange={(value) => setProjectForm({ ...projectForm, timeout_seconds: Number(value) || 0 })} />
-                <TextInput label="最大文件数" value={String(projectForm.max_files)} onChange={(value) => setProjectForm({ ...projectForm, max_files: Number(value) || 0 })} />
-              </div>
-              <SelectInput label="默认阻断级别" value={projectForm.default_block_severity} options={BLOCK_SEVERITY_OPTIONS} onChange={(value) => setProjectForm({ ...projectForm, default_block_severity: value as ProjectFormPayload['default_block_severity'] })} />
-              <div>
-                <RuleSelector
-                  rules={rulesPage?.items ?? []}
-                  selectedRuleIds={projectForm.rules.map((r) => r.rule_id)}
-                  onToggle={(ruleId, enabled) =>
-                    setProjectForm((prev) => ({
-                      ...prev,
-                      rules: toggleRuleSelection(prev.rules, ruleId, enabled),
-                    }))
-                  }
-                  onBulkReplace={(ruleIds) =>
-                    setProjectForm((prev) => ({
-                      ...prev,
-                      rules: ruleIds.map((id) => ({ rule_id: id, enabled: true })),
-                    }))
-                  }
-                />
-              </div>
-              <div className="pt-3 flex items-center justify-end gap-2 border-t border-zinc-100 mt-4">
-                <Button type="button" variant="secondary" onClick={() => setProjectForm(initialProjectForm)}>重置</Button>
-                <Button type="submit">保存项目</Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-
-        {/* 右：项目列表 col-span-3 */}
-        <Card className="col-span-3">
-          <CardHeader>
+        {/* 全宽列表卡 */}
+        <Card className="col-span-5">
+          <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>已接入项目</CardTitle>
               <CardDescription>{projectsPage?.items?.length ?? 0} 个项目 · {(projectsPage?.items ?? []).filter((p) => p.enabled).length} 启用</CardDescription>
             </div>
+            <Button size="sm" onClick={() => setProjectDialog({ mode: 'create' })}>
+              新增项目
+            </Button>
           </CardHeader>
           <CardContent className="p-0">
             {(projectsPage?.items ?? []).length === 0 ? (
@@ -1305,6 +1326,7 @@ function App() {
                   onSavePolicies={handleSaveBlockPolicies}
                   onSaveProject={handleSaveProjectEdit}
                   onDeleteProject={handleDeleteProject}
+                  onEditProject={() => setProjectDialog({ mode: 'edit', data: project })}
                 />
               ))
             )}
@@ -1947,46 +1969,12 @@ function SystemStatusCard({ health, engines }: SystemStatusCardProps) {
 type ProviderListItemProps = {
   provider: ProviderConfig;
   onSave: (providerId: string, payload: ProviderUpdatePayload) => Promise<void>;
+  onEdit: () => void;
 };
 
-function ProviderListItem({ provider, onSave }: ProviderListItemProps) {
-  const [editing, setEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState<ProviderFormPayload>(initialProviderForm);
+function ProviderListItem({ provider, onSave, onEdit }: ProviderListItemProps) {
   const letter = provider.name.charAt(0).toUpperCase();
   const baseUrlShort = provider.base_url.replace(/^https?:\/\//, '').replace(/\/$/, '');
-
-  function startEdit() {
-    // api_key 留空表示不修改，避免把脱敏的 **** 误回写。
-    setForm({
-      name: provider.name,
-      protocol: provider.protocol as ProviderFormPayload['protocol'],
-      base_url: provider.base_url,
-      api_key: '',
-      model: provider.model,
-      temperature: provider.temperature,
-      max_tokens: provider.max_tokens,
-      enabled: provider.enabled,
-    });
-    setEditing(true);
-  }
-
-  async function handleSave() {
-    if (saving) {
-      return;
-    }
-    const payload: ProviderUpdatePayload = { ...form };
-    if (!form.api_key.trim()) {
-      delete payload.api_key;
-    }
-    try {
-      setSaving(true);
-      await onSave(provider.id, payload);
-      setEditing(false);
-    } finally {
-      setSaving(false);
-    }
-  }
 
   return (
     <div className="border-b border-zinc-100 last:border-b-0">
@@ -2009,26 +1997,9 @@ function ProviderListItem({ provider, onSave }: ProviderListItemProps) {
             <span className={cn('w-1.5 h-1.5 rounded-full', provider.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
             {provider.enabled ? '已启用' : '已停用'}
           </UiBadge>
-          <Button variant="ghost" size="sm" type="button" onClick={startEdit}>编辑</Button>
+          <Button variant="ghost" size="sm" type="button" onClick={onEdit}>编辑</Button>
         </div>
       </div>
-      {editing ? (
-        <div className="space-y-3 border-t border-zinc-100 bg-zinc-50 px-4 pb-4 pt-3">
-          <TextInput label="名称" value={form.name} onChange={(value) => setForm({ ...form, name: value })} />
-          <SelectInput label="协议" value={form.protocol} options={['openai_compatible', 'anthropic', 'custom']} onChange={(value) => setForm({ ...form, protocol: value as ProviderFormPayload['protocol'] })} />
-          <TextInput label="Base URL" value={form.base_url} onChange={(value) => setForm({ ...form, base_url: value })} />
-          <TextInput label="API Key" type="password" placeholder="留空则不修改" value={form.api_key} onChange={(value) => setForm({ ...form, api_key: value })} />
-          <div className="grid grid-cols-2 gap-3">
-            <TextInput label="模型" value={form.model} onChange={(value) => setForm({ ...form, model: value })} />
-            <TextInput label="Max Tokens" value={String(form.max_tokens)} onChange={(value) => setForm({ ...form, max_tokens: Number(value) || 0 })} />
-          </div>
-          <CheckboxInput label="启用供应商" checked={form.enabled} onChange={(value) => setForm({ ...form, enabled: value })} />
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <Button variant="secondary" size="sm" type="button" disabled={saving} onClick={() => setEditing(false)}>取消</Button>
-            <Button size="sm" type="button" disabled={saving} onClick={() => void handleSave()}>{saving ? '保存中…' : '保存'}</Button>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -2147,146 +2118,63 @@ type ProjectCardProps = {
   onSavePolicies: (projectId: string, policies: BlockPolicyPayload[]) => Promise<void>;
   onSaveProject: (projectId: string, payload: ProjectUpdatePayload) => Promise<void>;
   onDeleteProject: (id: string) => Promise<void>;
+  onEditProject: () => void;
 };
 
-type ProjectEditForm = {
-  name: string;
-  gitlab_project_id: string;
-  gitlab_access_token: string;
-  webhook_secret: string;
-  provider_id: string;
-  // Issue #73：编辑项目时也允许勾选启用规则。
-  rules: ProjectRuleFormPayload[];
-};
+function ProjectCard({ project, providerOptions, rules, onSavePolicies, onSaveProject, onDeleteProject, onEditProject }: ProjectCardProps) {
+    const [expanded, setExpanded] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+    const letter = project.name.charAt(0).toUpperCase();
 
-function ProjectCard({ project, providerOptions, rules, onSavePolicies, onSaveProject, onDeleteProject }: ProjectCardProps) {
-  const [expanded, setExpanded] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [editSaving, setEditSaving] = useState(false);
-  const [editForm, setEditForm] = useState<ProjectEditForm>({
-    name: '',
-    gitlab_project_id: '',
-    gitlab_access_token: '',
-    webhook_secret: '',
-    provider_id: '',
-    rules: [],
-  });
-  const letter = project.name.charAt(0).toUpperCase();
+    async function handleDelete() {
+      if (deleting) {
+        return;
+      }
+      if (!confirm(`确定要删除项目「${project.name}」吗？删除后该项目的 MR 审查将无法使用。`)) {
+        return;
+      }
+      try {
+        setDeleting(true);
+        await onDeleteProject(project.id);
+      } finally {
+        setDeleting(false);
+      }
+    }
 
-  function startEdit() {
-    // 两个敏感字段留空表示不修改，避免把脱敏的 **** 误回写。
-    // rules 预填当前项目已启用的规则，rule_id 存的是规则表的 UUID（后端 FK），与"新建项目"表单一致。
-    setEditForm({
-      name: project.name,
-      gitlab_project_id: project.gitlab_project_id,
-      gitlab_access_token: '',
-      webhook_secret: '',
-      provider_id: project.provider_id ?? '',
-      rules: project.rules.map((rule) => ({ rule_id: rule.rule_id, enabled: rule.enabled })),
-    });
-    setEditing(true);
-  }
-
-  async function handleSaveEdit() {
-    if (editSaving) {
-      return;
-    }
-    const payload: ProjectUpdatePayload = {
-      name: editForm.name,
-      gitlab_project_id: editForm.gitlab_project_id,
-      provider_id: editForm.provider_id || null,
-      rules: editForm.rules,
-    };
-    if (editForm.gitlab_access_token.trim()) {
-      payload.gitlab_access_token = editForm.gitlab_access_token;
-    }
-    if (editForm.webhook_secret.trim()) {
-      payload.webhook_secret = editForm.webhook_secret;
-    }
-    try {
-      setEditSaving(true);
-      await onSaveProject(project.id, payload);
-      setEditing(false);
-    } finally {
-      setEditSaving(false);
-    }
-  }
-
-  async function handleDelete() {
-    // Issue #73：项目删除不可撤销，弹二次确认。
-    if (!window.confirm(`确定删除项目「${project.name}」？此操作不可撤销。`)) {
-      return;
-    }
-    await onDeleteProject(project.id);
-  }
-
-  return (
-    <div className="border-b border-zinc-100 last:border-b-0">
-      <div className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 rounded-md bg-indigo-50 flex items-center justify-center shrink-0">
-            <span className="text-[13px] font-semibold text-indigo-700">{letter}</span>
-          </div>
-          <div className="min-w-0">
-            <div className="text-[13px] font-medium text-zinc-900 truncate">{project.name}</div>
-            <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">
-              GitLab {project.gitlab_project_id} · {project.default_block_severity} · {project.block_policies.length} 条策略
+    return (
+      <div className="border-b border-zinc-100 last:border-b-0">
+        <div className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-8 h-8 rounded-md bg-indigo-50 flex items-center justify-center shrink-0">
+              <span className="text-[13px] font-semibold text-indigo-700">{letter}</span>
+            </div>
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-zinc-900 truncate">{project.name}</div>
+              <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">
+                GitLab {project.gitlab_project_id} · {project.default_block_severity} · {project.block_policies.length} 条策略
+              </div>
             </div>
           </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <UiBadge variant={project.enabled ? 'success' : 'default'}>
+              <span className={cn('w-1.5 h-1.5 rounded-full', project.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
+              {project.enabled ? '启用' : '停用'}
+            </UiBadge>
+            <Button variant="ghost" size="sm" type="button" onClick={onEditProject}>编辑</Button>
+            <Button variant="destructive" size="sm" type="button" disabled={deleting} onClick={() => void handleDelete()}>{deleting ? '删除中…' : '删除'}</Button>
+            <Button variant="secondary" size="sm" type="button" onClick={() => setExpanded((prev) => !prev)}>
+              {expanded ? '收起策略' : '展开策略'}
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <UiBadge variant={project.enabled ? 'success' : 'default'}>
-            <span className={cn('w-1.5 h-1.5 rounded-full', project.enabled ? 'bg-emerald-500' : 'bg-zinc-400')} />
-            {project.enabled ? '启用' : '停用'}
-          </UiBadge>
-          <Button variant="ghost" size="sm" type="button" onClick={startEdit}>编辑</Button>
-          <Button variant="destructive" size="sm" type="button" onClick={() => void handleDelete()}>删除</Button>
-          <Button variant="secondary" size="sm" type="button" onClick={() => setExpanded((prev) => !prev)}>
-            {expanded ? '收起策略' : '展开策略'}
-          </Button>
-        </div>
+        {expanded ? (
+          <div className="px-4 pb-4 bg-zinc-50 border-t border-zinc-100">
+            <BlockPolicyTable projectId={project.id} policies={project.block_policies} onSave={onSavePolicies} />
+          </div>
+        ) : null}
       </div>
-      {editing ? (
-        <div className="space-y-3 border-t border-zinc-100 bg-zinc-50 px-4 pb-4 pt-3">
-          <TextInput label="项目名称" value={editForm.name} onChange={(value) => setEditForm({ ...editForm, name: value })} />
-          <TextInput label="GitLab Project ID" value={editForm.gitlab_project_id} onChange={(value) => setEditForm({ ...editForm, gitlab_project_id: value })} />
-          <TextInput label="GitLab Access Token" type="password" placeholder="留空则不修改" value={editForm.gitlab_access_token} onChange={(value) => setEditForm({ ...editForm, gitlab_access_token: value })} />
-          <TextInput label="Webhook Secret" type="password" placeholder="留空则不修改" value={editForm.webhook_secret} onChange={(value) => setEditForm({ ...editForm, webhook_secret: value })} />
-          <SelectInput label="AI 供应商" value={editForm.provider_id} options={providerOptions} onChange={(value) => setEditForm({ ...editForm, provider_id: value })} />
-          {/* Issue #73：启用规则多选列表，样式与"新建项目"表单对齐。 */}
-          <RuleSelector
-            rules={rules}
-            selectedRuleIds={editForm.rules.map((r) => r.rule_id)}
-            onToggle={(ruleId, enabled) =>
-              setEditForm((prev) => ({
-                ...prev,
-                rules: toggleRuleSelection(prev.rules, ruleId, enabled),
-              }))
-            }
-            onBulkReplace={(ruleIds) =>
-              setEditForm((prev) => ({
-                ...prev,
-                rules: ruleIds.map((id) => ({ rule_id: id, enabled: true })),
-              }))
-            }
-          />
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <Button variant="secondary" size="sm" type="button" disabled={editSaving} onClick={() => setEditing(false)}>取消</Button>
-            <Button size="sm" type="button" disabled={editSaving} onClick={() => void handleSaveEdit()}>{editSaving ? '保存中…' : '保存'}</Button>
-          </div>
-          <div className="text-[11px] text-zinc-500">
-            阻断策略请点"展开策略"编辑。
-          </div>
-        </div>
-      ) : null}
-      {expanded ? (
-        <div className="px-4 pb-4 bg-zinc-50 border-t border-zinc-100">
-          <BlockPolicyTable projectId={project.id} policies={project.block_policies} onSave={onSavePolicies} />
-        </div>
-      ) : null}
-    </div>
-  );
-}
+    );
+  }
 
 type EditableBlockPolicy = {
   key: string;
