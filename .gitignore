@@ -27,3 +27,11 @@ coverage/
 # 测试临时 SQLite（不小心被 Claude Code 产出的 orchestrator 单测创建）
 backend/tmp_test.db
 backend/*.db-journal
+
+# AI 助手本地规则（不入库，仅供本地开发使用）
+.claude/
+.cursorrules
+.cursor/
+.windsurf/
+PROJECT.md
+CONTEXT.md
