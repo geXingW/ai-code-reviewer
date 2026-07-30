@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from app.models.engine import Engine
     from app.models.negative_example import NegativeExample
     from app.models.project_block_policy import ProjectBlockPolicy
+    from app.models.project_notification_channel import ProjectNotificationChannel
     from app.models.project_rule import ProjectRule
     from app.models.provider import Provider
     from app.models.review import Review
@@ -77,6 +78,11 @@ class Project(Base, TimestampMixin):
         lazy="selectin",
     )
     block_policies: Mapped[list["ProjectBlockPolicy"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    notification_channels: Mapped[list["ProjectNotificationChannel"]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
         lazy="selectin",

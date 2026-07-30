@@ -22,6 +22,7 @@ from app.core.db import AsyncSessionLocal
 from app.engines import load_builtin_engines
 from app.engines.registry import get_engine_registry
 from app.integrations.gitlab.client import GitLabClient
+from app.services.notification_service import NotificationService
 from app.services.review_orchestrator import (
     GitLabMergeRequestEvent,
     OrchestratorResult,
@@ -101,12 +102,15 @@ async def review_merge_request_event(
         base_url=settings.gitlab_base_url,
         token=settings.gitlab_token.get_secret_value(),
     )
+    # 注入应用级 sessionmaker，让 orchestrator 每次评审完成后能落库 review + finding。
+    effective_session_factory = session_factory or AsyncSessionLocal
     orchestrator = ReviewOrchestrator(
         gitlab_client=client,
         engine_registry=get_engine_registry(),
         default_engine=settings.default_review_engine,
-        # 注入应用级 sessionmaker，让 orchestrator 每次评审完成后能落库 review + finding。
-        session_factory=session_factory or AsyncSessionLocal,
+        session_factory=effective_session_factory,
+        # 通知服务复用同一 sessionmaker，按项目渠道推送 Review 完成结果。
+        notification_service=NotificationService(effective_session_factory),
     )
     return await orchestrator.review_merge_request(event)
 

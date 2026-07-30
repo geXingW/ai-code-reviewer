@@ -32,6 +32,7 @@ from app.models.finding import Finding
 from app.models.negative_example import NegativeExample
 from app.models.project import Project
 from app.models.project_block_policy import ProjectBlockPolicy
+from app.models.project_notification_channel import ProjectNotificationChannel
 from app.models.project_rule import ProjectRule
 from app.models.provider import Provider
 from app.models.review import Review
@@ -39,6 +40,7 @@ from app.models.rule import Rule
 from app.repositories import (
     BaseRepository,
     FindingRepository,
+    ProjectNotificationChannelRepository,
     ProjectRepository,
     ReviewRepository,
     RuleRepository,
@@ -48,6 +50,11 @@ from app.schemas.finding import FindingCreate, FindingRead, FindingUpdate
 from app.schemas.negative_example import NegativeExampleRead
 from app.schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
 from app.schemas.project_block_policy import ProjectBlockPolicyCreate
+from app.schemas.project_notification_channel import (
+    ProjectNotificationChannelCreate,
+    ProjectNotificationChannelRead,
+    ProjectNotificationChannelUpdate,
+)
 from app.schemas.project_rule import ProjectRuleCreate
 from app.schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
 from app.schemas.review import ReviewCreate, ReviewRead, ReviewUpdate
@@ -369,6 +376,102 @@ async def delete_project(project_id: UUID, db: DbSession) -> None:
     """Delete a project configuration and dependent rules/policies/reviews."""
 
     await _delete(db, Project, project_id, "Project")
+
+
+@router.get(
+    "/projects/{project_id}/notification-channels",
+    response_model=list[ProjectNotificationChannelRead],
+)
+async def list_project_notification_channels(
+    project_id: UUID,
+    db: DbSession,
+) -> list[ProjectNotificationChannelRead]:
+    """List notification channels (e.g. DingTalk webhooks) configured for a project."""
+
+    await _get_or_404(db, Project, project_id, "Project")
+    repo = ProjectNotificationChannelRepository(db)
+    channels = await repo.get_by_project(project_id)
+    return [ProjectNotificationChannelRead.model_validate(channel) for channel in channels]
+
+
+@router.post(
+    "/projects/{project_id}/notification-channels",
+    response_model=ProjectNotificationChannelRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_project_notification_channel(
+    project_id: UUID,
+    payload: ProjectNotificationChannelCreate,
+    db: DbSession,
+) -> ProjectNotificationChannelRead:
+    """Create a notification channel (e.g. DingTalk webhook) for a project.
+
+    ``webhook_url`` / ``secret`` 在落库时由 :class:`EncryptedString` 加密；
+    响应里统一脱敏为 ``****``。
+    """
+
+    await _get_or_404(db, Project, project_id, "Project")
+    data = payload.model_dump(exclude={"project_id"})
+    channel = ProjectNotificationChannel(project_id=project_id, **data)
+    return await _create(
+        db,
+        channel,
+        ProjectNotificationChannelRead,
+        "Notification channel already exists",
+    )
+
+
+@router.patch(
+    "/projects/{project_id}/notification-channels/{channel_id}",
+    response_model=ProjectNotificationChannelRead,
+)
+async def update_project_notification_channel(
+    project_id: UUID,
+    channel_id: UUID,
+    payload: ProjectNotificationChannelUpdate,
+    db: DbSession,
+) -> ProjectNotificationChannelRead:
+    """Update a project notification channel (partial update)."""
+
+    channel = await _get_scoped_notification_channel(db, project_id, channel_id)
+    return await _update(db, channel, payload, ProjectNotificationChannelRead)
+
+
+@router.delete(
+    "/projects/{project_id}/notification-channels/{channel_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_project_notification_channel(
+    project_id: UUID,
+    channel_id: UUID,
+    db: DbSession,
+) -> None:
+    """Delete a project notification channel."""
+
+    channel = await _get_scoped_notification_channel(db, project_id, channel_id)
+    repo = ProjectNotificationChannelRepository(db)
+    await repo.delete(channel, flush=False)
+    await _commit_or_400(db, "Notification channel delete failed")
+
+
+async def _get_scoped_notification_channel(
+    db: AsyncSession,
+    project_id: UUID,
+    channel_id: UUID,
+) -> ProjectNotificationChannel:
+    """Fetch a notification channel scoped to a project or raise 404.
+
+    复用通用 ``_get_or_404`` 取出渠道后额外校验 ``project_id`` 一致，避免跨项目
+    读写（``channel_id`` 全局唯一但更新 / 删除必须限定在路径声明的项目下）。
+    """
+
+    channel = await _get_or_404(db, ProjectNotificationChannel, channel_id, "Notification channel")
+    if channel.project_id != project_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Notification channel not found",
+        )
+    return channel
 
 
 @router.get("/reviews", response_model=Page)
