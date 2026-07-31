@@ -55,6 +55,20 @@ function ruleLanguageKeys(rule: RuleConfig): Set<string> {
   return keys;
 }
 
+/** 从一条规则里抽出去重、去空白后的标签数组（保持首次出现顺序）。 */
+function ruleTags(rule: RuleConfig): string[] {
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of rule.tags ?? []) {
+    const tag = typeof raw === 'string' ? raw.trim() : '';
+    if (tag && !seen.has(tag)) {
+      seen.add(tag);
+      tags.push(tag);
+    }
+  }
+  return tags;
+}
+
 /** severity 排序索引，未知走末位。 */
 function severityRank(value: string | null | undefined): number {
   if (!value) return SEVERITY_ORDER.length;
@@ -102,6 +116,7 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
   const [severityFilter, setSeverityFilter] = useState<Set<Severity>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<Set<FindingCategory>>(new Set());
   const [languageFilter, setLanguageFilter] = useState<Set<string>>(new Set());
+  const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
 
   const selectedSet = useMemo(() => new Set(selectedRuleIds), [selectedRuleIds]);
 
@@ -121,7 +136,18 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
     });
   }, [rules]);
 
-  // 筛选后的可见规则；应用搜索 / severity / category / language 四层。
+  // 聚合所有出现过的标签（去重），用于渲染标签 chip；按字母序排序。
+  const allTags = useMemo(() => {
+    const tags = new Set<string>();
+    for (const rule of rules) {
+      for (const tag of ruleTags(rule)) {
+        tags.add(tag);
+      }
+    }
+    return [...tags].sort((a, b) => a.localeCompare(b));
+  }, [rules]);
+
+  // 筛选后的可见规则；应用搜索 / severity / category / language / tags 五层。
   const visibleRules = useMemo(() => {
     const q = search.trim().toLowerCase();
     const filtered = rules.filter((rule) => {
@@ -158,6 +184,18 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
         }
         if (!match) return false;
       }
+      // 标签筛选：多标签为 OR，规则命中任一选中标签即保留；无标签规则不命中。
+      if (tagFilter.size > 0) {
+        const ruleTagSet = new Set(ruleTags(rule));
+        let hit = false;
+        for (const tag of tagFilter) {
+          if (ruleTagSet.has(tag)) {
+            hit = true;
+            break;
+          }
+        }
+        if (!hit) return false;
+      }
       return true;
     });
     // 排序：severity 优先（BLOCKER→WARNING→INFO→未知），同级按 rule_id 字母序。
@@ -166,7 +204,7 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
       if (rankDiff !== 0) return rankDiff;
       return a.rule_id.localeCompare(b.rule_id);
     });
-  }, [rules, search, severityFilter, categoryFilter, languageFilter]);
+  }, [rules, search, severityFilter, categoryFilter, languageFilter, tagFilter]);
 
   // Chip 命中数：每个 chip 显示"当前筛选条件下若加上/只保留这个 chip 时"的规则数——
   // 为了不让 chip 数字随其他维度剧烈跳动，chip count 只显示该维度独立命中的规则数（
@@ -202,11 +240,25 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
     return counts;
   }, [rules, languageKeys]);
 
+  // 标签命中数：与其它维度一致，只统计该维度独立命中的规则数。
+  const tagCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const tag of allTags) counts.set(tag, 0);
+    for (const rule of rules) {
+      const ruleTagSet = new Set(ruleTags(rule));
+      for (const tag of ruleTagSet) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [rules, allTags]);
+
   const hasAnyFilter =
     search.trim().length > 0 ||
     severityFilter.size > 0 ||
     categoryFilter.size > 0 ||
-    languageFilter.size > 0;
+    languageFilter.size > 0 ||
+    tagFilter.size > 0;
 
   function toggleSeverity(sev: Severity) {
     setSeverityFilter((prev) => {
@@ -235,11 +287,21 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
     });
   }
 
+  function toggleTag(tag: string) {
+    setTagFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag);
+      else next.add(tag);
+      return next;
+    });
+  }
+
   function clearAllFilters() {
     setSearch('');
     setSeverityFilter(new Set());
     setCategoryFilter(new Set());
     setLanguageFilter(new Set());
+    setTagFilter(new Set());
   }
 
   function selectAllVisible() {
@@ -348,6 +410,28 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
                 ariaLabel={`筛选语言 ${languageLabel(key)}`}
               >
                 <span>{languageLabel(key)}</span>
+                <span className="text-[10px] opacity-70">{count}</span>
+              </Chip>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {/* 标签 chip */}
+      {allTags.length > 0 ? (
+        <div className="mb-2 flex items-center flex-wrap gap-1.5">
+          <span className="text-[11px] text-zinc-500 mr-1">标签：</span>
+          {allTags.map((tag) => {
+            const count = tagCounts.get(tag) ?? 0;
+            return (
+              <Chip
+                key={tag}
+                active={tagFilter.has(tag)}
+                disabled={count === 0}
+                onClick={() => toggleTag(tag)}
+                ariaLabel={`筛选标签 ${tag}`}
+              >
+                <span>#{tag}</span>
                 <span className="text-[10px] opacity-70">{count}</span>
               </Chip>
             );

@@ -32,6 +32,7 @@ const initialEmptyForm: RuleFormPayload = {
   title: '',
   prompt_snippet: '',
   severity_default: 'WARNING',
+  tags: [],
   enabled: true,
 };
 
@@ -42,6 +43,8 @@ export function RuleDialog({
   onSubmit,
 }: RuleDialogProps) {
   const [form, setForm] = useState<RuleFormPayload>(initialEmptyForm);
+  // 标签输入框的当前文本；回车或点「添加标签」时并入 form.tags。
+  const [tagInput, setTagInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -55,12 +58,14 @@ export function RuleDialog({
           title: initialData.title,
           prompt_snippet: initialData.prompt_snippet,
           severity_default: initialData.severity_default as RuleFormPayload['severity_default'],
+          tags: [...initialData.tags],
           enabled: initialData.enabled,
         });
       } else {
         // 新增模式：空白表单
         setForm(initialEmptyForm);
       }
+      setTagInput('');
       setErrorMessage(null);
       setSubmitting(false);
     }
@@ -68,6 +73,25 @@ export function RuleDialog({
 
   const isEditMode = initialData !== null;
   const canSubmit = !submitting && form.title.trim() && form.prompt_snippet.trim();
+
+  /** 把输入框里的文本并入 tags（去重、忽略空白）。 */
+  function addTag() {
+    const value = tagInput.trim();
+    if (!value) {
+      return;
+    }
+    if (form.tags.includes(value)) {
+      setTagInput('');
+      return;
+    }
+    setForm((prev) => ({ ...prev, tags: [...prev.tags, value] }));
+    setTagInput('');
+  }
+
+  /** 删除一个已添加的标签。 */
+  function removeTag(tag: string) {
+    setForm((prev) => ({ ...prev, tags: prev.tags.filter((t) => t !== tag) }));
+  }
 
   async function handleSubmit() {
     if (!canSubmit) {
@@ -157,6 +181,48 @@ export function RuleDialog({
               <option key={opt} value={opt}>{opt}</option>
             ))}
           </select>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="rule-tag-input">标签 <span className="text-zinc-400 text-[11px]">（按标签筛选规则，可多个）</span></Label>
+          <div className="flex items-center gap-2">
+            <Input
+              id="rule-tag-input"
+              value={tagInput}
+              onChange={(event) => setTagInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  // 回车也添加标签，并阻止表单默认提交行为。
+                  event.preventDefault();
+                  addTag();
+                }
+              }}
+              placeholder="例如：security"
+            />
+            <Button type="button" variant="secondary" size="sm" onClick={() => addTag()}>
+              添加标签
+            </Button>
+          </div>
+          {form.tags.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {form.tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-[12px] font-medium"
+                >
+                  {tag}
+                  <button
+                    type="button"
+                    onClick={() => removeTag(tag)}
+                    aria-label={`删除标签 ${tag}`}
+                    className="text-indigo-400 hover:text-indigo-700 leading-none"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-2">

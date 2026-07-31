@@ -85,6 +85,8 @@ export type RuleConfig = {
   category_default?: string | null;  // PR #100 引入：规则默认分类（security/bug/…）。
   languages: unknown[];
   path_patterns: unknown[];
+  // 自定义标签，用于规则列表与项目规则选择面板按标签筛选。
+  tags: string[];
   enabled: boolean;
   grace_period_until?: string | null;
   created_at?: string;
@@ -96,6 +98,8 @@ export type RuleFormPayload = {
   title: string;
   prompt_snippet: string;
   severity_default: 'INFO' | 'WARNING' | 'BLOCKER';
+  // 自定义标签；新增/编辑规则弹窗维护，提交时透传给后端。
+  tags: string[];
   enabled: boolean;
 };
 
@@ -283,6 +287,11 @@ export type ProjectUpdatePayload = {
 
 export type FalsePositiveMarkPayload = {
   marked_by: string;
+  reason?: string;
+};
+
+export type ResolvePayload = {
+  resolved_by: string;
   reason?: string;
 };
 
@@ -610,6 +619,18 @@ export async function markFalsePositive(
   payload: FalsePositiveMarkPayload,
 ): Promise<FindingRecord> {
   const response = await adminFetch(`/api/findings/${findingId}/false-positive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<FindingRecord>(response, true);
+}
+
+export async function resolveFinding(
+  findingId: string,
+  payload: ResolvePayload,
+): Promise<FindingRecord> {
+  const response = await adminFetch(`/api/findings/${findingId}/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

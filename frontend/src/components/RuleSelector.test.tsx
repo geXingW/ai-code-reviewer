@@ -16,6 +16,7 @@ function makeRule(overrides: Partial<RuleConfig> = {}): RuleConfig {
     category_default: overrides.category_default ?? 'other',
     languages: overrides.languages ?? ['*'],
     path_patterns: overrides.path_patterns ?? [],
+    tags: overrides.tags ?? [],
     enabled: overrides.enabled ?? true,
   };
 }
@@ -261,5 +262,31 @@ describe('RuleSelector', () => {
     const checkbox = screen.getByRole('checkbox', { name: '选中规则 general.hardcoded-secret' });
     fireEvent.click(checkbox);
     expect(onToggle).toHaveBeenCalledWith('u-1', true);
+  });
+
+  it('标签筛选：选中标签只展示含该标签的规则；多标签 OR，无标签规则不命中', async () => {
+    const user = userEvent.setup();
+    const tagRules: RuleConfig[] = [
+      makeRule({ id: 't-1', rule_id: 'sec.hardcoded', title: '硬编码', severity_default: 'BLOCKER', tags: ['security'] }),
+      makeRule({ id: 't-2', rule_id: 'perf.n-plus-one', title: 'N+1 查询', severity_default: 'WARNING', tags: ['performance'] }),
+      makeRule({ id: 't-3', rule_id: 'sec.sql-injection', title: 'SQL 注入', severity_default: 'BLOCKER', tags: ['security', 'performance'] }),
+      makeRule({ id: 't-4', rule_id: 'style.naming', title: '命名风格', severity_default: 'INFO', tags: [] }),
+    ];
+    render(
+      <RuleSelector rules={tagRules} selectedRuleIds={[]} onToggle={vi.fn()} onBulkReplace={vi.fn()} />,
+    );
+    expect(getVisibleRuleLabels()).toHaveLength(4);
+
+    // 选中 security：t-1、t-3（含 security）命中；t-2、t-4 隐藏。
+    await user.click(screen.getByRole('button', { name: '筛选标签 security' }));
+    expect(getVisibleRuleLabels()).toHaveLength(2);
+
+    // 再选 performance：OR -> t-1 + t-2 + t-3 = 3；t-4 无标签仍隐藏。
+    await user.click(screen.getByRole('button', { name: '筛选标签 performance' }));
+    expect(getVisibleRuleLabels()).toHaveLength(3);
+
+    // 关掉 security，只剩 performance：t-2、t-3 命中；t-1 无 performance 隐藏。
+    await user.click(screen.getByRole('button', { name: '筛选标签 security' }));
+    expect(getVisibleRuleLabels()).toHaveLength(2);
   });
 });

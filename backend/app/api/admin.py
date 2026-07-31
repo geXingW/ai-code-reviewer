@@ -612,6 +612,48 @@ async def mark_false_positive(
     return _finding_to_read(finding)
 
 
+class ResolveRequest(BaseModel):
+    """标记已解决的请求载荷。"""
+    resolved_by: str = Field(..., description="操作人标识")
+    reason: str | None = Field(None, description="解决原因")
+
+
+@router.post("/findings/{finding_id}/resolve", response_model=FindingRead)
+async def resolve_finding(
+    finding_id: UUID,
+    payload: ResolveRequest,
+    db: DbSession,
+) -> FindingRead:
+    """直接标记 finding 为已解决，不进误报流程，不关联负样本。
+
+    仅更新 ``status='resolved'`` 并记录操作人/原因，触发 MR 阻断状态重算。
+    适用于：
+    - 问题已在后续 commit 中修复
+    - 团队评估后认为可接受（技术债务）
+    - AI 报告的上下文问题但不是系统性误报
+    """
+
+    finding = await _get_or_404(db, Finding, finding_id, "Finding")
+    if finding.status == "resolved":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该问题已为已解决状态",
+        )
+
+    finding.status = "resolved"
+    finding.fp_marked_by = payload.resolved_by
+    finding.fp_marked_reason = payload.reason
+    finding.fp_marked_at = datetime.now(UTC)
+    # 不更新 fp_status（保持原值或 NONE）
+    # 不创建 NegativeExample（不进负样本库）
+
+    await _commit_or_400(db, "Resolve finding failed")
+    await db.refresh(finding, attribute_names=["review"])
+    await _resolve_finding_discussion(finding, db)
+    await _recompute_mr_block_status(finding, db)
+    return _finding_to_read(finding)
+
+
 def _build_gitlab_client(project: Project) -> GitLabClient | None:
     """
     从 Project 构造 GitLabClient，用于后续操作 discussion。

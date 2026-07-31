@@ -37,6 +37,7 @@ describe('API 客户端 payload 处理', () => {
       title: 'No Print',
       prompt_snippet: 'avoid print',
       severity_default: 'WARNING',
+      tags: [],
       enabled: true,
     });
 
@@ -56,6 +57,7 @@ describe('API 客户端 payload 处理', () => {
       title: 'No Print',
       prompt_snippet: 'avoid print',
       severity_default: 'WARNING',
+      tags: [],
       enabled: true,
     });
 
