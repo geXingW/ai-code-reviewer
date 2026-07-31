@@ -21,6 +21,9 @@ from app.repositories.engine import EngineRepository
 from app.repositories.negative_example import NegativeExampleRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.project_block_policy import ProjectBlockPolicyRepository
+from app.repositories.project_notification_channel import (
+    ProjectNotificationChannelRepository,
+)
 from app.repositories.project_rule import ProjectRuleRepository
 from app.repositories.provider import ProviderRepository
 from app.repositories.review import FindingRepository, ReviewRepository
@@ -33,6 +36,7 @@ __all__ = [
     "FindingRepository",
     "NegativeExampleRepository",
     "ProjectBlockPolicyRepository",
+    "ProjectNotificationChannelRepository",
     "ProjectRepository",
     "ProjectRuleRepository",
     "ProviderRepository",

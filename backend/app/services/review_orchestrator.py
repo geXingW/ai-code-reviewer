@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from sqlalchemy import or_, select
@@ -44,6 +44,9 @@ from app.models.review import Review as ReviewRow
 from app.repositories.project import ProjectRepository
 from app.repositories.provider import ProviderRepository
 from app.repositories.review import FindingRepository, ReviewRepository
+
+if TYPE_CHECKING:
+    from app.services.notification_service import NotificationService
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
@@ -184,6 +187,7 @@ class ReviewOrchestrator:
         max_diff_bytes: int = 200_000,
         review_detail_base_url: str | None = None,
         session_factory: SessionFactory | None = None,
+        notification_service: NotificationService | None = None,
     ) -> None:
         self._gitlab_client = gitlab_client
         self._engine_registry = engine_registry or get_engine_registry()
@@ -200,6 +204,9 @@ class ReviewOrchestrator:
         # 传入 async_sessionmaker（或任何返回 AsyncSession 上下文管理器的可调用）时
         # 每次评审会尝试落库 reviews + review_findings。
         self._session_factory = session_factory
+        # 通知推送服务（best-effort）。为 None 时跳过推送，保持旧 MVP 行为，便于
+        # 不需要通知能力的测试与旧调用方。
+        self._notification_service = notification_service
 
     async def review_merge_request(self, event: GitLabMergeRequestEvent) -> OrchestratorResult:
         """Run the configured review engine for one GitLab MR event.
@@ -374,6 +381,15 @@ class ReviewOrchestrator:
             combined_finding_count=len(combined_findings),
             discussion_ids=discussion_ids,
         )
+        # 推送通知（best-effort，失败不影响主流程）。
+        await self._push_review_notification(
+            event=event,
+            review_id=review_id,
+            finding_count=len(combined_findings),
+            has_blocker=has_blocker,
+            blocker_count=blocker_count,
+            status_value="done",
+        )
         return OrchestratorResult(
             review_id=review_id,
             project_uuid=event.project_uuid,
@@ -546,6 +562,15 @@ class ReviewOrchestrator:
             merge=None,
             combined_finding_count=0,
             discussion_ids=None,
+        )
+        # 推送通知（best-effort，失败不影响主流程）。
+        await self._push_review_notification(
+            event=event,
+            review_id=review_id,
+            finding_count=0,
+            has_blocker=has_blocker,
+            blocker_count=blocker_count,
+            status_value="engine_error",
         )
         return OrchestratorResult(
             review_id=review_id,
@@ -1574,6 +1599,42 @@ class ReviewOrchestrator:
         if self._review_detail_base_url is None:
             return None
         return f"{self._review_detail_base_url}/reviews/{review_id}"
+
+    async def _push_review_notification(
+        self,
+        *,
+        event: GitLabMergeRequestEvent,
+        review_id: UUID,
+        finding_count: int,
+        has_blocker: bool,
+        blocker_count: int,
+        status_value: str,
+    ) -> None:
+        """推送 Review 完成通知（best-effort，失败不影响主流程）。
+
+        成功 / 引擎异常两条路径共用：把评审摘要交给 :class:`NotificationService`，
+        由其按项目配置的渠道分发。未注入 ``notification_service`` 时直接跳过；
+        任何异常（含推送失败）都被吞成 warning 日志，绝不阻断 Review 主流程。
+        """
+
+        if self._notification_service is None:
+            return
+        try:
+            await self._notification_service.send_review_completed(
+                gitlab_project_id=event.project_id,
+                review_data={
+                    "review_id": str(review_id),
+                    "mr_iid": event.mr_iid,
+                    "mr_title": event.title,
+                    "finding_count": finding_count,
+                    "has_blocker": has_blocker,
+                    "blocker_count": blocker_count,
+                    "detail_url": self._build_review_detail_url(review_id),
+                    "status": status_value,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to send review notification", exc_info=exc)
 
 
 def _match_int(match: re.Match[str] | None, group: str, *, default: int) -> int:
