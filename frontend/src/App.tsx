@@ -159,6 +159,7 @@ const initialRuleForm: RuleFormPayload = {
   title: '',
   prompt_snippet: '',
   severity_default: 'WARNING',
+  tags: [],
   enabled: true,
 };
 
@@ -624,6 +625,7 @@ function App() {
         title: rule.title,
         prompt_snippet: rule.prompt_snippet,
         severity_default: rule.severity_default as RuleFormPayload['severity_default'],
+        tags: rule.tags,
         enabled: rule.enabled,
       },
     }));
@@ -1272,6 +1274,15 @@ function App() {
                       <span className="font-mono">{rule.rule_id}</span><span className="font-normal text-zinc-600"> {rule.title}</span>
                     </div>
                     <div className="text-[11px] text-zinc-500 mt-0.5 font-mono truncate">{rule.severity_default} · {truncate(rule.prompt_snippet, 60)}</div>
+                    {rule.tags.length > 0 ? (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {rule.tags.map((tag) => (
+                          <span key={tag} className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-medium">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <UiBadge {...severityBadgeProps(rule.severity_default)}>{rule.severity_default}</UiBadge>

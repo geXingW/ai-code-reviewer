@@ -47,6 +47,13 @@ class Rule(Base, TimestampMixin):
         default=list,
         nullable=False,
     )
+    # 自定义标签（如 security / performance / python），用于规则列表与项目规则
+    # 选择面板按标签筛选。纯展示维度，不参与审查 / 阻断业务逻辑。
+    tags: Mapped[list[Any]] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+    )
     enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=True,

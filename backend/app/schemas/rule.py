@@ -25,6 +25,8 @@ class RuleCreate(BaseModel):
     category_default: str | None = None
     languages: list[Any] = Field(default_factory=list)
     path_patterns: list[Any] = Field(default_factory=list)
+    # 自定义标签，用于按标签筛选；留空即无标签。
+    tags: list[str] = Field(default_factory=list)
     enabled: bool = True
     grace_period_until: datetime | None = None
 
@@ -39,6 +41,7 @@ class RuleUpdate(BaseModel):
     category_default: str | None = None
     languages: list[Any] | None = None
     path_patterns: list[Any] | None = None
+    tags: list[str] | None = None
     enabled: bool | None = None
     grace_period_until: datetime | None = None
 
@@ -56,6 +59,7 @@ class RuleRead(BaseModel):
     category_default: str | None
     languages: list[Any]
     path_patterns: list[Any]
+    tags: list[str]
     enabled: bool
     grace_period_until: AwareDatetime | None
     created_at: AwareDatetime
