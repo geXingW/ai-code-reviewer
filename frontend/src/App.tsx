@@ -57,6 +57,7 @@ import {
   isAuthRequiredError,
   loginAdmin,
   markFalsePositive,
+  resolveFinding,
   rejectFalsePositive,
   type CategoryStat,
   type ProjectStat,
@@ -76,6 +77,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { RuleSelector } from './components/RuleSelector';
 import { MarkFalsePositiveDialog } from './components/dialogs/MarkFalsePositiveDialog';
+import { ResolveDialog } from './components/dialogs/ResolveDialog';
 import { ReviewFalsePositiveDialog } from './components/dialogs/ReviewFalsePositiveDialog';
 import { ProviderDialog } from './components/dialogs/ProviderDialog';
 import { RuleDialog } from './components/dialogs/RuleDialog';
@@ -254,6 +256,7 @@ function App() {
   // PR-B：误报处理弹窗状态。旧版页面级 operator / reviewNote state 已移除——
   // 一处输入到处生效的反直觉行为会被弹窗内表单替代。
   const [markDialogFinding, setMarkDialogFinding] = useState<FindingRecord | null>(null);
+  const [resolveDialogFinding, setResolveDialogFinding] = useState<FindingRecord | null>(null);
   const [reviewDialog, setReviewDialog] = useState<{
     finding: FindingRecord;
     action: 'confirm' | 'reject';
@@ -774,6 +777,29 @@ function App() {
     }
   }
 
+  function openResolveDialog(finding: FindingRecord) {
+    setError(null);
+    setMessage(null);
+    setResolveDialogFinding(finding);
+  }
+
+  async function submitResolve(
+    finding: FindingRecord,
+    payload: { resolved_by: string; reason: string },
+  ) {
+    // 让弹窗自己 catch 错误做提示；这里失败时也让父页展示错误 banner。
+    try {
+      await resolveFinding(finding.id, payload);
+      setFindingsPage(await fetchFindings());
+      setResolveDialogFinding(null);
+      setMessage('问题已标记为已解决，MR 阻断状态已更新。');
+    } catch (caught) {
+      handleCaughtError(caught);
+      // 抛出让弹窗内部 setSubmitting(false) 复位 + 显示行内错误。
+      throw caught;
+    }
+  }
+
   function openReviewDialog(finding: FindingRecord, action: 'confirm' | 'reject') {
     setError(null);
     setMessage(null);
@@ -846,6 +872,18 @@ function App() {
         onSubmit={(payload) => {
           if (markDialogFinding) {
             return submitMarkFalsePositive(markDialogFinding, payload);
+          }
+          return Promise.resolve();
+        }}
+      />
+      <ResolveDialog
+        open={resolveDialogFinding !== null}
+        finding={resolveDialogFinding}
+        defaultResolvedBy={defaultOperator}
+        onCancel={() => setResolveDialogFinding(null)}
+        onSubmit={(payload) => {
+          if (resolveDialogFinding) {
+            return submitResolve(resolveDialogFinding, payload);
           }
           return Promise.resolve();
         }}
@@ -1531,6 +1569,16 @@ function App() {
                       <UiBadge {...severityBadgeProps(finding.severity)}>{finding.severity}</UiBadge>
                       {statusBadge ? <UiBadge variant={statusBadge.variant} className={statusBadge.className}>{statusBadge.label}</UiBadge> : null}
                       {fpBadge ? <UiBadge variant={fpBadge.variant} className={fpBadge.className}>{fpBadge.label}</UiBadge> : null}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        type="button"
+                        disabled={finding.status === 'resolved'}
+                        title={finding.status === 'resolved' ? '该问题已标记为已解决' : '直接标记为已解决，不进入误报流程'}
+                        onClick={() => openResolveDialog(finding)}
+                      >
+                        标记已解决
+                      </Button>
                       <Button
                         variant="ghost"
                         size="sm"

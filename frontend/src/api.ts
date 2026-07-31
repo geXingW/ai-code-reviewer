@@ -290,6 +290,11 @@ export type FalsePositiveMarkPayload = {
   reason?: string;
 };
 
+export type ResolvePayload = {
+  resolved_by: string;
+  reason?: string;
+};
+
 export type FalsePositiveReviewPayload = {
   reviewed_by: string;
   note?: string;
@@ -614,6 +619,18 @@ export async function markFalsePositive(
   payload: FalsePositiveMarkPayload,
 ): Promise<FindingRecord> {
   const response = await adminFetch(`/api/findings/${findingId}/false-positive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<FindingRecord>(response, true);
+}
+
+export async function resolveFinding(
+  findingId: string,
+  payload: ResolvePayload,
+): Promise<FindingRecord> {
+  const response = await adminFetch(`/api/findings/${findingId}/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
