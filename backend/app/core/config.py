@@ -16,6 +16,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         env_prefix="",
         case_sensitive=False,
+        extra="ignore",
     )
 
     app_name: Annotated[str, Field(description="Application name.")] = "ai-code-reviewer"
