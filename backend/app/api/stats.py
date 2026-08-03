@@ -188,6 +188,7 @@ async def _build_overview(
     total_reviews, avg_duration, active_projects = (await db.execute(review_stmt)).one()
 
     # 2. finding 维度：总数 / BLOCKER / resolved / fp_* 单次扫描。
+    #    NOTE: 需要 JOIN Review 来排除 lifecycle 记账 review 下的 finding。
     finding_stmt = select(
         func.count(Finding.id).label("total"),
         _sum_when(Finding.severity == "BLOCKER").label("blockers"),
@@ -195,7 +196,10 @@ async def _build_overview(
         _sum_when(Finding.fp_status == "PENDING").label("fp_pending"),
         _sum_when(Finding.fp_status == "CONFIRMED").label("fp_confirmed"),
         _sum_when(Finding.fp_status == "REJECTED").label("fp_rejected"),
-    ).where(Finding.created_at >= since)
+    ).select_from(Finding).join(Review, Finding.review_id == Review.id).where(
+        Finding.created_at >= since,
+        Review.lifecycle_event.is_(None),
+    )
     finding_row = (await db.execute(finding_stmt)).one()
 
     # 3. engine_used 分组（NULL → 'unknown'）。

@@ -490,11 +490,18 @@ function ProjectsSection(props: { projects: ProjectStat[] }): React.ReactElement
                 <div className="truncate text-zinc-700">{p.project_name}</div>
                 <div className="text-right font-semibold text-zinc-900">{p.review_count}</div>
                 <div className="text-right">
-                  <span className={cn(
-                    p.blocker_count > 0 ? 'text-rose-600 font-medium' : 'text-zinc-500'
-                  )}>
-                    {p.finding_count}
-                  </span>
+                  {p.blocker_count > 0 ? (
+                    <span
+                      className="text-rose-600 font-medium"
+                      title={`问题 ${p.finding_count}，其中 BLOCKER ${p.blocker_count}`}
+                    >
+                      {p.finding_count} <span className="text-[10px] font-normal">/B{p.blocker_count}</span>
+                    </span>
+                  ) : (
+                    <span className="text-zinc-500" title={`问题 ${p.finding_count}`}>
+                      {p.finding_count}
+                    </span>
+                  )}
                 </div>
               </div>
             ))}
