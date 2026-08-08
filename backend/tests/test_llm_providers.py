@@ -9,8 +9,8 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from app.engines.types import ProviderConfig
-from app.llm import (
+from engines.types import ProviderConfig
+from llm import (
     AnthropicProvider,
     AuthError,
     ChatMessage,

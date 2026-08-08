@@ -1,18 +1,26 @@
 """Alembic environment configured for SQLAlchemy async migrations."""
 
+# ruff: noqa: E402
 from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from logging.config import fileConfig
+from pathlib import Path
+
+# Ensure backend root is on sys.path so flat modules (core/, models/, etc.) are importable.
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
+if str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
 
 from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from app.core.db import Base
-from app.models import *  # noqa: F403
+from core.db import Base
+from models import *  # noqa: F403
 
 config = context.config
 

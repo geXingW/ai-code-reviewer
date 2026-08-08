@@ -8,16 +8,16 @@ from uuid import uuid4
 
 import pytest
 
-from app.core.config import Settings
-from app.engines.llm_engine.engine import LLMDirectEngine
-from app.engines.llm_engine.filter_stage import (
+from core.config import Settings
+from engines.llm_engine.engine import LLMDirectEngine
+from engines.llm_engine.filter_stage import (
     FilterDecision,
     apply_decisions,
     format_candidates,
     parse_filter_response,
     summarize_decisions,
 )
-from app.engines.types import (
+from engines.types import (
     DiffHunk,
     Finding,
     FindingSource,
@@ -385,7 +385,7 @@ async def test_engine_review_filter_error_falls_back_to_original(
     client = _FilterFakeClient(responses=[review, RuntimeError("filter blew up")])
     engine = LLMDirectEngine(client=client, settings=Settings(llm_filter_enabled=True))
 
-    with caplog.at_level(logging.WARNING, logger="app.engines.llm_engine.engine"):
+    with caplog.at_level(logging.WARNING, logger="engines.llm_engine.engine"):
         findings = await engine.review(_ctx())
 
     assert len(findings) == 1
@@ -526,7 +526,7 @@ def test_user_rule_drop_attempts_are_logged(
     ]
 
     with caplog.at_level(
-        logging.WARNING, logger="app.engines.llm_engine.filter_stage"
+        logging.WARNING, logger="engines.llm_engine.filter_stage"
     ):
         kept = apply_decisions(findings, decisions)
 

@@ -35,15 +35,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # 与 tests/test_models.py 的做法一致，避免 project fixture 落库时炸。
 os.environ.setdefault("SECRET_KEY", Fernet.generate_key().decode("utf-8"))
 
-from app.core.config import get_settings  # noqa: E402
-from app.core.db import Base  # noqa: E402
-from app.engines import Finding as EngineFinding  # noqa: E402
-from app.engines import ReviewContext  # noqa: E402
-from app.engines.registry import EngineRegistry  # noqa: E402
-from app.models.finding import Finding as FindingRow  # noqa: E402
-from app.models.project import Project  # noqa: E402
-from app.models.review import Review as ReviewRow  # noqa: E402
-from app.services.review_orchestrator import (  # noqa: E402
+from core.config import get_settings  # noqa: E402
+from core.db import Base  # noqa: E402
+from engines import Finding as EngineFinding  # noqa: E402
+from engines import ReviewContext  # noqa: E402
+from engines.registry import EngineRegistry  # noqa: E402
+from models.finding import Finding as FindingRow  # noqa: E402
+from models.project import Project  # noqa: E402
+from models.review import Review as ReviewRow  # noqa: E402
+from services.review_orchestrator import (  # noqa: E402
     GitLabMergeRequestEvent,
     ReviewOrchestrator,
 )

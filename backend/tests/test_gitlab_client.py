@@ -8,7 +8,7 @@ import pytest
 import respx
 from httpx import Response
 
-from app.integrations.gitlab.client import GitLabClient, GitLabClientError
+from integrations.gitlab.client import GitLabClient, GitLabClientError
 
 
 @pytest.mark.asyncio

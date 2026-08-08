@@ -1,14 +1,14 @@
-"""Unit tests for :mod:`app.core.summary_builder` — v2 分组视图。"""
+"""Unit tests for :mod:`core.summary_builder` — v2 分组视图。"""
 
 from __future__ import annotations
 
 from uuid import uuid4
 
-from app.core.summary_builder import (
+from core.summary_builder import (
     build_finding_discussion_body,
     build_review_summary_note,
 )
-from app.engines import Finding
+from engines import Finding
 
 
 def _finding(

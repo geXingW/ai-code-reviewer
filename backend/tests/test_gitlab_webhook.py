@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
-from app.api import gitlab_webhook
-from app.services.review_orchestrator import GitLabMergeRequestEvent, OrchestratorResult
+from api import gitlab_webhook
+from services.review_orchestrator import GitLabMergeRequestEvent, OrchestratorResult
 
 
 @pytest.mark.asyncio

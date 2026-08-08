@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from app.core.block_policy import (
+from core.block_policy import (
     BlockSeverity,
     Severity,
     build_default_block_policies,

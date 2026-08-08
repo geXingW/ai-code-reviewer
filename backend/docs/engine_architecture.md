@@ -71,7 +71,7 @@ class ReviewEngine(ABC):
 ## 3. Runtime types
 
 Located in `app/engines/types.py`. These are **runtime** types — distinct
-from `app.schemas.*` which describe DB rows.
+from `schemas.*` which describe DB rows.
 
 - `ReviewContext` — everything an engine receives for one MR review:
   `diff_hunks`, `rules`, resolved `provider` (plaintext API key),
@@ -98,9 +98,9 @@ Located in `app/engines/registry.py`. A single process-wide
 Engines opt in with a decorator:
 
 ```python
-from app.engines.base import ReviewEngine
-from app.engines.registry import register_engine
-from app.engines.types import Finding, HealthStatus, ReviewContext
+from engines.base import ReviewEngine
+from engines.registry import register_engine
+from engines.types import Finding, HealthStatus, ReviewContext
 
 
 @register_engine
@@ -119,7 +119,7 @@ class MyEngine(ReviewEngine):
 `@register_engine` instantiates the class with **no arguments** and
 inserts the instance into the registry. Per-review config flows in via
 `ReviewContext`; per-process config should be read inside `review()` /
-`health_check()` from `app.core.config`.
+`health_check()` from `core.config`.
 
 ### Bootstrap
 
@@ -211,7 +211,7 @@ The built-in `llm-direct` engine is a diff-only review engine:
 - Builds a five-section prompt covering review scope, active rules,
   confirmed false-positive history, merge request diff, and the JSON
   output contract.
-- Calls the shared `app.llm` provider abstraction through an injectable
+- Calls the shared `llm` provider abstraction through an injectable
   client. OpenAI-compatible, Anthropic native, and Custom providers all
   normalize responses to the same `ChatResponse` contract.
 - Parses model JSON into runtime `Finding` objects.

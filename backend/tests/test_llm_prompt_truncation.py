@@ -12,9 +12,9 @@ from uuid import uuid4
 
 import pytest
 
-from app.core.config import Settings
-from app.engines.llm_engine.engine import LLMDirectEngine
-from app.engines.types import DiffHunk, ProviderConfig, ReviewContext
+from core.config import Settings
+from engines.llm_engine.engine import LLMDirectEngine
+from engines.types import DiffHunk, ProviderConfig, ReviewContext
 
 
 @dataclass
@@ -84,7 +84,7 @@ async def test_prompt_truncated_when_diff_exceeds_budget(
     client = _CapturingClient(responses=['{"findings": []}'])
     engine = LLMDirectEngine(client=client, settings=settings)
 
-    with caplog.at_level("WARNING", logger="app.engines.llm_engine.engine"):
+    with caplog.at_level("WARNING", logger="engines.llm_engine.engine"):
         await engine.review(_ctx_with_diff(huge_diff))
 
     prompt = client.prompts[0]

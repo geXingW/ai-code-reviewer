@@ -7,7 +7,7 @@ from collections.abc import Iterator
 import pytest
 from httpx import AsyncClient
 
-from app.engines import (
+from engines import (
     Finding,
     HealthStatus,
     ReviewContext,
@@ -15,7 +15,7 @@ from app.engines import (
     get_engine_registry,
     load_builtin_engines,
 )
-from app.engines.llm_engine.engine import LLMDirectEngine
+from engines.llm_engine.engine import LLMDirectEngine
 
 
 class _BoomEngine(ReviewEngine):

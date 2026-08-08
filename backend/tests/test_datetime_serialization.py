@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from pydantic import BaseModel
 
-from app.schemas._datetime import AwareDatetime, ensure_utc
+from schemas._datetime import AwareDatetime, ensure_utc
 
 
 def test_ensure_utc_naive_input_gets_utc() -> None:
@@ -112,7 +112,7 @@ def test_recent_review_read_naive_created_at_serializes_with_utc() -> None:
 
     from uuid import uuid4
 
-    from app.api.reviews import RecentReviewRead
+    from api.reviews import RecentReviewRead
 
     payload = RecentReviewRead(
         review_id=uuid4(),
@@ -139,7 +139,7 @@ def test_review_read_naive_timestamps_serialize_with_utc() -> None:
 
     from uuid import uuid4
 
-    from app.schemas.review import ReviewRead
+    from schemas.review import ReviewRead
 
     payload = ReviewRead(
         id=uuid4(),

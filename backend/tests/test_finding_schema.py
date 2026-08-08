@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.schemas.finding import FindingRead
+from schemas.finding import FindingRead
 
 _BASE_PAYLOAD: dict[str, object] = {
     "id": "00000000-0000-0000-0000-000000000010",
@@ -79,7 +79,7 @@ def test_finding_read_accepts_category_field() -> None:
 def test_finding_create_accepts_category_field() -> None:
     """PR-B: FindingCreate 承接 category，且缺省为 None。"""
 
-    from app.schemas.finding import FindingCreate
+    from schemas.finding import FindingCreate
 
     base = {
         "review_id": _BASE_PAYLOAD["review_id"],

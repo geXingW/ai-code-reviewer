@@ -9,7 +9,7 @@ The provider layer lives under `app/llm/` and hides protocol differences
 from review engines. Engines talk to a single contract:
 
 ```python
-from app.llm import ChatMessage, build_provider
+from llm import ChatMessage, build_provider
 
 provider = build_provider(db_provider_or_runtime_config)
 response = await provider.chat([ChatMessage(role="user", content="ping")])
@@ -39,8 +39,8 @@ Supported protocols:
 
 `build_provider()` accepts three shapes:
 
-- SQLAlchemy `Provider` model-like object from `app.models.provider`.
-- Runtime `ProviderConfig` from `app.engines.types`.
+- SQLAlchemy `Provider` model-like object from `models.provider`.
+- Runtime `ProviderConfig` from `engines.types`.
 - Already-normalized `LLMProviderConfig`.
 
 This keeps the orchestrator free to pass either DB rows or resolved

@@ -11,7 +11,7 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from app.api.admin import (
+from api.admin import (
     FalsePositiveMarkRequest,
     FalsePositiveReviewRequest,
     confirm_false_positive,
@@ -19,7 +19,7 @@ from app.api.admin import (
     reject_false_positive,
     reset_false_positive_review,
 )
-from app.models.negative_example import NegativeExample
+from models.negative_example import NegativeExample
 
 
 @dataclass
@@ -212,12 +212,12 @@ def patch_gitlab_client(
             return None
         return FakeGitLabClient()
 
-    monkeypatch.setattr("app.api.admin._build_gitlab_client", fake_build)
+    monkeypatch.setattr("api.admin._build_gitlab_client", fake_build)
 
     async def fake_recompute(finding: object, db: object) -> None:
         recompute_calls.append({"finding_id": getattr(finding, "id", None)})
 
-    monkeypatch.setattr("app.api.admin._recompute_mr_block_status", fake_recompute)
+    monkeypatch.setattr("api.admin._recompute_mr_block_status", fake_recompute)
 
 
 @pytest.mark.asyncio
@@ -441,7 +441,7 @@ async def test_jwt_token_contains_standard_claims(client: AsyncClient) -> None:
 
     import jwt as pyjwt
 
-    from app.core.config import get_settings
+    from core.config import get_settings
 
     response = await client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
     assert response.status_code == 200
@@ -466,7 +466,7 @@ async def test_expired_jwt_token_is_rejected(client: AsyncClient) -> None:
 
     import jwt as pyjwt
 
-    from app.core.config import get_settings
+    from core.config import get_settings
 
     settings = get_settings()
     expired_token = pyjwt.encode(
@@ -489,7 +489,7 @@ async def test_tampered_jwt_token_is_rejected(client: AsyncClient) -> None:
 
     import jwt as pyjwt
 
-    from app.core.config import get_settings
+    from core.config import get_settings
 
     settings = get_settings()
     tampered_token = pyjwt.encode(

@@ -40,13 +40,13 @@ from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core import config, db
-from app.core.db import Base, get_db
-from app.engines import Finding, HealthStatus, ReviewContext, ReviewEngine
-from app.engines.registry import get_engine_registry
-from app.main import create_app
-from app.models.project_block_policy import ProjectBlockPolicy
-from app.services import review_orchestrator as orchestrator_module
+from core import config, db
+from core.db import Base, get_db
+from engines import Finding, HealthStatus, ReviewContext, ReviewEngine
+from engines.registry import get_engine_registry
+from main import create_app
+from models.project_block_policy import ProjectBlockPolicy
+from services import review_orchestrator as orchestrator_module
 
 TEST_DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -143,8 +143,8 @@ async def e2e_client(
 
     # orchestrator 落库走 app.core.db.AsyncSessionLocal，测试里覆盖为绑到本 test loop 的 factory，
     # 避免跨 test 复用模块级 engine 触发 "attached to a different loop"。
-    monkeypatch.setattr("app.core.db.AsyncSessionLocal", session_factory)
-    monkeypatch.setattr("app.api.gitlab_webhook.AsyncSessionLocal", session_factory)
+    monkeypatch.setattr("core.db.AsyncSessionLocal", session_factory)
+    monkeypatch.setattr("api.gitlab_webhook.AsyncSessionLocal", session_factory)
 
     registry = get_engine_registry()
     registry.unregister(STUB_ENGINE_NAME)

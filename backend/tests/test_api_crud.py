@@ -12,9 +12,9 @@ from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core import config, db
-from app.core.db import Base, get_db
-from app.main import create_app
+from core import config, db
+from core.db import Base, get_db
+from main import create_app
 
 TEST_DATABASE_URL = os.getenv(
     "DATABASE_URL",

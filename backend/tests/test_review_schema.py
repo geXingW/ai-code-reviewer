@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.review import ReviewCreate, ReviewRead
+from schemas.review import ReviewCreate, ReviewRead
 
 
 def _make_review_orm_like(

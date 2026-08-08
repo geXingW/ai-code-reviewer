@@ -6,10 +6,10 @@ import asyncio
 
 from sqlalchemy import select
 
-from app.core.db import AsyncSessionLocal, engine
-from app.models.engine import Engine
-from app.models.project_block_policy import ProjectBlockPolicy
-from app.models.rule import Rule
+from core.db import AsyncSessionLocal, engine
+from models.engine import Engine
+from models.project_block_policy import ProjectBlockPolicy
+from models.rule import Rule
 
 
 async def seed_engine() -> None:

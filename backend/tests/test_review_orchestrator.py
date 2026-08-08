@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from app.engines import Finding, HealthStatus, ReviewContext, ReviewEngine
-from app.engines.registry import EngineRegistry
-from app.services.review_orchestrator import (
+from engines import Finding, HealthStatus, ReviewContext, ReviewEngine
+from engines.registry import EngineRegistry
+from services.review_orchestrator import (
     GitLabMergeRequestEvent,
     ReviewOrchestrator,
 )

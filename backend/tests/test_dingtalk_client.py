@@ -11,7 +11,7 @@ import pytest
 import respx
 from httpx import Response
 
-from app.integrations.dingtalk.client import DingTalkClient, DingTalkClientError
+from integrations.dingtalk.client import DingTalkClient, DingTalkClientError
 
 _WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=abc"
 # respx 路由只用 host+path 匹配，避免客户端追加 ``&timestamp`` / ``&sign`` 时与
