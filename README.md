@@ -71,7 +71,7 @@ CONFIRMED 写入 negative_examples
 - **后端**：Python 3.11 + FastAPI + SQLAlchemy (async) + Alembic + Redis
 - **数据库**：PostgreSQL 15 或 MySQL 8.0（跨方言，二选一）
 - **前端**：React 19 + Vite + TypeScript + Vitest
-- **部署**：Docker Compose 一键启动
+- **部署**：Docker 单镜像 / pip 安装 / Docker Compose（开发）
 
 ## 路线图
 
@@ -109,20 +109,73 @@ CONFIRMED 写入 negative_examples
 
 > ⚠️ 当前为 MVP 内网试运行版本，可以用于 GitLab + Jenkins 小范围联调；生产化部署还需要补齐鉴权、网关、审计和高可用能力。
 
+### 方式一：Docker 单镜像（推荐）
+
+一个容器跑前后端，最简单的部署方式。
+
+```bash
+# 1. 克隆代码并构建镜像
+git clone https://github.com/geXingW/ai-code-reviewer.git
+cd ai-code-reviewer
+docker build -t ai-code-reviewer .
+
+# 2. 准备数据库（PostgreSQL/MySQL + Redis），设置环境变量
+cp .env.example .env
+# 编辑 .env，至少修改 SECRET_KEY、DATABASE_URL、GITLAB_TOKEN 等
+
+# 3. 启动
+docker run -d --name ai-code-reviewer \
+  --env-file .env \
+  -p 8000:8000 \
+  ai-code-reviewer
+
+# 4. 初始化数据库（首次启动）
+docker exec ai-code-reviewer alembic upgrade head
+docker exec ai-code-reviewer python scripts/seed.py
+
+# 5. 访问
+open http://localhost:8000
+```
+
+### 方式二：pip 安装
+
+从 GitHub Release 下载 wheel 包，直接安装运行。
+
+```bash
+# 1. 安装
+pip install ai_code_reviewer_backend-0.1.0-py3-none-any.whl
+
+# 2. 配置环境变量
+export SECRET_KEY=...
+export DATABASE_URL=postgresql+asyncpg://...
+export REDIS_URL=redis://...
+
+# 3. 初始化 + 启动
+alembic upgrade head
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+### 方式三：Docker Compose 开发模式
+
+前后端分离，带热重载，适合本地开发。
+
 ```bash
 # 1. clone + 配置
 git clone https://github.com/geXingW/ai-code-reviewer.git
 cd ai-code-reviewer
 cp .env.example .env  # 编辑配置
 
-# 2. 一键启动
-./scripts/start-mvp.sh
+# 2. 一键启动（PostgreSQL + Redis + 后端 + 前端）
+docker compose --profile postgres --profile redis up -d --build
 
-# 3. 访问后台
-open http://localhost:5173
+# 3. 访问
+open http://localhost:5173   # 管理台（Vite dev server）
+open http://localhost:8000/docs  # API 文档
 ```
 
-详细部署指南：
+详细部署指南见 [docs/setup.md](docs/setup.md)。
+
+其他文档：
 
 - [docs/setup.md](docs/setup.md) — 部署
 - [docs/gitlab-setup.md](docs/gitlab-setup.md) — GitLab Webhook 配置

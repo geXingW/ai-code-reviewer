@@ -4,10 +4,14 @@ import logging
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import close_all_sessions
+from starlette.responses import FileResponse as StarletteFileResponse
+from starlette.types import Scope
 
 from app.api.admin import login_router as admin_login_router
 from app.api.admin import router as admin_router
@@ -102,7 +106,57 @@ def create_app() -> FastAPI:
     app.include_router(admin_login_router)
     app.include_router(admin_router)
     app.include_router(stats_router)
+
+    # ---- 静态文件托管（单包部署模式）----
+    # 前端构建产物被打包进 app/static/ 时，挂载为静态资源并提供 SPA fallback。
+    # 纯后端部署（static 目录不存在）时跳过，不影响 API 服务。
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.is_dir():
+        app.mount(
+            "/",
+            _SPAStaticFiles(directory=str(static_dir), html=True),
+            name="static",
+        )
+
     return app
+
+
+class _SPAStaticFiles(StaticFiles):
+    """StaticFiles with SPA fallback for single-package deployment.
+
+    When a requested file is not found and the path does not look like an
+    API / static-asset request, return ``index.html`` so the frontend
+    router can handle the URL.
+
+    This intentionally does NOT use a global 404 exception handler, which
+    would clobber business-level 404 responses (e.g. "engine not
+    registered") raised from API route handlers.
+    """
+
+    # Path prefixes that must never fall back to index.html.
+    _API_PREFIXES = ("/api", "/health", "/docs", "/openapi.json", "/redoc")
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        """Return static file, or index.html for SPA routes on miss."""
+
+        response = await super().get_response(path, scope)
+        if response.status_code != 404:
+            return response
+
+        # Don't fall back for API / health / docs paths.
+        if any(path.startswith(p) for p in self._API_PREFIXES):
+            return response
+
+        # Don't fall back for paths with a file extension (static assets).
+        last_segment = path.rsplit("/", 1)[-1]
+        if "." in last_segment:
+            return response
+
+        # SPA fallback: serve index.html
+        full_path, stat_result = self.lookup_path("index.html")
+        if not full_path or stat_result is None:
+            return response
+        return StarletteFileResponse(full_path)
 
 
 app = create_app()

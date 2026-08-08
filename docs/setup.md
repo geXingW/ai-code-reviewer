@@ -1,200 +1,321 @@
-# MVP 部署指南
+# 部署指南
 
-> 当前文档面向 GitLab + Jenkins 内网试运行。它可以支撑 MVP 联调和小范围试用，但还不是生产级高可用部署方案。
+> 当前文档覆盖三种部署方式，按推荐程度排序：
+>
+> 1. **Docker 单镜像部署** — 推荐生产用，一个容器跑前后端
+> 2. **pip 安装部署（非 Docker）** — 裸机/虚拟机直接跑 Python 服务
+> 3. **Docker Compose 开发模式** — 前后端分离，本地开发用
 
-## 一、部署拓扑
+---
 
-MVP Compose 栈包含 4 个服务：
+## 一、Docker 单镜像部署（推荐）
 
-- `frontend`：React/Vite 管理台，Nginx 托管静态资源，并反向代理 `/api`、`/health` 到后端。
-- `backend`：FastAPI 服务，接收 GitLab Webhook、Jenkins 同步触发和管理台请求。
-- `postgres`：保存项目、规则、供应商、评审记录等结构化数据（**默认**；亦可切换到 MySQL 8.0，见 [`docs/storage.md`](./storage.md)）。
-- `redis`：保留给运行时缓存/异步任务；当前 `/health` 会检查连通性。
+前端静态资源已打包进镜像，一个容器提供完整服务（管理台 + API + Webhook）。
 
-## 二、前置条件
+### 1.1 前置条件
 
-- Docker 24+ 与 Docker Compose v2。
-- 后端服务所在机器可访问 GitLab 内网地址。
-- GitLab 项目中准备一个 Access Token，至少具备读取 MR diff、写入 MR discussion/status 所需权限。
-- Jenkins 节点可访问后端 `POST /api/reviews`。
-- 如果使用真实 LLM 评审，当前 MVP 暂无 provider 配置 UI，请先通过数据库或后续配置脚本写入 provider；不要把 provider API Key 写入仓库。
+- Docker 24+
+- 已准备好 PostgreSQL 15 / MySQL 8.0 和 Redis（可以是容器或独立服务）
+- 后端所在机器可访问 GitLab 内网地址
 
-## 三、初始化配置
-
-复制环境变量模板：
+### 1.2 启动
 
 ```bash
-cp .env.example .env
+# 拉取镜像（从 GHCR 或自行构建）
+docker pull ghcr.io/gexingw/ai-code-reviewer:latest  # 替换为实际镜像地址
+
+# 或者本地从源码构建
+docker build -t ai-code-reviewer .
+
+# 启动
+docker run -d \
+  --name ai-code-reviewer \
+  -p 8000:8000 \
+  -e DATABASE_URL="postgresql+asyncpg://user:pass@db-host:5432/ai_code_reviewer" \
+  -e REDIS_URL="redis://redis-host:6379/0" \
+  -e SECRET_KEY="your-fernet-key" \
+  -e ADMIN_PASSWORD="your-admin-password" \
+  -e JWT_SECRET="your-jwt-secret" \
+  -e GITLAB_BASE_URL="https://gitlab.example.com" \
+  -e GITLAB_TOKEN="your-gitlab-token" \
+  -e INTERNAL_API_TOKEN="your-internal-token" \
+  ai-code-reviewer
 ```
 
-生成 Fernet 密钥，用于加密数据库中的供应商密钥等敏感字段：
+### 1.3 初始化数据库
+
+首次启动前需要执行数据库迁移和种子数据：
+
+```bash
+# 执行迁移
+docker exec ai-code-reviewer alembic upgrade head
+
+# 写入种子数据（默认规则、引擎配置等）
+docker exec ai-code-reviewer python scripts/seed.py
+```
+
+### 1.4 访问入口
+
+- 管理台：`http://<server-ip>:8000/`
+- 后端健康检查：`http://<server-ip>:8000/health`
+- OpenAPI 文档：`http://<server-ip>:8000/docs`
+
+---
+
+## 二、pip 安装部署（非 Docker）
+
+直接从 GitHub Release 下载 wheel 包，在裸机或虚拟机上运行。
+
+### 2.1 前置条件
+
+- Python 3.11+
+- PostgreSQL 15 / MySQL 8.0
+- Redis 7+
+- systemd（推荐用于进程管理）
+
+### 2.2 安装
+
+```bash
+# 从 GitHub Release 下载 wheel
+wget https://github.com/geXingW/ai-code-reviewer/releases/download/v0.1.0/ai_code_reviewer_backend-0.1.0-py3-none-any.whl
+
+# 安装（推荐用虚拟环境）
+python -m venv /opt/ai-code-reviewer/venv
+source /opt/ai-code-reviewer/venv/bin/activate
+pip install ai_code_reviewer_backend-0.1.0-py3-none-any.whl
+```
+
+### 2.3 配置
+
+创建环境变量文件：
+
+```bash
+cat > /opt/ai-code-reviewer/.env << 'EOF'
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/ai_code_reviewer
+REDIS_URL=redis://localhost:6379/0
+SECRET_KEY=CHANGE_ME_GENERATE_A_REAL_FERNET_KEY
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=CHANGE_ME_STRONG_PASSWORD
+JWT_SECRET=CHANGE_ME_32_BYTES_MIN
+JWT_ALGORITHM=HS256
+JWT_EXPIRES_IN=86400
+GITLAB_BASE_URL=https://gitlab.example.com
+GITLAB_TOKEN=CHANGE_ME_GITLAB_TOKEN
+GITLAB_WEBHOOK_SECRET=CHANGE_ME_WEBHOOK_SECRET
+INTERNAL_API_TOKEN=CHANGE_ME_INTERNAL_TOKEN
+DEFAULT_REVIEW_ENGINE=llm-direct
+CORS_ORIGINS=["http://localhost:8000"]
+EOF
+```
+
+生成 Fernet 密钥：
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-编辑 `.env`，至少替换这些值：
-
-- `POSTGRES_PASSWORD`：PostgreSQL 密码。
-- `SECRET_KEY`：上一步生成的 Fernet key。初始化后应长期保持不变，否则旧加密字段无法解密。
-- `GITLAB_BASE_URL`：GitLab 实例地址，例如 `https://gitlab.example.com`。
-- `GITLAB_TOKEN`：GitLab Access Token。
-- `GITLAB_WEBHOOK_SECRET`：GitLab Webhook 使用的共享密钥。
-- `INTERNAL_API_TOKEN`：Jenkins 和管理台调用内部接口时使用的 token。
-- `CORS_ORIGINS`：管理台地址列表；本地默认是 `["http://localhost:5173"]`。
-
-安全建议：
-
-- `.env` 不提交到 Git。
-- token 只通过环境变量、密钥管理系统或部署平台注入。
-- 飞书、Issue、PR 评论里出现过的真实 token 建议立即 revoke 后重建。
-
-## 四、一键启动
-
-推荐使用仓库内一键脚本启动，它会在首次运行时创建 `.env`、生成本地随机密钥，并拉起 Compose 栈：
+### 2.4 初始化数据库
 
 ```bash
-./scripts/start-mvp.sh
+source /opt/ai-code-reviewer/venv/bin/activate
+set -a; source /opt/ai-code-reviewer/.env; set +a
+
+# 找到 alembic 命令的位置（随包安装）
+cd $(python -c "import app; import os; print(os.path.dirname(os.path.dirname(app.__file__)))")
+
+alembic upgrade head
+python -m app.scripts.seed  # 或找到 scripts/seed.py 的位置执行
 ```
 
-如果已经手工准备好 `.env`，也可以直接使用 Compose：
+> **注意**：alembic.ini 和 seed 脚本随包安装的路径可能不同。如果找不到，可以从源码仓库复制 `backend/alembic/`、`backend/alembic.ini`、`backend/scripts/` 到部署目录。
+
+### 2.5 systemd 服务（推荐）
+
+```ini
+# /etc/systemd/system/ai-code-reviewer.service
+[Unit]
+Description=AI Code Reviewer
+After=network.target postgresql.service redis.service
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/ai-code-reviewer
+EnvironmentFile=/opt/ai-code-reviewer/.env
+ExecStart=/opt/ai-code-reviewer/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启动：
 
 ```bash
-docker compose up -d --build
+systemctl daemon-reload
+systemctl enable --now ai-code-reviewer
+systemctl status ai-code-reviewer
 ```
 
-启动后后端容器会自动执行：
+### 2.6 访问
 
-1. `alembic upgrade head`：初始化/升级数据库结构。
-2. `python scripts/seed.py`：写入默认引擎、默认阻断策略和基础规则。
-3. `uvicorn app.main:app`：启动 API 服务。
+同 Docker 单镜像部署，服务监听在 `:8000`。
 
-访问入口：
+---
 
-- 管理台：`http://localhost:5173`
-- 后端健康检查：`http://localhost:8000/health`
+## 三、Docker Compose 开发模式（前后端分离）
 
-管理台的内部 token 只保存在页面表单状态中，刷新后会丢失，不会写入 `localStorage` 或 `sessionStorage`。
+适合本地开发、联调。前后端各自热更新，前端走 Vite dev server。
 
-## 五、GitLab Webhook 配置
+### 3.1 前置条件
 
-在目标 GitLab 项目中打开 Webhook 设置：
+- Docker 24+ 与 Docker Compose v2
+- （可选）后端服务所在机器可访问 GitLab 内网地址
 
-- URL：`http://<backend-host>:8000/api/webhooks/gitlab`
-- Secret Token：填 `.env` 中的 `GITLAB_WEBHOOK_SECRET`
-- 触发事件：选择 Merge request events
-- SSL verification：按内网证书情况开启或关闭
-
-Webhook 处理逻辑会读取 MR diff，调用默认评审引擎，并把结果写回 GitLab MR Discussion。命中阻断级别时，会配合 Jenkins 同步接口让流水线失败。
-
-## 六、Jenkins Pipeline 接入
-
-Jenkins 可在 MR 构建阶段调用同步评审接口：
-
-```groovy
-stage('AI Code Review') {
-  steps {
-    sh '''
-      curl -fsS -X POST "$AI_REVIEWER_URL/api/reviews" \
-        -H "Content-Type: application/json" \
-        -H "X-Internal-Token: $AI_REVIEWER_INTERNAL_TOKEN" \
-        -d "{\
-          \"project_id\": ${gitlabMergeRequestTargetProjectId},\
-          \"mr_iid\": ${gitlabMergeRequestIid},\
-          \"target_branch\": \"${gitlabTargetBranch}\",\
-          \"source_branch\": \"${gitlabSourceBranch}\",\
-          \"commit_sha\": \"${GIT_COMMIT}\",\
-          \"project_path\": \"${gitlabSourceNamespace}/${gitlabSourceRepoName}\",\
-          \"title\": \"${gitlabMergeRequestTitle}\",\
-          \"web_url\": \"${gitlabMergeRequestUrl}\"\
-        }" | tee ai-review-result.json
-      python - <<'PY'
-import json
-from pathlib import Path
-
-payload = json.loads(Path('ai-review-result.json').read_text())
-if payload.get('has_blocker'):
-    raise SystemExit('AI review found blocker issues')
-PY
-    '''
-  }
-}
-```
-
-变量名可能随 Jenkins GitLab 插件版本不同而变化。内网试跑时，可以先用管理台「手动触发 Review」验证同一个 MR，再把字段映射固化进 Jenkinsfile。
-
-## 七、常用运维命令
-
-查看服务状态：
+### 3.2 启动
 
 ```bash
+# 1. 克隆代码
+git clone https://github.com/geXingW/ai-code-reviewer.git
+cd ai-code-reviewer
+
+# 2. 配置环境变量
+cp .env.example .env
+# 编辑 .env，至少替换 SECRET_KEY、GITLAB_BASE_URL、GITLAB_TOKEN 等
+
+# 3. 启动全套服务（PostgreSQL + Redis + 后端 + 前端）
+docker compose --profile postgres --profile redis up -d --build
+
+# 用 MySQL 替代 PostgreSQL：
+# docker compose --profile mysql --profile redis up -d --build
+```
+
+### 3.3 访问入口
+
+- 管理台（Vite dev server）：`http://localhost:5173`
+- 后端 API：`http://localhost:8000`
+- API 文档：`http://localhost:8000/docs`
+
+后端容器启动时自动执行：
+1. `alembic upgrade head` — 初始化/升级数据库结构
+2. `python scripts/seed.py` — 写入种子数据
+3. `uvicorn app.main:app --reload` — 启动服务（带热重载）
+
+---
+
+## 四、仅部署后端（不需要前端管理台）
+
+某些场景下只需要 API 服务（如纯 Webhook + Jenkins 触发模式），可以只部署后端。
+
+### Docker 方式
+
+用 `backend/Dockerfile` 构建纯后端镜像：
+
+```bash
+cd backend
+docker build -t ai-code-reviewer-backend .
+```
+
+### pip 方式
+
+从 Release 下载的 wheel 包本身就是纯后端包。如果 `app/static/` 目录不存在，FastAPI 不会挂载静态文件，完全不影响 API 服务。
+
+---
+
+## 五、环境变量参考
+
+| 变量 | 说明 | 默认值 |
+|---|---|---|
+| `DATABASE_URL` | 数据库连接串（async） | `postgresql+asyncpg://...` |
+| `REDIS_URL` | Redis 连接串 | `redis://localhost:6379/0` |
+| `SECRET_KEY` | Fernet 加密密钥（必填） | 需设置 |
+| `INTERNAL_API_TOKEN` | 内部调用令牌（Jenkins/Webhook） | `test-internal-token` |
+| `ADMIN_USERNAME` | 管理后台用户名 | `admin` |
+| `ADMIN_PASSWORD` | 管理后台密码 | `admin` |
+| `JWT_SECRET` | JWT 签名密钥（≥32字节） | 需设置 |
+| `JWT_ALGORITHM` | JWT 签名算法 | `HS256` |
+| `JWT_EXPIRES_IN` | JWT 有效期（秒） | `86400` |
+| `GITLAB_BASE_URL` | GitLab 实例地址 | `http://localhost` |
+| `GITLAB_TOKEN` | GitLab API Token | 需配置 |
+| `GITLAB_WEBHOOK_SECRET` | Webhook 签名密钥 | `test-webhook-secret` |
+| `DEFAULT_REVIEW_ENGINE` | 默认评审引擎 | `llm-direct` |
+| `CORS_ORIGINS` | 允许的跨域来源 | `["http://localhost:5173"]` |
+
+---
+
+## 六、常用运维命令
+
+### Docker 单镜像
+
+```bash
+# 查看日志
+docker logs -f ai-code-reviewer
+
+# 重新执行迁移
+docker exec ai-code-reviewer alembic upgrade head
+
+# 重新写入种子数据
+docker exec ai-code-reviewer python scripts/seed.py
+
+# 重启
+docker restart ai-code-reviewer
+```
+
+### systemd（裸机部署）
+
+```bash
+# 查看状态
+systemctl status ai-code-reviewer
+
+# 查看日志
+journalctl -u ai-code-reviewer -f
+
+# 重启
+systemctl restart ai-code-reviewer
+```
+
+### Docker Compose 开发模式
+
+```bash
+# 查看状态
 docker compose ps
-```
 
-查看后端日志：
-
-```bash
+# 查看后端日志
 docker compose logs -f backend
-```
 
-重新执行迁移：
-
-```bash
+# 重新执行迁移
 docker compose exec backend alembic upgrade head
-```
 
-重新写入种子数据：
-
-```bash
-docker compose exec backend python scripts/seed.py
-```
-
-停止服务但保留数据卷：
-
-```bash
+# 停止（保留数据）
 docker compose down
-```
 
-清空本地试运行数据：
-
-```bash
+# 停止并清空数据
 docker compose down -v
 ```
 
-## 八、排错
+---
 
-**后端健康检查显示 `db=error`**
+## 七、排错
 
-- 查看 `docker compose ps`，确认 `postgres` 已 healthy。
-- 检查 `.env` 中 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB` 是否和 Compose 配置一致。
-- 查看 `docker compose logs postgres backend`。
+**健康检查显示 `db=error`**
+- 确认数据库已启动且网络可达
+- 检查 `DATABASE_URL` 格式和凭据是否正确
+- 查看应用日志
 
-**后端健康检查显示 `redis=error`**
+**健康检查显示 `redis=error`**
+- 确认 Redis 已启动且网络可达
+- 检查 `REDIS_URL` 格式是否正确
 
-- 确认 `redis` 容器 healthy。
-- 检查后端容器内 `REDIS_URL` 是否是 `redis://redis:6379/0`。
-
-**管理台可打开但接口报错**
-
-- 确认 `frontend/nginx.conf` 代理到了 `backend:8000`。
-- 确认输入的 `INTERNAL_API_TOKEN` 与 `.env` 完全一致。
-- 查看浏览器 Network 中 `/api/reviews/recent` 的状态码，401 通常表示 token 不匹配。
+**管理台页面空白 / 加载失败**
+- Docker 单镜像模式：确认访问的是 `http://<host>:8000/` 而不是 `:5173`
+- Compose 开发模式：确认 `frontend` 服务已启动，访问 `:5173`
+- 浏览器控制台查看具体错误
 
 **GitLab Webhook 返回 401**
+- 确认 GitLab Webhook 的 Secret Token 与 `GITLAB_WEBHOOK_SECRET` 一致
+- GitLab 通过 `X-Gitlab-Token` 请求头传递该值
 
-- 确认 GitLab Webhook Secret Token 与 `.env` 的 `GITLAB_WEBHOOK_SECRET` 一致。
-- 注意 GitLab 会通过 `X-Gitlab-Token` 请求头传递该值。
-
-**GitLab MR 没有行级 Discussion**
-
-- 确认 GitLab Token 具备写 MR discussion 权限。
-- 确认 MR diff 没有超过服务限制；超限时系统会给出泛化错误摘要，不会外显内部异常。
-- 查看后端日志中与该 project id / MR iid 相关的安全摘要。
-
-## 九、生产化前仍需补齐
-
-- 后端多副本部署和队列化执行，避免同步 review 占用 Web worker。
-- HTTPS 终止、鉴权网关、IP allowlist 和审计日志。
-- PostgreSQL/Redis 备份、恢复演练与监控告警。
-- provider/project 配置管理 UI 的完整 CRUD 与权限模型。
-- Jenkins/GitLab 合并阻断策略在内网项目中的端到端验收。
+**API 调用返回 401**
+- 管理台接口：确认 JWT token 有效且未过期
+- 内部接口（`/api/reviews`）：确认 `X-Internal-Token` 与 `INTERNAL_API_TOKEN` 一致

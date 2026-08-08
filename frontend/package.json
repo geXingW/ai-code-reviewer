@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "build:backend": "tsc -b && vite build --outDir ../backend/app/static",
     "test": "vitest run",
     "lint": "tsc --noEmit"
   },
