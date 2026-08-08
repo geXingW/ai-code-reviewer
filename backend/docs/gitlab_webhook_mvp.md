@@ -1,5 +1,11 @@
 # GitLab Webhook MVP
 
+> **⚠️ DEPRECATED**：本文档描述的是早期 MVP 版本的全局配置方案（`GITLAB_TOKEN` / `GITLAB_WEBHOOK_SECRET` 等全局 ENV）。
+> 自项目级凭证功能上线后，GitLab 地址、Access Token、Webhook Secret 均已下沉到项目级配置。
+> 最新接入指南请参考 [`docs/gitlab-setup.md`](../../docs/gitlab-setup.md)。
+>
+> 本文档保留仅作历史参考，不再维护。
+
 This document describes the current GitLab Merge Request webhook integration.
 The implementation is intentionally an MVP: it validates incoming MR webhooks,
 fetches MR diff from GitLab, runs the configured review engine, writes one
