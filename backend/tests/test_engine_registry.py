@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.engines import (
+from engines import (
     EngineRegistry,
     Finding,
     HealthStatus,
     ReviewContext,
     ReviewEngine,
 )
-from app.engines.registry import (
+from engines.registry import (
     EngineAlreadyRegisteredError,
     EngineNotFoundError,
 )
@@ -107,8 +107,8 @@ def test_builtin_llm_direct_is_registered() -> None:
     and instantiate the engine class directly.
     """
 
-    from app.engines import EngineRegistry
-    from app.engines.llm_engine.engine import LLMDirectEngine
+    from engines import EngineRegistry
+    from engines.llm_engine.engine import LLMDirectEngine
 
     local = EngineRegistry()
     local.register(LLMDirectEngine())

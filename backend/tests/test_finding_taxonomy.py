@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`app.core.finding_taxonomy`.
+"""Unit tests for :mod:`core.finding_taxonomy`.
 
 覆盖 42 条基础规则的显式映射、前缀兜底、以及 severity/category display
 的展示元数据。所有测试都是纯函数级别，无依赖。
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.finding_taxonomy import (
+from core.finding_taxonomy import (
     FindingCategory,
     category_display,
     infer_category,

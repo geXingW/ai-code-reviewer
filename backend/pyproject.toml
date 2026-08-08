@@ -39,12 +39,9 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
-
-[tool.setuptools.package-data]
-# 前端构建产物（app/static/）打进 wheel 包，单包部署时 FastAPI 直接托管。
-# 本地开发时该目录通常只有 .gitkeep，不影响纯后端安装。
-app = ["static/**/*"]
+where = ["."]
+include = ["*"]
+exclude = ["tests*", "alembic*", "scripts*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -66,10 +63,11 @@ ignore = ["S101", "S104", "S105", "S110"]
 
 [tool.mypy]
 python_version = "3.11"
+mypy_path = ["."]
 strict = true
 plugins = ["pydantic.mypy"]
 warn_unused_configs = true
 warn_unreachable = true
 show_error_codes = true
 pretty = true
-exclude = ["tests"]
+exclude = ["tests", "alembic", "scripts"]

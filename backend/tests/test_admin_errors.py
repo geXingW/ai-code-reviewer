@@ -14,7 +14,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from app.api.admin import _commit_or_400
+from api.admin import _commit_or_400
 
 
 class _CommitFailingSession:

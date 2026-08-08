@@ -11,13 +11,13 @@ from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.api import reviews as reviews_api
-from app.core import config, db
-from app.core.db import Base, get_db
-from app.main import create_app
-from app.models.finding import Finding
-from app.models.project import Project
-from app.models.review import Review
+from api import reviews as reviews_api
+from core import config, db
+from core.db import Base, get_db
+from main import create_app
+from models.finding import Finding
+from models.project import Project
+from models.review import Review
 
 TEST_DATABASE_URL = os.getenv(
     "DATABASE_URL",

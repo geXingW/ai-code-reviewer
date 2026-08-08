@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.core.diff_filter import DiffFilterConfig, filter_gitlab_changes
+from core.diff_filter import DiffFilterConfig, filter_gitlab_changes
 
 
 def test_filter_gitlab_changes_skips_ignored_binary_deleted_and_large_files() -> None:

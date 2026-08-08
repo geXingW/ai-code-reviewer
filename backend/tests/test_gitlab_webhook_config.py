@@ -1,6 +1,6 @@
 """Configuration tests for GitLab webhook settings."""
 
-from app.core.config import Settings
+from core.config import Settings
 
 
 def test_gitlab_settings_are_available() -> None:

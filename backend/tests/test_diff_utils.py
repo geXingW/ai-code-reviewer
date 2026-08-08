@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.services.review_orchestrator import _is_line_number_valid_for_current_diff
+from services.review_orchestrator import _is_line_number_valid_for_current_diff
 
 
 class TestIsLineNumberValidForCurrentDiff:

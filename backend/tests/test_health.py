@@ -3,7 +3,7 @@
 import pytest
 from httpx import AsyncClient
 
-from app.api import health
+from api import health
 
 
 @pytest.mark.asyncio

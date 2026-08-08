@@ -19,13 +19,13 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.db import Base
-from app.engines import Finding as EngineFinding
-from app.engines import ReviewContext
-from app.engines.registry import EngineRegistry
-from app.models.project import Project
-from app.models.provider import Provider
-from app.services.review_orchestrator import (
+from core.db import Base
+from engines import Finding as EngineFinding
+from engines import ReviewContext
+from engines.registry import EngineRegistry
+from models.project import Project
+from models.provider import Provider
+from services.review_orchestrator import (
     GitLabMergeRequestEvent,
     ReviewOrchestrator,
 )

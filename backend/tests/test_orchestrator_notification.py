@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.engines import Finding as EngineFinding
-from app.engines.registry import EngineRegistry
-from app.services.review_orchestrator import GitLabMergeRequestEvent, ReviewOrchestrator
+from engines import Finding as EngineFinding
+from engines.registry import EngineRegistry
+from services.review_orchestrator import GitLabMergeRequestEvent, ReviewOrchestrator
 
 
 class _StubEngine:

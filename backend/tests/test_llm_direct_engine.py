@@ -9,13 +9,13 @@ from uuid import uuid4
 
 import pytest
 
-from app.core.config import Settings
-from app.engines.llm_engine.engine import (
+from core.config import Settings
+from engines.llm_engine.engine import (
     LLMDirectEngine,
     OpenAICompatibleLLMClient,
     _load_prompt,
 )
-from app.engines.types import (
+from engines.types import (
     DiffHunk,
     FindingSource,
     ProviderConfig,
@@ -23,8 +23,8 @@ from app.engines.types import (
     ReviewHistoryItem,
     RuleSpec,
 )
-from app.llm import LLMError
-from app.llm.base import TimeoutError as LLMTimeoutError
+from llm import LLMError
+from llm.base import TimeoutError as LLMTimeoutError
 
 
 def _no_filter_settings() -> Settings:
@@ -398,7 +398,7 @@ async def test_default_client_logs_request_and_response(
     provider_config = _ctx().provider
     assert provider_config is not None
 
-    with caplog.at_level(logging.INFO, logger="app.engines.llm_engine.engine"):
+    with caplog.at_level(logging.INFO, logger="engines.llm_engine.engine"):
         raw = await client.complete(
             provider=provider_config,
             prompt="review this diff please",
@@ -500,7 +500,7 @@ async def test_review_raises_on_llm_timeout() -> None:
 async def test_review_raises_on_llm_server_error() -> None:
     """任意 LLMError 都必须往上冒——orchestrator 才能在 GitLab 写"审查失败"。"""
 
-    from app.llm.base import ServerError
+    from llm.base import ServerError
 
     client = _RaisingLLMClient(exception=ServerError("upstream 502"))
     engine = LLMDirectEngine(client=client, settings=_no_filter_settings())

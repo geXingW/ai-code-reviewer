@@ -12,11 +12,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.repositories.project import ProjectRepository
-from app.repositories.project_notification_channel import (
+from repositories.project import ProjectRepository
+from repositories.project_notification_channel import (
     ProjectNotificationChannelRepository,
 )
-from app.services.notification_service import NotificationService
+from services.notification_service import NotificationService
 
 _WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=abc"
 

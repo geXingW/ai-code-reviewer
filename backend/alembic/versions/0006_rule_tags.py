@@ -1,7 +1,7 @@
 """``rules`` 表新增 ``tags`` 列：自定义标签（JSON 数组），用于按标签筛选规则。
 
 纯展示维度字段，不参与审查 / 阻断业务逻辑。语义参考
-``app.models.rule.Rule.tags``：默认空列表 ``[]``，每条规则可打多个标签
+``models.rule.Rule.tags``：默认空列表 ``[]``，每条规则可打多个标签
 （如 ``security`` / ``performance`` / ``python``）。
 
 跨方言（PostgreSQL / MySQL 8.0）兼容策略：

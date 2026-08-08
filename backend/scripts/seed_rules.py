@@ -22,10 +22,10 @@ from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 
-from app.core.db import AsyncSessionLocal
-from app.core.finding_taxonomy import FindingCategory
-from app.models.rule import Rule
-from app.repositories.rule import RuleRepository
+from core.db import AsyncSessionLocal
+from core.finding_taxonomy import FindingCategory
+from models.rule import Rule
+from repositories.rule import RuleRepository
 
 DEFAULT_CATALOG = Path(__file__).resolve().parents[2] / "docs" / "rules-catalog.json"
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.review import ReviewCreate, ReviewStatus
+from schemas.review import ReviewCreate, ReviewStatus
 
 # orchestrator 写入 DB 的所有 status 常量（review_orchestrator.py 里出现过的字面量）。
 # 若代码里加了新 status 但没更新此表 → 相应用例会挂，提醒同步。

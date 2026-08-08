@@ -6,9 +6,9 @@ from uuid import uuid4
 
 import pytest
 
-from app.engines.llm_engine.engine import LLMDirectEngine
-from app.engines.llm_engine.language_detect import detect_languages
-from app.engines.types import DiffHunk, ProviderConfig, ReviewContext
+from engines.llm_engine.engine import LLMDirectEngine
+from engines.llm_engine.language_detect import detect_languages
+from engines.types import DiffHunk, ProviderConfig, ReviewContext
 
 
 def _hunk(file_path: str) -> DiffHunk:

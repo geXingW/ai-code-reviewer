@@ -1,4 +1,4 @@
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -7,31 +7,34 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn \
     PIP_DEFAULT_TIMEOUT=60
 
-WORKDIR /build
-
-COPY pyproject.toml README.md ./
-COPY app ./app
-
-RUN pip wheel --wheel-dir /wheels .
-
-FROM python:3.11-slim AS runtime
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
 WORKDIR /app
 
 RUN addgroup --gid 1000 appuser \
     && adduser --disabled-password --gecos "" --uid 1000 --gid 1000 appuser
 
-COPY --from=builder /wheels /wheels
-RUN pip install --no-cache-dir /wheels/* \
-    && rm -rf /wheels
+# Install dependencies first (better cache)
+COPY pyproject.toml ./
+RUN pip install --no-cache-dir .
 
-COPY app ./app
+# Copy application code
+COPY main.py __main__.py ./
+COPY api ./api
+COPY core ./core
+COPY engines ./engines
+COPY integrations ./integrations
+COPY llm ./llm
+COPY models ./models
+COPY repositories ./repositories
+COPY schemas ./schemas
+COPY services ./services
+COPY static ./static
+
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
 COPY scripts ./scripts
+
+# app.py as entrypoint
+COPY app.py ./app.py
 
 RUN chown -R appuser:appuser /app
 
@@ -39,4 +42,4 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "8000", "--migrate"]

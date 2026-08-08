@@ -7,8 +7,8 @@ from uuid import UUID
 import pytest
 from httpx import AsyncClient
 
-from app.api import reviews
-from app.services.review_orchestrator import GitLabMergeRequestEvent, OrchestratorResult
+from api import reviews
+from services.review_orchestrator import GitLabMergeRequestEvent, OrchestratorResult
 
 
 @pytest.mark.asyncio

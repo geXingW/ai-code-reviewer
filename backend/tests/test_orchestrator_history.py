@@ -21,18 +21,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # EncryptedString 需要 SECRET_KEY，与其它 orchestrator 单测一致，进程启动即固定。
 os.environ.setdefault("SECRET_KEY", Fernet.generate_key().decode("utf-8"))
 
-from app.core.config import get_settings  # noqa: E402
-from app.core.db import Base  # noqa: E402
-from app.engines import Finding as EngineFinding  # noqa: E402
-from app.engines import ReviewContext  # noqa: E402
-from app.engines.registry import EngineRegistry  # noqa: E402
-from app.models.finding import Finding as FindingRow  # noqa: E402
-from app.models.negative_example import NegativeExample  # noqa: E402
-from app.models.project import Project  # noqa: E402
-from app.models.project_rule import ProjectRule  # noqa: E402
-from app.models.review import Review as ReviewRow  # noqa: E402
-from app.models.rule import Rule  # noqa: E402
-from app.services.review_orchestrator import (  # noqa: E402
+from core.config import get_settings  # noqa: E402
+from core.db import Base  # noqa: E402
+from engines import Finding as EngineFinding  # noqa: E402
+from engines import ReviewContext  # noqa: E402
+from engines.registry import EngineRegistry  # noqa: E402
+from models.finding import Finding as FindingRow  # noqa: E402
+from models.negative_example import NegativeExample  # noqa: E402
+from models.project import Project  # noqa: E402
+from models.project_rule import ProjectRule  # noqa: E402
+from models.review import Review as ReviewRow  # noqa: E402
+from models.rule import Rule  # noqa: E402
+from services.review_orchestrator import (  # noqa: E402
     GitLabMergeRequestEvent,
     ReviewOrchestrator,
 )
@@ -678,7 +678,7 @@ async def test_history_db_error_is_swallowed(
         default_engine="capture-engine",
         session_factory=session_factory,
     )
-    with caplog.at_level(logging.WARNING, logger="app.services.review_orchestrator"):
+    with caplog.at_level(logging.WARNING, logger="services.review_orchestrator"):
         await orch.review_merge_request(_make_event(gitlab_project_id=777))
 
     assert capturing.captured is not None
@@ -761,13 +761,13 @@ async def test_history_hard_filters_matching_finding_end_to_end(
     )
 
     # 用一个"回放引擎"直接产 finding，模拟 LLM 输出的重复 finding。
-    from app.engines.llm_engine.engine import (
+    from engines.llm_engine.engine import (
         _matches_false_positive_history,
     )
-    from app.engines.types import (
+    from engines.types import (
         FindingSource as _FindingSource,
     )
-    from app.engines.types import (
+    from engines.types import (
         ReviewHistoryItem as _ReviewHistoryItem,  # noqa: F401
     )
 

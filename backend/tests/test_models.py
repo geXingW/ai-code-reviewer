@@ -11,16 +11,16 @@ from cryptography.fernet import Fernet
 from sqlalchemy import Select, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.config import get_settings
-from app.core.db import Base
-from app.models.engine import Engine
-from app.models.finding import Finding
-from app.models.project import Project
-from app.models.project_block_policy import ProjectBlockPolicy
-from app.models.project_rule import ProjectRule
-from app.models.provider import Provider
-from app.models.review import Review
-from app.models.rule import Rule
+from core.config import get_settings
+from core.db import Base
+from models.engine import Engine
+from models.finding import Finding
+from models.project import Project
+from models.project_block_policy import ProjectBlockPolicy
+from models.project_rule import ProjectRule
+from models.provider import Provider
+from models.review import Review
+from models.rule import Rule
 
 TEST_SECRET_KEY = Fernet.generate_key().decode("utf-8")
 os.environ["SECRET_KEY"] = TEST_SECRET_KEY
