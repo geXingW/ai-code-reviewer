@@ -77,6 +77,9 @@ jobs:
           cp ../README.md "dist/${PKG_NAME}/README.md"
 
           # 启动脚本
+          cp ../run.py "dist/${PKG_NAME}/run.py"
+          chmod +x "dist/${PKG_NAME}/run.py"
+
           cat > "dist/${PKG_NAME}/start.sh" << 'EOF'
           #!/usr/bin/env bash
           set -e
@@ -87,15 +90,9 @@ jobs:
           SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
           cd "$SCRIPT_DIR"
 
-          # 安装 wheel 包（如果还没装）
-          if ! python -c "import app" 2>/dev/null; then
-            echo "Installing ai-code-reviewer..."
-            pip install ai_code_reviewer_backend-*.whl
-          fi
-
           # 启动（自动加载 ./.env，自动执行数据库迁移）
           echo "Starting ai-code-reviewer on :8000..."
-          exec python -m app --migrate
+          exec python run.py --migrate
           EOF
           chmod +x "dist/${PKG_NAME}/start.sh"
 
