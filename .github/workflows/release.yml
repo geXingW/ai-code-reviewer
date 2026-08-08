@@ -59,9 +59,82 @@ jobs:
           pip install dist/*.whl --dry-run 2>&1 || true
         working-directory: backend
 
+      - name: Package full-stack deployment bundle
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          PKG_NAME="ai-code-reviewer-${GITHUB_REF_NAME}"
+          mkdir -p "dist/${PKG_NAME}"
+
+          # wheel 包
+          cp dist/*.whl "dist/${PKG_NAME}/"
+          cp dist/*.tar.gz "dist/${PKG_NAME}/"
+
+          # 配置示例
+          cp ../.env.example "dist/${PKG_NAME}/env.example"
+
+          # 部署文档
+          cp ../docs/setup.md "dist/${PKG_NAME}/SETUP.md"
+          cp ../README.md "dist/${PKG_NAME}/README.md"
+
+          # 启动脚本
+          cat > "dist/${PKG_NAME}/start.sh" << 'EOF'
+          #!/usr/bin/env bash
+          set -e
+
+          # ai-code-reviewer 一键启动脚本
+          # 使用前请复制 env.example 为 .env 并修改配置
+
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          cd "$SCRIPT_DIR"
+
+          # 安装 wheel 包（如果还没装）
+          if ! python -c "import app" 2>/dev/null; then
+            echo "Installing ai-code-reviewer..."
+            pip install ai_code_reviewer_backend-*.whl
+          fi
+
+          # 启动（自动加载 ./.env，自动执行数据库迁移）
+          echo "Starting ai-code-reviewer on :8000..."
+          exec python -m app --migrate
+          EOF
+          chmod +x "dist/${PKG_NAME}/start.sh"
+
+          # systemd 示例
+          cat > "dist/${PKG_NAME}/ai-code-reviewer.service.example" << 'EOF'
+          [Unit]
+          Description=AI Code Reviewer
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=www-data
+          WorkingDirectory=/opt/ai-code-reviewer
+          EnvironmentFile=/opt/ai-code-reviewer/.env
+          ExecStart=/opt/ai-code-reviewer/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+          Restart=on-failure
+          RestartSec=5s
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          # 数据库迁移 + 种子脚本
+          cp -r alembic "dist/${PKG_NAME}/alembic"
+          cp alembic.ini "dist/${PKG_NAME}/"
+          cp -r scripts "dist/${PKG_NAME}/scripts"
+
+          # 打 zip 包
+          cd dist
+          zip -r "${PKG_NAME}.zip" "${PKG_NAME}/"
+          ls -la "${PKG_NAME}.zip"
+        working-directory: backend
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: Release ${{ github.ref_name }}
           generate_release_notes: true
-          files: backend/dist/*
+          files: |
+            backend/dist/*.whl
+            backend/dist/*.tar.gz
+            backend/dist/ai-code-reviewer-*.zip
