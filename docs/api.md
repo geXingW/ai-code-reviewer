@@ -165,14 +165,14 @@ MVP 单账号登录，返回标准 JWT。
 
 ### GET /health
 
-服务、数据库、Redis 健康检查（无需认证）。
+服务、数据库健康检查（无需认证）。
 
 ```json
 // 200
-{ "status": "ok", "version": "0.1.0-dev", "db": "ok", "redis": "ok" }
+{ "status": "ok", "version": "0.1.0-dev", "db": "ok" }
 ```
 
-`db=error` 或 `redis=error` 表示对应依赖不可达，但仍返回 200 以便探活。
+`db=error` 表示数据库依赖不可达，但仍返回 200 以便探活。
 
 ### GET /api/engines
 

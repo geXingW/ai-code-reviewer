@@ -23,7 +23,6 @@ from api.stats import router as stats_router
 from core.config import get_settings, validate_secret_key
 from core.db import engine
 from core.logging import configure_logging
-from core.redis import close_redis
 from engines import load_builtin_engines
 
 logger = logging.getLogger(__name__)
@@ -46,7 +45,6 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
-        await close_redis()
         await close_all_sessions()
         await engine.dispose()
         logger.info("Application shutdown complete")

@@ -1,10 +1,10 @@
 """Application configuration loaded from environment variables."""
 
 from functools import lru_cache
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 
 from cryptography.fernet import Fernet
-from pydantic import Field, RedisDsn, SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,10 +28,6 @@ class Settings(BaseSettings):
         str,
         Field(description="数据库异步连接 URL，支持 PostgreSQL 与 MySQL。"),
     ] = "postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer"
-    redis_url: Annotated[
-        RedisDsn,
-        Field(description="Redis connection URL."),
-    ] = cast(RedisDsn, "redis://localhost:6379/0")
     secret_key: Annotated[
         SecretStr,
         Field(description="Fernet key used to encrypt tokens and secrets."),

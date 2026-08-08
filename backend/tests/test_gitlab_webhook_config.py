@@ -8,7 +8,6 @@ def test_gitlab_settings_are_available() -> None:
 
     settings = Settings(
         database_url="postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/test_db",
-        redis_url="redis://localhost:6379/0",
         secret_key="x" * 32,
         gitlab_base_url="https://gitlab.example.com",
         gitlab_token="glpat-test",

@@ -16,11 +16,7 @@ async def test_health_returns_dependency_status(
     async def ping_database_ok() -> bool:
         return True
 
-    async def ping_redis_ok() -> bool:
-        return True
-
     monkeypatch.setattr(health, "ping_database", ping_database_ok)
-    monkeypatch.setattr(health, "ping_redis", ping_redis_ok)
 
     response = await client.get("/health")
 
@@ -29,7 +25,6 @@ async def test_health_returns_dependency_status(
         "status": "ok",
         "version": "0.1.0-dev",
         "db": "ok",
-        "redis": "ok",
     }
 
 
@@ -43,14 +38,9 @@ async def test_health_reports_dependency_errors(
     async def ping_database_error() -> bool:
         return False
 
-    async def ping_redis_error() -> bool:
-        return False
-
     monkeypatch.setattr(health, "ping_database", ping_database_error)
-    monkeypatch.setattr(health, "ping_redis", ping_redis_error)
 
     response = await client.get("/health")
 
     assert response.status_code == 200
     assert response.json()["db"] == "error"
-    assert response.json()["redis"] == "error"

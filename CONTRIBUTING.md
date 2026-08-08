@@ -14,7 +14,6 @@
 - Node.js 20+
 - Docker + Docker Compose
 - PostgreSQL 15+（开发可用 docker compose 起）
-- Redis 7+（开发可用 docker compose 起）
 
 ### 本地启动
 
@@ -22,8 +21,8 @@
 git clone https://github.com/geXingW/ai-code-reviewer.git
 cd ai-code-reviewer
 
-# 启动依赖服务（postgres + redis）
-docker compose up -d postgres redis
+# 启动依赖服务（postgres）
+docker compose up -d postgres
 
 # 后端
 cd backend

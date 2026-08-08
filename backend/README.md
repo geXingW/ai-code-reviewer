@@ -8,7 +8,7 @@ FastAPI backend service for `ai-code-reviewer`.
 backend/
 ├── app/
 │   ├── api/          # HTTP routers
-│   ├── core/         # config, logging, database, Redis
+│   ├── core/         # config, logging, database
 │   └── main.py       # FastAPI application entrypoint
 └── tests/            # pytest test suite
 ```
@@ -23,7 +23,7 @@ pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
-The service exposes `GET /health`, which checks PostgreSQL and Redis connectivity.
+The service exposes `GET /health`, which checks database connectivity.
 
 ## Architecture docs
 
