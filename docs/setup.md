@@ -15,7 +15,7 @@
 ### 1.1 前置条件
 
 - Docker 24+
-- 已准备好 PostgreSQL 15 / MySQL 8.0 和 Redis（可以是容器或独立服务）
+- 已准备好 PostgreSQL 15 / MySQL 8.0（可以是容器或独立服务）
 - 后端所在机器可访问 GitLab 内网地址
 
 ### 1.2 启动
@@ -32,7 +32,6 @@ docker run -d \
   --name ai-code-reviewer \
   -p 8000:8000 \
   -e DATABASE_URL="postgresql+asyncpg://user:pass@db-host:5432/ai_code_reviewer" \
-  -e REDIS_URL="redis://redis-host:6379/0" \
   -e SECRET_KEY="your-fernet-key" \
   -e ADMIN_PASSWORD="your-admin-password" \
   -e JWT_SECRET="your-jwt-secret" \
@@ -70,7 +69,6 @@ docker exec ai-code-reviewer python scripts/seed.py
 
 - Python 3.11+
 - PostgreSQL 15 / MySQL 8.0
-- Redis 7+
 - systemd（推荐用于进程管理）
 
 ### 2.2 安装
@@ -92,7 +90,6 @@ pip install ai_code_reviewer_backend-0.1.0-py3-none-any.whl
 ```bash
 cat > /opt/ai-code-reviewer/.env << 'EOF'
 DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/ai_code_reviewer
-REDIS_URL=redis://localhost:6379/0
 SECRET_KEY=CHANGE_ME_GENERATE_A_REAL_FERNET_KEY
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=CHANGE_ME_STRONG_PASSWORD
@@ -135,7 +132,7 @@ python -m app.scripts.seed  # 或找到 scripts/seed.py 的位置执行
 # /etc/systemd/system/ai-code-reviewer.service
 [Unit]
 Description=AI Code Reviewer
-After=network.target postgresql.service redis.service
+After=network.target postgresql.service
 
 [Service]
 Type=simple
@@ -184,11 +181,11 @@ cd ai-code-reviewer
 cp .env.example .env
 # 编辑 .env，至少替换 SECRET_KEY、GITLAB_BASE_URL、GITLAB_TOKEN 等
 
-# 3. 启动全套服务（PostgreSQL + Redis + 后端 + 前端）
-docker compose --profile postgres --profile redis up -d --build
+# 3. 启动全套服务（PostgreSQL + 后端 + 前端）
+docker compose --profile postgres up -d --build
 
 # 用 MySQL 替代 PostgreSQL：
-# docker compose --profile mysql --profile redis up -d --build
+# docker compose --profile mysql up -d --build
 ```
 
 ### 3.3 访问入口
@@ -228,7 +225,6 @@ docker build -t ai-code-reviewer-backend .
 | 变量 | 说明 | 默认值 |
 |---|---|---|
 | `DATABASE_URL` | 数据库连接串（async） | `postgresql+asyncpg://...` |
-| `REDIS_URL` | Redis 连接串 | `redis://localhost:6379/0` |
 | `SECRET_KEY` | Fernet 加密密钥（必填） | 需设置 |
 | `INTERNAL_API_TOKEN` | 内部调用令牌（Jenkins/Webhook） | `test-internal-token` |
 | `ADMIN_USERNAME` | 管理后台用户名 | `admin` |
@@ -302,10 +298,6 @@ docker compose down -v
 - 确认数据库已启动且网络可达
 - 检查 `DATABASE_URL` 格式和凭据是否正确
 - 查看应用日志
-
-**健康检查显示 `redis=error`**
-- 确认 Redis 已启动且网络可达
-- 检查 `REDIS_URL` 格式是否正确
 
 **管理台页面空白 / 加载失败**
 - Docker 单镜像模式：确认访问的是 `http://<host>:8000/` 而不是 `:5173`

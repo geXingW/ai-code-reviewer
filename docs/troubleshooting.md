@@ -14,7 +14,7 @@
 - 确认 Docker 24+ 与 Compose v2：`docker version` / `docker compose version`。
 - `docker compose ps` 看哪个服务不健康。
 - `docker compose logs <service>` 看具体报错。
-- 端口冲突：5432（Postgres）/ 6379（Redis）/ 8000（backend）/ 5173（frontend）被占用。`docker compose down` 后释放端口或改 `docker-compose.yml` 端口映射。
+- 端口冲突：5432（Postgres）/ 8000（backend）/ 5173（frontend）被占用。`docker compose down` 后释放端口或改 `docker-compose.yml` 端口映射。
 
 ### 1.2 PostgreSQL 连不上 / `db=error`
 
@@ -27,16 +27,6 @@
 - `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` 在 `.env` 与 Compose 间必须一致；改过密码需 `docker compose down -v` 清掉旧数据卷再重启（旧卷里仍是旧密码）。
 - 首次启动后端会跑 `alembic upgrade head`；若迁移失败，`docker compose exec backend alembic upgrade head` 手动重试并查看报错。
 - 本地跑 pytest 时连接串默认 `postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer`，需确保该库与账号存在（`docker compose up postgres` 即可创建）。
-
-### 1.3 Redis 连不上 / `redis=error`
-
-**现象**：`/health` 返回 `redis=error`。
-
-排查：
-
-- 确认 `redis` 容器 healthy。
-- 容器内 `REDIS_URL` 应为 `redis://redis:6379/0`（主机名 `redis`）。
-- `docker compose exec redis redis-cli ping` 应返回 `PONG`。
 
 ### 1.4 后端启动报 `SECRET_KEY` / Fernet 错误
 
@@ -187,7 +177,7 @@ printenv | sort | grep -E 'gitlab|GITLAB|CHANGE_|GIT_' | grep -vi 'token\|passwo
 ## 九、日志与诊断
 
 - 后端日志：`docker compose logs -f backend`。`LOG_LEVEL=DEBUG` 可看更详细流水。
-- `/health`：快速判断 db / redis 连通性。
+- `/health`：快速判断 db 连通性。
 - `/api/engines` 与 `/api/engines/{name}/health`：判断引擎注册与健康状态。
 - `POST /api/reviews` 响应里的 `policy_applied` / `finding_count` / `has_blocker` 是定位「阻断与否」的第一手信息。
 - 安全提醒：日志与异常中不应出现明文 token / api_key；若发现泄漏，立即 revoke 并重建。

@@ -71,7 +71,7 @@ curl -fsS http://<backend-host>:8000/health
 预期返回包含：
 
 ```json
-{"status":"ok","db":"ok","redis":"ok"}
+{"status":"ok","db":"ok"}
 ```
 
 再创建或更新一个测试 MR，观察：

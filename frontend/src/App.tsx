@@ -1954,7 +1954,6 @@ type SystemStatusCardProps = {
 function SystemStatusCard({ health, engines }: SystemStatusCardProps) {
   const apiOk = health?.status === 'ok';
   const dbOk = health?.db === 'ok';
-  const redisOk = health?.redis === 'ok';
   const healthyEngineCount = engines.filter((engine) => engine.healthy).length;
   const enginesAllHealthy = engines.length > 0 && healthyEngineCount === engines.length;
   const enginesAllDown = engines.length > 0 && healthyEngineCount === 0;
@@ -1965,12 +1964,11 @@ function SystemStatusCard({ health, engines }: SystemStatusCardProps) {
       : enginesAllDown
         ? 'bg-rose-500'
         : 'bg-amber-500';
-  const allOk = apiOk && dbOk && redisOk && (engines.length === 0 || enginesAllHealthy);
+  const allOk = apiOk && dbOk && (engines.length === 0 || enginesAllHealthy);
 
   const rows: Array<{ label: string; ok: boolean; value: string; version?: string }> = [
     { label: 'API 服务', ok: apiOk, value: apiOk ? '服务正常' : '服务异常', version: health?.version },
     { label: '数据库', ok: dbOk, value: dbOk ? '数据库正常' : '数据库异常' },
-    { label: 'Redis', ok: redisOk, value: redisOk ? 'Redis 正常' : 'Redis 异常' },
   ];
 
   return (

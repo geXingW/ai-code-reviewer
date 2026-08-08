@@ -2,7 +2,6 @@ export type HealthStatus = {
   status: string;
   version: string;
   db: string;
-  redis: string;
 };
 
 export type EngineSummary = {

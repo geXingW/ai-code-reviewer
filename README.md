@@ -68,7 +68,7 @@ CONFIRMED 写入 negative_examples
 
 ## 技术栈
 
-- **后端**：Python 3.11 + FastAPI + SQLAlchemy (async) + Alembic + Redis
+- **后端**：Python 3.11 + FastAPI + SQLAlchemy (async) + Alembic
 - **数据库**：PostgreSQL 15 或 MySQL 8.0（跨方言，二选一）
 - **前端**：React 19 + Vite + TypeScript + Vitest
 - **部署**：Docker 单镜像 / pip 安装 / Docker Compose（开发）
@@ -119,7 +119,7 @@ git clone https://github.com/geXingW/ai-code-reviewer.git
 cd ai-code-reviewer
 docker build -t ai-code-reviewer .
 
-# 2. 准备数据库（PostgreSQL/MySQL + Redis），设置环境变量
+# 2. 准备数据库（PostgreSQL 或 MySQL），设置环境变量
 cp .env.example .env
 # 编辑 .env，至少修改 SECRET_KEY、DATABASE_URL、GITLAB_TOKEN 等
 
@@ -148,7 +148,6 @@ pip install ai_code_reviewer_backend-0.1.0-py3-none-any.whl
 # 2. 配置环境变量
 export SECRET_KEY=...
 export DATABASE_URL=postgresql+asyncpg://...
-export REDIS_URL=redis://...
 
 # 3. 初始化 + 启动
 alembic upgrade head
@@ -165,8 +164,8 @@ git clone https://github.com/geXingW/ai-code-reviewer.git
 cd ai-code-reviewer
 cp .env.example .env  # 编辑配置
 
-# 2. 一键启动（PostgreSQL + Redis + 后端 + 前端）
-docker compose --profile postgres --profile redis up -d --build
+# 2. 一键启动（PostgreSQL + 后端 + 前端）
+docker compose --profile postgres up -d --build
 
 # 3. 访问
 open http://localhost:5173   # 管理台（Vite dev server）
@@ -292,7 +291,6 @@ curl -X POST http://localhost:8000/api/false-positives/{id}/confirm \
 | 变量 | 说明 | 默认值 |
 |---|---|---|
 | `DATABASE_URL` | PostgreSQL 异步连接串 | `postgresql+asyncpg://...` |
-| `REDIS_URL` | Redis 连接串 | `redis://localhost:6379/0` |
 | `SECRET_KEY` | Fernet 加密密钥（加密 api_key / token 等敏感字段） | 需修改 |
 | `INTERNAL_API_TOKEN` | 服务间调用令牌（Jenkins / Webhook 内部触发） | `test-internal-token` |
 | `ADMIN_USERNAME` | 管理后台登录用户名 | `admin` |

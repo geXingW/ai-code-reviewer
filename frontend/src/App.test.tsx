@@ -47,7 +47,7 @@ describe('MVP 管理台', () => {
     mockFetch(async (url, init) => {
       calls.push({ url, init });
       if (url === '/health') {
-        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok', redis: 'ok' });
+        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok' });
       }
       if (url === '/api/auth/login') {
         return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
@@ -91,7 +91,7 @@ describe('MVP 管理台', () => {
     mockFetch(async (url, init) => {
       calls.push({ url, init });
       if (url === '/health') {
-        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok', redis: 'error' });
+        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok' });
       }
       if (url === '/api/auth/login') {
         return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
@@ -177,7 +177,6 @@ describe('MVP 管理台', () => {
     expect(await screen.findByText('AI Code Reviewer')).toBeInTheDocument();
     await loginAsAdmin();
     expect(await screen.findByText('服务正常')).toBeInTheDocument();
-    expect(screen.getByText('Redis 异常')).toBeInTheDocument();
     expect(screen.getByText('llm-direct')).toBeInTheDocument();
     expect(screen.getByText('暂无审查记录')).toBeInTheDocument();
 
@@ -203,7 +202,7 @@ describe('MVP 管理台', () => {
     mockFetch(async (url, init) => {
       calls.push({ url, init });
       if (url === '/health') {
-        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok', redis: 'ok' });
+        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok' });
       }
       if (url === '/api/auth/login') {
         return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
@@ -302,7 +301,7 @@ describe('MVP 管理台', () => {
     mockFetch(async (url, init) => {
       calls.push({ url, init });
       if (url === '/health') {
-        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok', redis: 'ok' });
+        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok' });
       }
       if (url === '/api/auth/login') {
         return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
@@ -533,7 +532,7 @@ describe('PR-B 误报处理弹窗集成', () => {
   function mountAppMock(finding: Record<string, unknown>, pendingFinding: Record<string, unknown>): void {
     mockFetch(async (url) => {
       if (url === '/health') {
-        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok', redis: 'ok' });
+        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok' });
       }
       if (url === '/api/auth/login') {
         return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400, username: 'admin' });
