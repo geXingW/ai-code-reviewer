@@ -41,6 +41,11 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+# 前端构建产物（app/static/）打进 wheel 包，单包部署时 FastAPI 直接托管。
+# 本地开发时该目录通常只有 .gitkeep，不影响纯后端安装。
+app = ["static/**/*"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

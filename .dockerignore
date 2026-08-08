@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+build/
+dist/
+backend/dist/
+backend/tmp_test.db
+backend/*.db-journal
+
+# Node
+node_modules/
+frontend/dist/
+backend/app/static/*
+!backend/app/static/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# AI 助手本地文件
+.claude/
+.cursorrules
+.cursor/
+.windsurf/
+PROJECT.md
+CONTEXT.md
+TASK_*.md

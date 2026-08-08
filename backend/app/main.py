@@ -4,9 +4,12 @@ import logging
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import close_all_sessions
 
 from app.api.admin import login_router as admin_login_router
@@ -102,6 +105,33 @@ def create_app() -> FastAPI:
     app.include_router(admin_login_router)
     app.include_router(admin_router)
     app.include_router(stats_router)
+
+    # ---- 静态文件托管（单包部署模式）----
+    # 前端构建产物被打包进 app/static/ 时，挂载为静态资源并提供 SPA fallback。
+    # 纯后端部署（static 目录不存在）时跳过，不影响 API 服务。
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.is_dir():
+        # SPA fallback：未匹配到 API/文档/静态资源的路径，返回 index.html 让前端路由接管
+        @app.exception_handler(404)
+        async def _spa_fallback_handler(
+            request: Request, _exc: HTTPException
+        ) -> Response:
+            path = request.url.path
+            # API / 健康检查 / OpenAPI 文档路径直接返回标准 JSON 404
+            api_prefixes = ("/api", "/health", "/docs", "/openapi.json", "/redoc")
+            if any(path.startswith(p) for p in api_prefixes):
+                return JSONResponse(status_code=404, content={"detail": "Not Found"})
+            # 带扩展名的请求（静态资源）也直接 404，避免 fallback 到 HTML
+            last_segment = path.rsplit("/", 1)[-1]
+            if "." in last_segment:
+                return JSONResponse(status_code=404, content={"detail": "Not Found"})
+            index_path = static_dir / "index.html"
+            if index_path.is_file():
+                return FileResponse(str(index_path))
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+        app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+
     return app
 
 
