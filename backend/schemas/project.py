@@ -33,6 +33,19 @@ class ProjectCreate(BaseModel):
     rules: list[ProjectRuleCreate] | None = None
     block_policies: list[ProjectBlockPolicyCreate] = Field(default_factory=list)
 
+    @field_validator("engine_id", "provider_id", mode="before")
+    @classmethod
+    def _empty_str_to_none(cls, value: object) -> object:
+        """Convert empty string to None for optional UUID fields.
+
+        Frontend form components often submit empty strings for cleared inputs
+        instead of omitting the field entirely. Treating '' as None makes the
+        API more forgiving without affecting callers that omit the field.
+        """
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
 
 class ProjectUpdate(BaseModel):
     """Payload for updating a GitLab project configuration."""
@@ -51,6 +64,14 @@ class ProjectUpdate(BaseModel):
     deleted_at: datetime | None = None
     rules: list[ProjectRuleCreate] | None = None
     block_policies: list[ProjectBlockPolicyCreate] | None = None
+
+    @field_validator("engine_id", "provider_id", mode="before")
+    @classmethod
+    def _empty_str_to_none(cls, value: object) -> object:
+        """Convert empty string to None for optional UUID fields."""
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
 
 class ProjectRead(BaseModel):
