@@ -33,6 +33,9 @@ COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
 COPY scripts ./scripts
 
+# Generate release SQL artifacts (full schema + incremental migrations)
+RUN python scripts/generate_release_sql.py --output-dir /app/sql
+
 # app.py as entrypoint
 COPY app.py ./app.py
 

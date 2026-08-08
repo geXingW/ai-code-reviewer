@@ -33,6 +33,7 @@ class Project(Base, TimestampMixin):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     gitlab_project_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    gitlab_base_url: Mapped[str] = mapped_column(String(512), nullable=False, server_default="")
     gitlab_access_token: Mapped[str] = mapped_column(EncryptedString(), nullable=False)
     webhook_secret: Mapped[str] = mapped_column(EncryptedString(), nullable=False)
     engine_id: Mapped[UUID | None] = mapped_column(

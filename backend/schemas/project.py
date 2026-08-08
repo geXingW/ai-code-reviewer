@@ -18,6 +18,7 @@ class ProjectCreate(BaseModel):
 
     name: str
     gitlab_project_id: str
+    gitlab_base_url: str | None = None
     gitlab_access_token: str
     webhook_secret: str
     engine_id: UUID | None = None
@@ -52,6 +53,7 @@ class ProjectUpdate(BaseModel):
 
     name: str | None = None
     gitlab_project_id: str | None = None
+    gitlab_base_url: str | None = None
     gitlab_access_token: str | None = None
     webhook_secret: str | None = None
     engine_id: UUID | None = None
@@ -82,6 +84,7 @@ class ProjectRead(BaseModel):
     id: UUID
     name: str
     gitlab_project_id: str
+    gitlab_base_url: str
     gitlab_access_token: str
     webhook_secret: str
     engine_id: UUID | None

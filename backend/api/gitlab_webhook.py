@@ -1,10 +1,10 @@
 """GitLab webhook ingestion endpoints.
 
 The endpoint handles GitLab Merge Request Hook events, validates the shared
-secret, normalizes the payload into a service-layer event, and dispatches the
-review orchestrator. The current MVP processes inline so the GitLab integration
-can be exercised end-to-end; a later queue worker can move the same service call
-out of the request path.
+secret at the project level, normalizes the payload into a service-layer event,
+and dispatches the review orchestrator. The current MVP processes inline so the
+GitLab integration can be exercised end-to-end; a later queue worker can move
+the same service call out of the request path.
 """
 
 from __future__ import annotations
@@ -17,11 +17,12 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 
-from core.config import get_settings
 from core.db import AsyncSessionLocal
 from engines import load_builtin_engines
 from engines.registry import get_engine_registry
-from integrations.gitlab.client import GitLabClient
+from models.project import Project
+from repositories.project import ProjectRepository
+from services.gitlab_client_factory import build_gitlab_client_for_project
 from services.notification_service import NotificationService
 from services.review_orchestrator import (
     GitLabMergeRequestEvent,
@@ -65,15 +66,32 @@ async def handle_gitlab_webhook(
         GitLabWebhookResponse: Processing summary.
     """
 
-    _validate_webhook_secret(x_gitlab_token)
+    # 1. 轻量解析 project_id，再查 DB 拿项目（不泄露项目存在性）。
+    project_id = _extract_project_id(payload)
+    project = await _resolve_project(project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid webhook token",
+        )
+
+    # 2. 项目 disabled → 202 + processed=false。
+    if not project.enabled:
+        return GitLabWebhookResponse(processed=False, reason="project_disabled")
+
+    # 3. 用项目级 webhook_secret 校验 X-Gitlab-Token。
+    _validate_webhook_secret(x_gitlab_token, project)
+
     if x_gitlab_event != "Merge Request Hook" or payload.get("object_kind") != "merge_request":
         return GitLabWebhookResponse(processed=False, reason="ignored_event")
 
+    # 4. 完整解析 MR event。
     event = _parse_merge_request_event(payload)
     if event.action not in _SUPPORTED_ACTIONS:
         return GitLabWebhookResponse(processed=False, reason="ignored_action")
 
-    result = await review_merge_request_event(event)
+    # 5. 调用 review 流程，传入 project 以便构造项目级 GitLabClient。
+    result = await review_merge_request_event(event, project=project)
     return GitLabWebhookResponse(
         processed=True,
         status=result.status,
@@ -86,22 +104,35 @@ async def handle_gitlab_webhook(
 async def review_merge_request_event(
     event: GitLabMergeRequestEvent,
     *,
+    project: Project | None = None,
     session_factory: SessionFactory | None = None,
 ) -> OrchestratorResult:
     """Build runtime dependencies and run the MR review orchestrator.
 
     Args:
         event: 规范化后的 GitLab MR 事件。
+        project: 对应的 Project 记录。若为 None 则通过 gitlab_project_id 查库。
         session_factory: 可选的 sessionmaker 覆盖。测试里可传入 test_engine
             对应的 factory，避免复用模块级 ``AsyncSessionLocal`` 绑到已关闭的 loop。
     """
 
-    settings = get_settings()
+    # 兼容旧调用：未传 project 时，从事件的 gitlab_project_id 反查。
+    if project is None:
+        effective_session_factory = session_factory or AsyncSessionLocal
+        async with effective_session_factory() as session:
+            repo = ProjectRepository(session)
+            project = await repo.get_by_gitlab_project_id(str(event.project_id))
+            if project is None:
+                msg = f"No project found for gitlab_project_id={event.project_id}"
+                raise ValueError(msg)
+
     load_builtin_engines()
-    client = GitLabClient(
-        base_url=settings.gitlab_base_url,
-        token=settings.gitlab_token.get_secret_value(),
-    )
+    client = build_gitlab_client_for_project(project)
+
+    from core.config import get_settings
+
+    settings = get_settings()
+
     # 注入应用级 sessionmaker，让 orchestrator 每次评审完成后能落库 review + finding。
     effective_session_factory = session_factory or AsyncSessionLocal
     orchestrator = ReviewOrchestrator(
@@ -115,12 +146,51 @@ async def review_merge_request_event(
     return await orchestrator.review_merge_request(event)
 
 
-def _validate_webhook_secret(token: str | None) -> None:
-    """Validate GitLab webhook token using constant-time comparison."""
+def _extract_project_id(payload: dict[str, Any]) -> int:
+    """Lightweight extraction of ``project.id`` from a webhook payload.
 
-    expected = get_settings().gitlab_webhook_secret.get_secret_value()
+    Only parses the minimum needed to identify the target project. Full event
+    validation happens later in :func:`_parse_merge_request_event`.
+
+    Raises:
+        HTTPException: 422 if the project.id field is missing or invalid.
+    """
+
+    try:
+        project = _expect_dict(payload["project"], "project")
+        project_id = int(project["id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid GitLab merge request payload: {exc}",
+        ) from exc
+    return project_id
+
+
+async def _resolve_project(project_id: int) -> Project | None:
+    """Look up a Project by its GitLab numeric project ID.
+
+    Returns None if no matching project is found (caller should return 401
+    to avoid leaking existence).
+    """
+
+    async with AsyncSessionLocal() as session:
+        repo = ProjectRepository(session)
+        return await repo.get_by_gitlab_project_id(str(project_id))
+
+
+def _validate_webhook_secret(token: str | None, project: Project) -> None:
+    """Validate GitLab webhook token using constant-time comparison.
+
+    Uses ``project.webhook_secret`` as the expected value.
+    """
+
+    expected = project.webhook_secret
     if not expected:
-        logger.warning("GitLab webhook secret is empty; rejecting request for safety")
+        logger.warning(
+            "GitLab webhook secret is empty for project %s; rejecting request for safety",
+            project.gitlab_project_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid webhook token",

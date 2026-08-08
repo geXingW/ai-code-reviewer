@@ -35,8 +35,6 @@ docker run -d \
   -e SECRET_KEY="your-fernet-key" \
   -e ADMIN_PASSWORD="your-admin-password" \
   -e JWT_SECRET="your-jwt-secret" \
-  -e GITLAB_BASE_URL="https://gitlab.example.com" \
-  -e GITLAB_TOKEN="your-gitlab-token" \
   -e INTERNAL_API_TOKEN="your-internal-token" \
   ai-code-reviewer
 ```
@@ -52,6 +50,16 @@ docker exec ai-code-reviewer alembic upgrade head
 # 写入种子数据（默认规则、引擎配置等）
 docker exec ai-code-reviewer python scripts/seed.py
 ```
+
+#### SQL 归档文件
+
+镜像内 `/app/sql/` 目录附带了可追溯的 SQL 文件，方便离线部署或 DBA 审阅：
+
+- `sql/schema-full.sql`：全量初始化 SQL（从空库到当前版本）
+- `sql/migrations/*.sql`：每个版本的增量 DDL
+- `sql/VERSION`：当前版本对应的 Alembic revision
+
+新部署也可以直接执行 `sql/schema-full.sql` 建库，跳过 `alembic upgrade head`。
 
 ### 1.4 访问入口
 
@@ -96,14 +104,14 @@ ADMIN_PASSWORD=CHANGE_ME_STRONG_PASSWORD
 JWT_SECRET=CHANGE_ME_32_BYTES_MIN
 JWT_ALGORITHM=HS256
 JWT_EXPIRES_IN=86400
-GITLAB_BASE_URL=https://gitlab.example.com
-GITLAB_TOKEN=CHANGE_ME_GITLAB_TOKEN
-GITLAB_WEBHOOK_SECRET=CHANGE_ME_WEBHOOK_SECRET
 INTERNAL_API_TOKEN=CHANGE_ME_INTERNAL_TOKEN
 DEFAULT_REVIEW_ENGINE=llm-direct
 CORS_ORIGINS=["http://localhost:8000"]
 EOF
 ```
+
+> **注意**：GitLab 相关配置（`GITLAB_BASE_URL`、`GITLAB_TOKEN`、`GITLAB_WEBHOOK_SECRET`）已下沉到项目级。
+> 启动后在管理台创建项目时填写每个项目的 GitLab 地址、Access Token 和 Webhook Secret。
 
 生成 Fernet 密钥：
 
