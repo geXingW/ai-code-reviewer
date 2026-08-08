@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, cast
 from uuid import UUID, uuid4
 
 import jwt as pyjwt
@@ -25,7 +25,6 @@ from core.block_policy import (
 )
 from core.config import get_settings
 from core.db import Base, DbSession
-from integrations.gitlab.client import GitLabClient
 from models.engine import Engine
 from models.finding import Finding
 from models.negative_example import NegativeExample
@@ -58,6 +57,9 @@ from schemas.project_rule import ProjectRuleCreate
 from schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
 from schemas.review import ReviewCreate, ReviewRead, ReviewUpdate
 from schemas.rule import RuleCreate, RuleRead, RuleUpdate
+
+if TYPE_CHECKING:
+    from integrations.gitlab.client import GitLabClient
 
 logger = logging.getLogger(__name__)
 
