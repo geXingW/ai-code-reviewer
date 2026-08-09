@@ -69,9 +69,9 @@ docker exec ai-code-reviewer python scripts/seed.py
 
 ---
 
-## 二、pip 安装部署（非 Docker）
+## 二、源码安装部署（非 Docker）
 
-直接从 GitHub Release 下载 wheel 包，在裸机或虚拟机上运行。
+从源码安装运行，适合裸机/虚拟机部署。
 
 ### 2.1 前置条件
 
@@ -82,13 +82,14 @@ docker exec ai-code-reviewer python scripts/seed.py
 ### 2.2 安装
 
 ```bash
-# 从 GitHub Release 下载 wheel
-wget https://github.com/geXingW/ai-code-reviewer/releases/download/v0.1.0/ai_code_reviewer_backend-0.1.0-py3-none-any.whl
+# 克隆代码
+git clone https://github.com/geXingW/ai-code-reviewer.git
+cd ai-code-reviewer/backend
 
 # 安装（推荐用虚拟环境）
 python -m venv /opt/ai-code-reviewer/venv
 source /opt/ai-code-reviewer/venv/bin/activate
-pip install ai_code_reviewer_backend-0.1.0-py3-none-any.whl
+pip install -e .
 ```
 
 ### 2.3 配置
@@ -125,14 +126,11 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 source /opt/ai-code-reviewer/venv/bin/activate
 set -a; source /opt/ai-code-reviewer/.env; set +a
 
-# 找到 alembic 命令的位置（随包安装）
-cd $(python -c "import app; import os; print(os.path.dirname(os.path.dirname(app.__file__)))")
+cd /opt/ai-code-reviewer/backend
 
 alembic upgrade head
-python -m app.scripts.seed  # 或找到 scripts/seed.py 的位置执行
+python scripts/seed.py
 ```
-
-> **注意**：alembic.ini 和 seed 脚本随包安装的路径可能不同。如果找不到，可以从源码仓库复制 `backend/alembic/`、`backend/alembic.ini`、`backend/scripts/` 到部署目录。
 
 ### 2.5 systemd 服务（推荐）
 
@@ -147,7 +145,7 @@ Type=simple
 User=www-data
 WorkingDirectory=/opt/ai-code-reviewer
 EnvironmentFile=/opt/ai-code-reviewer/.env
-ExecStart=/opt/ai-code-reviewer/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+ExecStart=/opt/ai-code-reviewer/venv/bin/python app.py --host 0.0.0.0 --port 8000 --migrate
 Restart=on-failure
 RestartSec=5s
 
@@ -203,9 +201,8 @@ docker compose --profile postgres up -d --build
 - API 文档：`http://localhost:8000/docs`
 
 后端容器启动时自动执行：
-1. `alembic upgrade head` — 初始化/升级数据库结构
-2. `python scripts/seed.py` — 写入种子数据
-3. `uvicorn app.main:app --reload` — 启动服务（带热重载）
+1. `python scripts/seed.py` — 写入种子数据
+2. `python app.py --reload --migrate` — 启动服务（带热重载 + 自动迁移）
 
 ---
 
@@ -224,7 +221,7 @@ docker build -t ai-code-reviewer-backend .
 
 ### pip 方式
 
-从 Release 下载的 wheel 包本身就是纯后端包。如果 `app/static/` 目录不存在，FastAPI 不会挂载静态文件，完全不影响 API 服务。
+从源码安装的包本身就是纯后端。如果 `static/` 目录不存在，FastAPI 不会挂载静态文件，完全不影响 API 服务。
 
 ---
 

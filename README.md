@@ -129,21 +129,23 @@ docker run -d --name ai-code-reviewer \
   -p 8000:8000 \
   ai-code-reviewer
 
-# 4. 初始化数据库（首次启动）
-docker exec ai-code-reviewer alembic upgrade head
+# 4. 初始化种子数据（首次启动，容器启动时已自动执行迁移）
 docker exec ai-code-reviewer python scripts/seed.py
 
 # 5. 访问
 open http://localhost:8000
 ```
 
-### 方式二：pip 安装
+### 方式二：源码安装
 
-从 GitHub Release 下载 wheel 包，直接安装运行。
+从源码安装运行，适合裸机/虚拟机部署。
 
 ```bash
-# 1. 安装
-pip install ai_code_reviewer_backend-0.1.0-py3-none-any.whl
+# 1. 克隆代码并安装
+git clone https://github.com/geXingW/ai-code-reviewer.git
+cd ai-code-reviewer/backend
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
 
 # 2. 配置环境变量
 export SECRET_KEY=...
@@ -151,7 +153,7 @@ export DATABASE_URL=postgresql+asyncpg://...
 
 # 3. 初始化 + 启动
 alembic upgrade head
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+python app.py --host 0.0.0.0 --port 8000
 ```
 
 ### 方式三：Docker Compose 开发模式

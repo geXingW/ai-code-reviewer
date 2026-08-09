@@ -37,5 +37,5 @@ PROJECT.md
 CONTEXT.md
 
 # 前端构建产物（打进后端 static 目录，发布时由 CI 生成）
-backend/app/static/*
-!backend/app/static/.gitkeep
+backend/static/*
+!backend/static/.gitkeep

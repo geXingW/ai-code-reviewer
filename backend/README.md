@@ -6,11 +6,22 @@ FastAPI backend service for `ai-code-reviewer`.
 
 ```text
 backend/
-├── app/
-│   ├── api/          # HTTP routers
-│   ├── core/         # config, logging, database
-│   └── main.py       # FastAPI application entrypoint
-└── tests/            # pytest test suite
+├── main.py            # FastAPI application factory + ASGI entrypoint
+├── app.py             # Startup script (python app.py)
+├── __main__.py        # Module entrypoint (python -m ...)
+├── api/               # HTTP routers
+├── core/              # config, logging, database
+├── engines/           # ReviewEngine abstraction + LLMEngine
+├── integrations/      # GitLab / DingTalk clients
+├── llm/               # LLM provider abstraction
+├── models/            # SQLAlchemy ORM models
+├── repositories/      # Data access layer (async)
+├── schemas/           # Pydantic v2 schemas
+├── services/          # Review orchestrator + notifications
+├── alembic/           # Database migrations
+├── scripts/           # seed.py / seed_rules.py / generate_release_sql.py
+├── tests/             # pytest test suite
+└── pyproject.toml     # Project metadata + dependencies
 ```
 
 ## Local development
@@ -20,7 +31,7 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-uvicorn app.main:app --reload
+python app.py --reload
 ```
 
 The service exposes `GET /health`, which checks database connectivity.

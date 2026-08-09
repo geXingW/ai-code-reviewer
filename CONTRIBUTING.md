@@ -29,7 +29,7 @@ cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 alembic upgrade head
-uvicorn app.main:app --reload
+python app.py --reload
 
 # 前端
 cd ../frontend

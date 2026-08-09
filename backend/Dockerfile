@@ -3,18 +3,24 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-    PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn \
-    PIP_DEFAULT_TIMEOUT=60
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=5 \
+    PYTHONPATH=/app
 
 WORKDIR /app
 
 RUN addgroup --gid 1000 appuser \
     && adduser --disabled-password --gecos "" --uid 1000 --gid 1000 appuser
 
+# Pre-install build dependency to avoid PEP 517 build-isolation network issues.
+RUN pip install --upgrade pip && \
+    pip install "setuptools>=68"
+
 # Install dependencies first (better cache)
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --no-build-isolation .
 
 # Copy application code
 COPY main.py __main__.py ./
