@@ -261,6 +261,7 @@ describe('MVP 管理台', () => {
       id: projectId,
       name: 'demo-project',
       gitlab_project_id: '123',
+      gitlab_base_url: 'https://gitlab.example.com',
       gitlab_access_token: '****',
       webhook_secret: '****',
       engine_id: null,

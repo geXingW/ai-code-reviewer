@@ -33,18 +33,6 @@ class Settings(BaseSettings):
         Field(description="Fernet key used to encrypt tokens and secrets."),
     ] = SecretStr("CHANGE_ME_FERNET_KEY_GENERATE_WITH_Fernet.generate_key")
     log_level: Annotated[str, Field(description="Python logging level name.")] = "INFO"
-    gitlab_base_url: Annotated[
-        str,
-        Field(description="GitLab instance base URL used by webhook review orchestration."),
-    ] = "http://localhost"
-    gitlab_token: Annotated[
-        SecretStr,
-        Field(description="GitLab access token used to read MR diff and write feedback."),
-    ] = SecretStr("CHANGE_ME_GITLAB_TOKEN")
-    gitlab_webhook_secret: Annotated[
-        SecretStr,
-        Field(description="Shared secret expected in the X-Gitlab-Token webhook header."),
-    ] = SecretStr("test-webhook-secret")
     internal_api_token: Annotated[
         SecretStr,
         Field(description="Server-to-server token expected in the X-Internal-Token header."),
@@ -141,6 +129,15 @@ class Settings(BaseSettings):
         list[str],
         Field(description="Allowed CORS origins."),
     ] = ["http://localhost:5173"]
+    gitlab_base_url: Annotated[
+        str,
+        Field(
+            description=(
+                "全局默认 GitLab 实例地址。项目未单独配置 gitlab_base_url 时使用此值。"
+                "自建 GitLab 填 https://gitlab.yourdomain.com，SaaS 留默认 https://gitlab.com。"
+            ),
+        ),
+    ] = "https://gitlab.com"
 
 
 @lru_cache

@@ -58,8 +58,8 @@
 
 ### 2.1 GitLab 测试 Webhook 返回 401
 
-- GitLab Webhook 配置页的 **Secret Token** 与后端 `GITLAB_WEBHOOK_SECRET` 不一致。
-- 后端未重启，仍在用旧环境变量：`docker compose restart backend`。
+- GitLab Webhook 配置页的 **Secret Token** 与**管理台项目配置中的 Webhook Secret** 不一致（注意是项目级，不是全局 ENV）。
+- 项目未在管理台创建，或 `gitlab_project_id` 与 GitLab 侧的数字 ID 不匹配。
 - 后端收到的 `X-Gitlab-Token` 请求头被反向代理剥离——检查 nginx/网关是否透传该自定义头。
 
 ### 2.2 GitLab 显示已投递，但后端无反应
@@ -112,7 +112,7 @@ printenv | sort | grep -E 'gitlab|GITLAB|CHANGE_|GIT_' | grep -vi 'token\|passwo
 
 - 先用小 MR 验证字段映射与连通性。
 - 评审接口当前同步执行；大 MR 耗时长，建议 stage 超时设 10–15 分钟。
-- 检查后端能否访问 GitLab（`GITLAB_BASE_URL` / `GITLAB_TOKEN` 配置与网络）。
+- 检查后端能否访问 GitLab（项目配置的 `gitlab_base_url` / `gitlab_access_token` 是否正确，网络是否可达）。
 - 查看 `docker compose logs -f backend` 中该 MR 的安全摘要。
 
 ### 3.5 `has_blocker=true` 但 MR 没被阻断

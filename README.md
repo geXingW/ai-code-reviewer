@@ -121,7 +121,7 @@ docker build -t ai-code-reviewer .
 
 # 2. 准备数据库（PostgreSQL 或 MySQL），设置环境变量
 cp .env.example .env
-# 编辑 .env，至少修改 SECRET_KEY、DATABASE_URL、GITLAB_TOKEN 等
+# 编辑 .env，至少修改 SECRET_KEY、DATABASE_URL 等
 
 # 3. 启动
 docker run -d --name ai-code-reviewer \
@@ -298,11 +298,10 @@ curl -X POST http://localhost:8000/api/false-positives/{id}/confirm \
 | `JWT_SECRET` | JWT 签名密钥（≥ 32 字节） | 需修改 |
 | `JWT_ALGORITHM` | JWT 签名算法 | `HS256` |
 | `JWT_EXPIRES_IN` | JWT 有效期（秒） | `86400`（24h） |
-| `GITLAB_BASE_URL` | GitLab 实例地址 | `http://localhost` |
-| `GITLAB_TOKEN` | GitLab API Token | 需配置 |
-| `GITLAB_WEBHOOK_SECRET` | Webhook 签名校验密钥 | `test-webhook-secret` |
 | `DEFAULT_REVIEW_ENGINE` | 默认评审引擎 | `llm-direct` |
 | `CORS_ORIGINS` | 允许的跨域来源 | `["http://localhost:5173"]` |
+
+> **注意**：`GITLAB_BASE_URL`、`GITLAB_TOKEN`、`GITLAB_WEBHOOK_SECRET` 已从全局 ENV 移除，下沉到项目级配置。在管理台创建项目时，每个项目独立填写 GitLab 地址、Access Token 和 Webhook Secret，支持对接多个 GitLab 实例。
 
 ---
 

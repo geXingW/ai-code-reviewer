@@ -33,6 +33,7 @@ export interface ProjectDialogProps {
 const initialEmptyForm: ProjectFormPayload = {
   name: '',
   gitlab_project_id: '',
+  gitlab_base_url: '',
   gitlab_access_token: '',
   webhook_secret: '',
   engine_id: '',
@@ -79,6 +80,7 @@ export function ProjectDialog({
         setForm({
           name: initialData.name,
           gitlab_project_id: initialData.gitlab_project_id,
+          gitlab_base_url: initialData.gitlab_base_url,
           gitlab_access_token: initialData.gitlab_access_token,
           webhook_secret: initialData.webhook_secret,
           engine_id: initialData.engine_id || '',
@@ -153,6 +155,16 @@ export function ProjectDialog({
             value={form.name}
             onChange={(event) => setForm({ ...form, name: event.target.value })}
             placeholder="例如：my-project"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="project-gitlab-base-url">GitLab Base URL</Label>
+          <Input
+            id="project-gitlab-base-url"
+            value={form.gitlab_base_url}
+            onChange={(event) => setForm({ ...form, gitlab_base_url: event.target.value })}
+            placeholder="https://gitlab.example.com"
           />
         </div>
 

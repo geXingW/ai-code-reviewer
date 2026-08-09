@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import hmac
 import logging
-import os
 import re
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, cast
 from uuid import UUID, uuid4
 
 import jwt as pyjwt
@@ -26,7 +25,6 @@ from core.block_policy import (
 )
 from core.config import get_settings
 from core.db import Base, DbSession
-from integrations.gitlab.client import GitLabClient
 from models.engine import Engine
 from models.finding import Finding
 from models.negative_example import NegativeExample
@@ -59,6 +57,9 @@ from schemas.project_rule import ProjectRuleCreate
 from schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
 from schemas.review import ReviewCreate, ReviewRead, ReviewUpdate
 from schemas.rule import RuleCreate, RuleRead, RuleUpdate
+
+if TYPE_CHECKING:
+    from integrations.gitlab.client import GitLabClient
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +336,9 @@ async def create_project(payload: ProjectCreate, db: DbSession) -> ProjectRead:
     """
 
     data = payload.model_dump(exclude={"rules", "block_policies"})
+    # gitlab_base_url 未传或为空时，兜底到全局 settings.gitlab_base_url
+    if not data.get("gitlab_base_url"):
+        data["gitlab_base_url"] = get_settings().gitlab_base_url
     project = Project(**data)
     if payload.rules is None:
         rules = await _default_blocker_project_rules(db)
@@ -361,6 +365,9 @@ async def update_project(project_id: UUID, payload: ProjectUpdate, db: DbSession
 
     project = await _get_or_404(db, Project, project_id, "Project", options=True)
     data = payload.model_dump(exclude_unset=True, exclude={"rules", "block_policies"})
+    # 显式传了 gitlab_base_url 但为空串时，也兜底到全局默认
+    if "gitlab_base_url" in data and not data["gitlab_base_url"]:
+        data["gitlab_base_url"] = get_settings().gitlab_base_url
     for field, value in data.items():
         setattr(project, field, value)
     if payload.rules is not None:
@@ -657,15 +664,14 @@ async def resolve_finding(
 def _build_gitlab_client(project: Project) -> GitLabClient | None:
     """
     从 Project 构造 GitLabClient，用于后续操作 discussion。
-    如果 project.gitlab_access_token 为空，返回 None（skip 操作）。
-    方便测试 monkeypatch 替换。
+    如果 project.gitlab_access_token 或 project.gitlab_base_url 为空，
+    返回 None（skip 操作）。方便测试 monkeypatch 替换。
     """
-    if not project.gitlab_access_token:
+    if not project.gitlab_access_token or not project.gitlab_base_url:
         return None
-    return GitLabClient(
-        base_url=os.getenv("GITLAB_BASE_URL", "http://gitlab:18080"),
-        token=project.gitlab_access_token,
-    )
+    from services.gitlab_client_factory import build_gitlab_client_for_project
+
+    return build_gitlab_client_for_project(project)
 
 
 async def _resolve_finding_discussion(finding: Finding, db: AsyncSession) -> None:

@@ -147,6 +147,7 @@ export type ProjectConfig = {
   id: string;
   name: string;
   gitlab_project_id: string;
+  gitlab_base_url: string;
   gitlab_access_token: string;
   webhook_secret: string;
   engine_id: string | null;
@@ -260,6 +261,7 @@ export type ProviderFormPayload = {
 export type ProjectFormPayload = {
   name: string;
   gitlab_project_id: string;
+  gitlab_base_url: string;
   gitlab_access_token: string;
   webhook_secret: string;
   engine_id: string;
@@ -274,6 +276,7 @@ export type ProjectFormPayload = {
 export type ProjectUpdatePayload = {
   name?: string;
   gitlab_project_id?: string;
+  gitlab_base_url?: string;
   gitlab_access_token?: string;
   webhook_secret?: string;
   enabled?: boolean;

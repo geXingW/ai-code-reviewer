@@ -74,6 +74,9 @@ jobs:
           cp alembic.ini "dist/${PKG_NAME}/"
           cp -r scripts "dist/${PKG_NAME}/scripts"
 
+          # 生成发布用 SQL 文件（全量 + 增量）
+          python scripts/generate_release_sql.py --output-dir "dist/${PKG_NAME}/sql"
+
           # 配置示例
           cp ../.env.example "dist/${PKG_NAME}/env.example"
 

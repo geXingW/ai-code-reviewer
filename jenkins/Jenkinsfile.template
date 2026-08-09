@@ -31,12 +31,14 @@ pipeline {
     }
 
     triggers {
-        // GitLab MR webhook trigger
+        // GitLab MR webhook trigger —— 这是 Jenkins GitLab 插件用来触发 Pipeline 的 webhook secret，
+        // 与 AI Reviewer 项目级 webhook_secret 是两个不同的东西，不要混淆。
+        // AI Reviewer 的 webhook secret 在管理台项目配置中单独设置。
         gitlab(
             triggerOnMergeRequest: true,
             triggerOnPush: false,
             branchFilterType: 'All',
-            secretToken: '${GITLAB_WEBHOOK_SECRET}'
+            secretToken: '${JENKINS_GITLAB_WEBHOOK_SECRET}'
         )
     }
 

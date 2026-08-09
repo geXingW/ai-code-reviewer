@@ -67,6 +67,7 @@ async def create_project(client: AsyncClient, name: str = "demo") -> str:
         json={
             "name": name,
             "gitlab_project_id": f"group/{name}",
+            "gitlab_base_url": "https://gitlab.example.com",
             "gitlab_access_token": "gl-token",
             "webhook_secret": "hook-secret",
         },
@@ -178,6 +179,7 @@ async def test_project_nested_rules_and_block_policies_crud(admin_client: AsyncC
         json={
             "name": "demo",
             "gitlab_project_id": "123",
+            "gitlab_base_url": "https://gitlab.example.com",
             "gitlab_access_token": "gl-token",
             "webhook_secret": "hook-secret",
             "rules": [{"rule_id": rule_uuid, "enabled": True, "severity_override": "BLOCKER"}],

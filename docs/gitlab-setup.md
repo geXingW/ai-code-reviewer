@@ -1,6 +1,8 @@
 # GitLab Webhook 接入指南
 
-> 适用范围：MVP 内网试运行。目标是让 GitLab MR 事件触发 AI review，并把结果写回 MR Discussion。
+> 适用范围：生产环境接入。目标是让 GitLab MR 事件触发 AI review，并把结果写回 MR Discussion。
+>
+> **注意**：自 v0.1.0 起，GitLab 凭证（地址、Token、Webhook Secret）已下沉到**项目级**，每个项目独立配置，支持对接多个 GitLab 实例。全局 `.env` 仅保留 `GITLAB_BASE_URL` 作为默认兜底值。
 
 ## 一、准备 GitLab Token
 
@@ -16,32 +18,26 @@
 安全建议：
 
 - token 不写入仓库、不写入 Jenkinsfile 明文。
-- token 只放在部署机 `.env`、Jenkins Credentials 或密钥管理系统中。
+- token 只存放在管理台的项目配置中（加密存储），不要散布到多台机器。
 - 如果 token 曾在聊天、Issue、PR 评论中明文出现，建议立即 revoke 并重建。
 
-## 二、配置服务端环境变量
+## 二、在管理台创建项目
 
-在 `ai-code-reviewer` 部署目录编辑 `.env`：
+1. 打开管理台（默认 `http://<backend-host>:8000/`），使用管理员账号登录。
+2. 进入「项目管理」→「新建项目」。
+3. 填写以下字段：
 
-```bash
-GITLAB_BASE_URL=https://gitlab.example.com
-GITLAB_TOKEN=<your-gitlab-token>
-GITLAB_WEBHOOK_SECRET=<random-webhook-secret>
-INTERNAL_API_TOKEN=<random-internal-token>
-```
+   | 字段 | 说明 |
+   |------|------|
+   | 项目名称 | 便于识别的展示名 |
+   | GitLab 项目 ID | GitLab 项目的数字 ID（在项目 Settings → General 中查看） |
+   | GitLab 地址 | 实例根地址，如 `https://gitlab.example.com`。**留空则使用全局默认**（通常是 `https://gitlab.com`，可通过 `GITLAB_BASE_URL` 环境变量修改） |
+   | GitLab Access Token | 第一步准备的 token，用于读取 MR diff 并写回 Discussion |
+   | Webhook Secret | 自定义随机字符串，用于校验 GitLab Webhook 请求的合法性 |
 
-其中：
+4. 保存后，项目列表里会生成一条记录。
 
-- `GITLAB_BASE_URL` 是 GitLab 实例根地址，不要带项目路径。
-- `GITLAB_TOKEN` 用于后端读取 MR diff 并写回 Discussion。
-- `GITLAB_WEBHOOK_SECRET` 用于校验 GitLab Webhook 请求头 `X-Gitlab-Token`。
-- `INTERNAL_API_TOKEN` 用于管理台和 Jenkins 同步接口，不用于 GitLab Webhook。
-
-修改后重启后端：
-
-```bash
-docker compose up -d --build backend
-```
+> **内网自建 GitLab 用户**：务必填写正确的「GitLab 地址」。留空会 fallback 到全局默认，可能指向公网 `gitlab.com`。
 
 ## 三、在 GitLab 项目中新增 Webhook
 
@@ -49,7 +45,7 @@ docker compose up -d --build backend
 
 1. 打开 `Settings` → `Webhooks`。
 2. URL 填写：`http://<backend-host>:8000/api/webhooks/gitlab`。
-3. Secret Token 填写 `.env` 中的 `GITLAB_WEBHOOK_SECRET`。
+3. **Secret Token 填写管理台项目配置中的「Webhook Secret」**（不是全局 ENV 的值）。
 4. Trigger 选择 `Merge request events`。
 5. SSL verification 按内网证书情况选择。
 6. 保存后使用 GitLab 的 Test 功能发送 Merge request event。
@@ -90,13 +86,14 @@ docker compose logs -f backend
 
 **Webhook 测试返回 401**
 
-- GitLab Webhook 的 Secret Token 与 `.env` 的 `GITLAB_WEBHOOK_SECRET` 不一致。
-- 后端未重启，仍在使用旧环境变量。
+- GitLab Webhook 的 Secret Token 与**管理台项目配置的 Webhook Secret** 不一致。
+- 确认项目已在管理台创建，且 `gitlab_project_id` 与 GitLab 侧一致。
+- 检查后端日志中是否有 `No project found for gitlab_project_id=xxx` 或 `Invalid webhook token` 字样。
 
 **Webhook 测试超时**
 
 - GitLab 服务器无法访问后端地址。
-- 后端正在同步执行一次较慢的 review。MVP 阶段建议先用小 MR 验证。
+- 后端正在同步执行一次较慢的 review。建议先用小 MR 验证。
 - 网络层反向代理超时时间过短。
 
 **MR 没有 Discussion**
@@ -104,6 +101,7 @@ docker compose logs -f backend
 - GitLab Token 权限不足或 token 已过期。
 - MR diff 过大，被 diff 限制策略跳过。
 - 当前模型/引擎返回无有效 finding。
+- 检查「GitLab 地址」是否配置正确（内网实例务必填内网地址）。
 
 **行级 Discussion 位置不正确**
 
@@ -112,7 +110,7 @@ docker compose logs -f backend
 
 ## 六、与 Jenkins 阻断的关系
 
-GitLab Webhook 负责“收到 MR 事件后自动评审并评论”。
+GitLab Webhook 负责"收到 MR 事件后自动评审并评论"。
 
 真正阻断合并通常由 Jenkins Pipeline 完成：
 

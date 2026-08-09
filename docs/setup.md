@@ -35,8 +35,6 @@ docker run -d \
   -e SECRET_KEY="your-fernet-key" \
   -e ADMIN_PASSWORD="your-admin-password" \
   -e JWT_SECRET="your-jwt-secret" \
-  -e GITLAB_BASE_URL="https://gitlab.example.com" \
-  -e GITLAB_TOKEN="your-gitlab-token" \
   -e INTERNAL_API_TOKEN="your-internal-token" \
   ai-code-reviewer
 ```
@@ -52,6 +50,16 @@ docker exec ai-code-reviewer alembic upgrade head
 # 写入种子数据（默认规则、引擎配置等）
 docker exec ai-code-reviewer python scripts/seed.py
 ```
+
+#### SQL 归档文件
+
+镜像内 `/app/sql/` 目录附带了可追溯的 SQL 文件，方便离线部署或 DBA 审阅：
+
+- `sql/schema-full.sql`：全量初始化 SQL（从空库到当前版本）
+- `sql/migrations/*.sql`：每个版本的增量 DDL
+- `sql/VERSION`：当前版本对应的 Alembic revision
+
+新部署也可以直接执行 `sql/schema-full.sql` 建库，跳过 `alembic upgrade head`。
 
 ### 1.4 访问入口
 
@@ -96,14 +104,14 @@ ADMIN_PASSWORD=CHANGE_ME_STRONG_PASSWORD
 JWT_SECRET=CHANGE_ME_32_BYTES_MIN
 JWT_ALGORITHM=HS256
 JWT_EXPIRES_IN=86400
-GITLAB_BASE_URL=https://gitlab.example.com
-GITLAB_TOKEN=CHANGE_ME_GITLAB_TOKEN
-GITLAB_WEBHOOK_SECRET=CHANGE_ME_WEBHOOK_SECRET
 INTERNAL_API_TOKEN=CHANGE_ME_INTERNAL_TOKEN
 DEFAULT_REVIEW_ENGINE=llm-direct
 CORS_ORIGINS=["http://localhost:8000"]
 EOF
 ```
+
+> **注意**：GitLab 相关配置（`GITLAB_BASE_URL`、`GITLAB_TOKEN`、`GITLAB_WEBHOOK_SECRET`）已下沉到项目级。
+> 启动后在管理台创建项目时填写每个项目的 GitLab 地址、Access Token 和 Webhook Secret。
 
 生成 Fernet 密钥：
 
@@ -179,7 +187,7 @@ cd ai-code-reviewer
 
 # 2. 配置环境变量
 cp .env.example .env
-# 编辑 .env，至少替换 SECRET_KEY、GITLAB_BASE_URL、GITLAB_TOKEN 等
+# 编辑 .env，至少替换 SECRET_KEY 等敏感配置
 
 # 3. 启动全套服务（PostgreSQL + 后端 + 前端）
 docker compose --profile postgres up -d --build
@@ -232,11 +240,11 @@ docker build -t ai-code-reviewer-backend .
 | `JWT_SECRET` | JWT 签名密钥（≥32字节） | 需设置 |
 | `JWT_ALGORITHM` | JWT 签名算法 | `HS256` |
 | `JWT_EXPIRES_IN` | JWT 有效期（秒） | `86400` |
-| `GITLAB_BASE_URL` | GitLab 实例地址 | `http://localhost` |
-| `GITLAB_TOKEN` | GitLab API Token | 需配置 |
-| `GITLAB_WEBHOOK_SECRET` | Webhook 签名密钥 | `test-webhook-secret` |
+| `GITLAB_BASE_URL` | GitLab 实例默认地址（项目未配置时的兜底值） | `https://gitlab.com` |
 | `DEFAULT_REVIEW_ENGINE` | 默认评审引擎 | `llm-direct` |
 | `CORS_ORIGINS` | 允许的跨域来源 | `["http://localhost:5173"]` |
+
+> **注意**：GitLab Access Token、Webhook Secret 等凭证已下沉到**项目级**配置，在管理台创建项目时填写，不再通过全局 ENV 配置。详见 [GitLab Webhook 接入指南](gitlab-setup.md)。
 
 ---
 
@@ -305,7 +313,8 @@ docker compose down -v
 - 浏览器控制台查看具体错误
 
 **GitLab Webhook 返回 401**
-- 确认 GitLab Webhook 的 Secret Token 与 `GITLAB_WEBHOOK_SECRET` 一致
+- 确认 GitLab Webhook 的 Secret Token 与**管理台项目配置的 Webhook Secret** 一致（项目级，非全局 ENV）
+- 确认项目已在管理台创建，且 `gitlab_project_id` 与 GitLab 侧一致
 - GitLab 通过 `X-Gitlab-Token` 请求头传递该值
 
 **API 调用返回 401**

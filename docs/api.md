@@ -55,15 +55,19 @@ curl -X POST http://localhost:8000/api/reviews \
 
 ### 1.3 X-Gitlab-Token（GitLab Webhook）
 
-GitLab Webhook 配置页填写的 Secret Token 会通过 `X-Gitlab-Token` 请求头传递，后端用常量时间比较校验，值必须等于 `GITLAB_WEBHOOK_SECRET`。
+GitLab Webhook 配置页填写的 Secret Token 会通过 `X-Gitlab-Token` 请求头传递，后端用常量时间比较校验。
+
+**重要**：Webhook Secret 是**项目级**配置，每个项目独立设置（在管理台项目配置中填写 `webhook_secret`）。后端收到请求后先根据 payload 中的 `project.id` 查询对应项目，再用该项目的 `webhook_secret` 校验。
 
 ```bash
 curl -X POST http://localhost:8000/api/webhooks/gitlab \
   -H "X-Gitlab-Event: Merge Request Hook" \
-  -H "X-Gitlab-Token: $GITLAB_WEBHOOK_SECRET" \
+  -H "X-Gitlab-Token: <项目的 webhook_secret>" \
   -H "Content-Type: application/json" \
   -d '{...}'
 ```
+
+> 项目不存在或 secret 不匹配均返回 401，且不区分具体原因（避免泄露项目存在性）。
 
 ## 二、通用约定
 
@@ -720,7 +724,7 @@ curl http://localhost:8000/api/reviews/recent -H "X-Internal-Token: $INTERNAL_TO
 ```bash
 curl -X POST http://localhost:8000/api/webhooks/gitlab \
   -H "X-Gitlab-Event: Merge Request Hook" \
-  -H "X-Gitlab-Token: $GITLAB_WEBHOOK_SECRET" \
+  -H "X-Gitlab-Token: <项目的 webhook_secret>" \
   -H "Content-Type: application/json" \
   -d '{
     "object_kind": "merge_request",
