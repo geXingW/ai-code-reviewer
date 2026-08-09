@@ -45,6 +45,10 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install backend dependencies
+        run: pip install -e .
+        working-directory: backend
+
       - name: Package full-stack deployment bundle
         run: |
           VERSION=${GITHUB_REF_NAME#v}
