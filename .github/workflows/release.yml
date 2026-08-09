@@ -45,6 +45,23 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install backend dependencies
+        run: pip install -e .
+        working-directory: backend
+
+      - name: Generate release SQL artifacts
+        run: |
+          python scripts/generate_release_sql.py --output-dir sql/
+          # 校验关键输出文件存在
+          test -f sql/schema-full.sql || { echo "ERROR: schema-full.sql not generated"; exit 1; }
+          test -f sql/VERSION || { echo "ERROR: VERSION file not generated"; exit 1; }
+          test -d sql/migrations || { echo "ERROR: migrations/ directory not generated"; exit 1; }
+          MIG_COUNT=$(ls sql/migrations/*.sql 2>/dev/null | wc -l)
+          echo "Generated ${MIG_COUNT} migration SQL files"
+          test "$MIG_COUNT" -gt 0 || { echo "ERROR: no migration SQL files generated"; exit 1; }
+          echo "SQL artifacts OK"
+        working-directory: backend
+
       - name: Package full-stack deployment bundle
         run: |
           VERSION=${GITHUB_REF_NAME#v}
@@ -52,9 +69,11 @@ jobs:
           mkdir -p "dist/${PKG_NAME}"
 
           # 后端源码（拍平结构，python app.py 直接启动）
+          test -f app.py || { echo "ERROR: app.py not found"; exit 1; }
+          test -f __main__.py || { echo "ERROR: __main__.py not found (required for python -m app)"; exit 1; }
           cp app.py "dist/${PKG_NAME}/"
           cp main.py "dist/${PKG_NAME}/"
-          cp __main__.py "dist/${PKG_NAME}/" 2>/dev/null || true
+          cp __main__.py "dist/${PKG_NAME}/"
           cp -r api "dist/${PKG_NAME}/"
           cp -r core "dist/${PKG_NAME}/"
           cp -r engines "dist/${PKG_NAME}/"
@@ -74,8 +93,8 @@ jobs:
           cp alembic.ini "dist/${PKG_NAME}/"
           cp -r scripts "dist/${PKG_NAME}/scripts"
 
-          # 生成发布用 SQL 文件（全量 + 增量）
-          python scripts/generate_release_sql.py --output-dir "dist/${PKG_NAME}/sql"
+          # 发布用 SQL 文件（全量 + 增量，由上一步生成）
+          cp -r sql "dist/${PKG_NAME}/sql"
 
           # 配置示例
           cp ../.env.example "dist/${PKG_NAME}/env.example"
@@ -130,6 +149,15 @@ jobs:
           cd dist
           zip -r "${PKG_NAME}.zip" "${PKG_NAME}/"
           ls -la "${PKG_NAME}.zip"
+
+          # 校验 zip 包关键文件
+          ZIP_SIZE=$(stat -c%s "${PKG_NAME}.zip")
+          echo "Zip size: ${ZIP_SIZE} bytes"
+          test "$ZIP_SIZE" -gt 1000000 || { echo "ERROR: zip too small (< 1MB), build likely failed"; exit 1; }
+          unzip -l "${PKG_NAME}.zip" | grep -q "index.html" || { echo "ERROR: index.html missing from zip"; exit 1; }
+          unzip -l "${PKG_NAME}.zip" | grep -q "schema-full.sql" || { echo "ERROR: schema-full.sql missing from zip"; exit 1; }
+          unzip -l "${PKG_NAME}.zip" | grep -q "app.py" || { echo "ERROR: app.py missing from zip"; exit 1; }
+          echo "Zip contents verified OK"
         working-directory: backend
 
       - name: Create GitHub Release
