@@ -17,28 +17,37 @@ RUN npm config set registry https://registry.npmmirror.com \
 COPY frontend/ .
 RUN npm run build
 
-# ---------- 阶段 2：构建后端 wheel ----------
+# ---------- 阶段 2：安装后端依赖 ----------
 FROM python:3.11-slim AS backend-builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-    PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn \
-    PIP_DEFAULT_TIMEOUT=60
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=5
 
 WORKDIR /build
 
-COPY backend/pyproject.toml backend/README.md ./
-COPY backend/app ./app
+# 创建虚拟环境（便于阶段 3 完整复制，不污染 runtime 标准库）
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-RUN pip wheel --wheel-dir /wheels .
+# Pre-install build dependency to avoid PEP 517 build-isolation network issues.
+RUN pip install --upgrade pip && \
+    pip install "setuptools>=68"
+
+COPY backend/pyproject.toml backend/README.md ./
+RUN pip install --no-cache-dir --no-build-isolation .
 
 # ---------- 阶段 3：运行时 ----------
 FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH=/app
 
 WORKDIR /app
 
@@ -46,19 +55,30 @@ WORKDIR /app
 RUN addgroup --gid 1000 appuser \
     && adduser --disabled-password --gecos "" --uid 1000 --gid 1000 appuser
 
-# 安装后端依赖
-COPY --from=backend-builder /wheels /wheels
-RUN pip install --no-cache-dir /wheels/* \
-    && rm -rf /wheels
+# 从 builder 复制虚拟环境（已包含所有依赖）
+COPY --from=backend-builder /opt/venv /opt/venv
 
-# 后端代码 + 迁移 + 脚本
-COPY backend/app ./app
+# 后端代码（扁平结构，无 app/ 子包）
+COPY backend/main.py backend/__main__.py backend/app.py ./
+COPY backend/api ./api
+COPY backend/core ./core
+COPY backend/engines ./engines
+COPY backend/integrations ./integrations
+COPY backend/llm ./llm
+COPY backend/models ./models
+COPY backend/repositories ./repositories
+COPY backend/schemas ./schemas
+COPY backend/services ./services
+COPY backend/static ./static
 COPY backend/alembic ./alembic
 COPY backend/alembic.ini ./alembic.ini
 COPY backend/scripts ./scripts
 
 # 前端静态文件（由阶段 1 构建）
-COPY --from=frontend-builder /frontend/dist ./app/static
+COPY --from=frontend-builder /frontend/dist ./static
+
+# Generate release SQL artifacts (full schema + incremental migrations)
+RUN python scripts/generate_release_sql.py --output-dir /app/sql
 
 RUN chown -R appuser:appuser /app
 
@@ -66,4 +86,4 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "8000", "--migrate"]
