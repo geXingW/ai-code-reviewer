@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 
-from core.db import AsyncSessionLocal
+from core import db
 from engines import load_builtin_engines
 from engines.registry import get_engine_registry
 from models.project import Project
@@ -118,7 +118,7 @@ async def review_merge_request_event(
 
     # 兼容旧调用：未传 project 时，从事件的 gitlab_project_id 反查。
     if project is None:
-        effective_session_factory = session_factory or AsyncSessionLocal
+        effective_session_factory = session_factory or db.AsyncSessionLocal
         async with effective_session_factory() as session:
             repo = ProjectRepository(session)
             project = await repo.get_by_gitlab_project_id(str(event.project_id))
@@ -134,7 +134,7 @@ async def review_merge_request_event(
     settings = get_settings()
 
     # 注入应用级 sessionmaker，让 orchestrator 每次评审完成后能落库 review + finding。
-    effective_session_factory = session_factory or AsyncSessionLocal
+    effective_session_factory = session_factory or db.AsyncSessionLocal
     orchestrator = ReviewOrchestrator(
         gitlab_client=client,
         engine_registry=get_engine_registry(),
@@ -174,7 +174,7 @@ async def _resolve_project(project_id: int) -> Project | None:
     to avoid leaking existence).
     """
 
-    async with AsyncSessionLocal() as session:
+    async with db.AsyncSessionLocal() as session:
         repo = ProjectRepository(session)
         return await repo.get_by_gitlab_project_id(str(project_id))
 

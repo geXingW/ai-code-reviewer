@@ -236,7 +236,7 @@ async def _seed_project(client: AsyncClient) -> dict[str, str]:
         "/api/projects",
         json={
             "name": "demo",
-            "gitlab_project_id": "group/demo",
+            "gitlab_project_id": str(PROJECT_ID),
             "gitlab_access_token": "gl-token",
             "webhook_secret": "hook-secret",
             "provider_id": provider.json()["id"],
