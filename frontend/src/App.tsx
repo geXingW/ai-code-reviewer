@@ -145,6 +145,7 @@ const initialProviderForm: ProviderFormPayload = {
 const initialProjectForm: ProjectFormPayload = {
   name: '',
   gitlab_project_id: '',
+  gitlab_base_url: '',
   gitlab_access_token: '',
   webhook_secret: '',
   engine_id: '',
