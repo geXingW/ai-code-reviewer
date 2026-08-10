@@ -121,24 +121,6 @@ describe('RuleSelector', () => {
     expect(getVisibleRuleLabels()).toHaveLength(4); // security(2) + performance(2)
   });
 
-  it('语言筛选：Python 只显示 python 或通用；JS/TS 合并；通用规则命中所有语言筛选', async () => {
-    const user = userEvent.setup();
-    render(
-      <RuleSelector rules={RULES} selectedRuleIds={[]} onToggle={vi.fn()} onBulkReplace={vi.fn()} />,
-    );
-    await user.click(screen.getByRole('button', { name: '筛选语言 Python' }));
-    // python(u-2, u-4) + 通用(u-1) = 3
-    expect(getVisibleRuleLabels()).toHaveLength(3);
-
-    // 关掉 Python，勾 JS/TS
-    await user.click(screen.getByRole('button', { name: '筛选语言 Python' }));
-    await user.click(screen.getByRole('button', { name: '筛选语言 JS/TS' }));
-    // JS/TS(u-3) + 通用(u-1) = 2
-    expect(getVisibleRuleLabels()).toHaveLength(2);
-    expect(screen.getByText('N+1 查询')).toBeInTheDocument();
-    expect(screen.getByText('硬编码密钥')).toBeInTheDocument();
-  });
-
   it('多维筛选：BLOCKER + 安全 做 AND', async () => {
     const user = userEvent.setup();
     render(
@@ -152,24 +134,24 @@ describe('RuleSelector', () => {
   it('全选可见：把可见规则并入 selected，不动不可见的历史选中', async () => {
     const user = userEvent.setup();
     const onBulkReplace = vi.fn();
-    // 假设用户已勾选 u-3（js/ts），现在筛 Python 让 u-3 不可见后点全选可见。
+    // 假设用户已勾选 u-1（安全类），现在筛"性能"分类让 u-1 不可见后点全选可见。
     render(
       <RuleSelector
         rules={RULES}
-        selectedRuleIds={['u-3']}
+        selectedRuleIds={['u-1']}
         onToggle={vi.fn()}
         onBulkReplace={onBulkReplace}
       />,
     );
-    await user.click(screen.getByRole('button', { name: '筛选语言 Python' }));
+    await user.click(screen.getByRole('button', { name: '筛选分类 性能' }));
     await user.click(screen.getByRole('button', { name: '全选可见' }));
     expect(onBulkReplace).toHaveBeenCalledTimes(1);
     const arg = new Set(onBulkReplace.mock.calls[0][0] as string[]);
-    // u-3 保留 + 可见的 u-1(通用) / u-2 / u-4
-    expect(arg.has('u-3')).toBe(true);
+    // u-1 保留 + 可见的 u-3, u-4（性能类）
     expect(arg.has('u-1')).toBe(true);
-    expect(arg.has('u-2')).toBe(true);
+    expect(arg.has('u-3')).toBe(true);
     expect(arg.has('u-4')).toBe(true);
+    expect(arg.has('u-2')).toBe(false);
     expect(arg.has('u-5')).toBe(false);
   });
 
@@ -200,8 +182,8 @@ describe('RuleSelector', () => {
         onBulkReplace={onBulkReplace}
       />,
     );
-    // 先筛 Python：只有 u-1(通用) / u-2 / u-4 可见——其中只有 u-1 是 BLOCKER。
-    await user.click(screen.getByRole('button', { name: '筛选语言 Python' }));
+    // 搜索 "hardcoded"：只有 u-1 可见——它是 BLOCKER。
+    await user.type(screen.getByLabelText('搜索规则'), 'hardcoded');
     await user.click(screen.getByRole('button', { name: '勾选可见 BLOCKER' }));
     const arg = new Set(onBulkReplace.mock.calls[0][0] as string[]);
     expect(arg.has('u-1')).toBe(true);

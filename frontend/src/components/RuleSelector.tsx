@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Search } from 'lucide-react';
 
 import { RuleConfig } from '../api';
 import { Button } from './ui/button';
@@ -22,37 +23,6 @@ export interface RuleSelectorProps {
   onToggle: (ruleId: string, enabled: boolean) => void;
   /** 批量替换选中集合（用于全选可见 / 取消全选 / 勾选可见 BLOCKER） */
   onBulkReplace: (ruleIds: string[]) => void;
-}
-
-/** 语言归一化：javascript/typescript 合并为 js/ts，其余走小写；null/非字符串走 '*' 视为通用。 */
-function normalizeLanguageKey(lang: unknown): string {
-  if (typeof lang !== 'string' || !lang.trim()) {
-    return '*';
-  }
-  const lower = lang.trim().toLowerCase();
-  if (lower === 'javascript' || lower === 'typescript' || lower === 'js' || lower === 'ts') {
-    return 'js/ts';
-  }
-  return lower;
-}
-
-/** 展示用语言标签。 */
-function languageLabel(key: string): string {
-  if (key === '*') return '通用';
-  if (key === 'js/ts') return 'JS/TS';
-  return key.charAt(0).toUpperCase() + key.slice(1);
-}
-
-/** 从一条规则里抽出去重后的语言 key 集合。空数组视为通用（'*'）。 */
-function ruleLanguageKeys(rule: RuleConfig): Set<string> {
-  const keys = new Set<string>();
-  for (const raw of rule.languages ?? []) {
-    keys.add(normalizeLanguageKey(raw));
-  }
-  if (keys.size === 0) {
-    keys.add('*');
-  }
-  return keys;
 }
 
 /** 从一条规则里抽出去重、去空白后的标签数组（保持首次出现顺序）。 */
@@ -88,9 +58,9 @@ function Chip({ active, disabled, onClick, children, ariaLabel }: ChipProps) {
   const base =
     'inline-flex items-center gap-1 px-2 py-[3px] rounded-full border text-[12px] leading-none transition-colors';
   const activeCls = active
-    ? 'bg-zinc-900 text-white border-zinc-900'
-    : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50';
-  const disabledCls = disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer';
+    ? 'bg-zinc-900 text-white border-zinc-900 shadow-sm'
+    : 'bg-white text-zinc-600 border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50';
+  const disabledCls = disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer';
   return (
     <button
       type="button"
@@ -106,7 +76,7 @@ function Chip({ active, disabled, onClick, children, ariaLabel }: ChipProps) {
 }
 
 /**
- * 规则勾选面板：搜索 / 严重度 / 分类 / 语言 多维筛选 + 批量操作。
+ * 规则勾选面板：搜索 / 严重度 / 分类 / 标签 多维筛选 + 批量操作。
  *
  * 筛选合成：同维度多选 = OR，跨维度 = AND。已选的规则即便被筛除也保留在
  * selectedRuleIds 中——批量按钮"取消全选"是唯一显式清空入口。
@@ -115,26 +85,9 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
   const [search, setSearch] = useState('');
   const [severityFilter, setSeverityFilter] = useState<Set<Severity>>(new Set());
   const [categoryFilter, setCategoryFilter] = useState<Set<FindingCategory>>(new Set());
-  const [languageFilter, setLanguageFilter] = useState<Set<string>>(new Set());
   const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
 
   const selectedSet = useMemo(() => new Set(selectedRuleIds), [selectedRuleIds]);
-
-  // 聚合出所有出现过的语言 key，用于渲染语言 chip。
-  const languageKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const rule of rules) {
-      for (const key of ruleLanguageKeys(rule)) {
-        keys.add(key);
-      }
-    }
-    // 排序：'*' 放最后，其余按字母序。
-    return [...keys].sort((a, b) => {
-      if (a === '*') return 1;
-      if (b === '*') return -1;
-      return a.localeCompare(b);
-    });
-  }, [rules]);
 
   // 聚合所有出现过的标签（去重），用于渲染标签 chip；按字母序排序。
   const allTags = useMemo(() => {
@@ -147,7 +100,7 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
     return [...tags].sort((a, b) => a.localeCompare(b));
   }, [rules]);
 
-  // 筛选后的可见规则；应用搜索 / severity / category / language / tags 五层。
+  // 筛选后的可见规则；应用搜索 / severity / category / tags 四层。
   const visibleRules = useMemo(() => {
     const q = search.trim().toLowerCase();
     const filtered = rules.filter((rule) => {
@@ -164,25 +117,6 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
       if (categoryFilter.size > 0) {
         const cat = isKnownCategory(rule.category_default) ? (rule.category_default as FindingCategory) : 'other';
         if (!categoryFilter.has(cat)) return false;
-      }
-      if (languageFilter.size > 0) {
-        const ruleLangs = ruleLanguageKeys(rule);
-        // 通用规则（含 '*'）视为对任何语言 chip 都命中。
-        const isWildcard = ruleLangs.has('*');
-        let match = isWildcard && languageFilter.has('*');
-        if (!match) {
-          for (const key of languageFilter) {
-            if (ruleLangs.has(key)) {
-              match = true;
-              break;
-            }
-          }
-        }
-        // 若用户只勾了非 '*' 的语言，通用规则也应算命中（通用适用于所有语言）。
-        if (!match && isWildcard) {
-          match = true;
-        }
-        if (!match) return false;
       }
       // 标签筛选：多标签为 OR，规则命中任一选中标签即保留；无标签规则不命中。
       if (tagFilter.size > 0) {
@@ -204,7 +138,7 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
       if (rankDiff !== 0) return rankDiff;
       return a.rule_id.localeCompare(b.rule_id);
     });
-  }, [rules, search, severityFilter, categoryFilter, languageFilter, tagFilter]);
+  }, [rules, search, severityFilter, categoryFilter, tagFilter]);
 
   // Chip 命中数：每个 chip 显示"当前筛选条件下若加上/只保留这个 chip 时"的规则数——
   // 为了不让 chip 数字随其他维度剧烈跳动，chip count 只显示该维度独立命中的规则数（
@@ -229,17 +163,6 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
     return counts;
   }, [rules]);
 
-  const languageCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const key of languageKeys) counts.set(key, 0);
-    for (const rule of rules) {
-      for (const key of ruleLanguageKeys(rule)) {
-        counts.set(key, (counts.get(key) ?? 0) + 1);
-      }
-    }
-    return counts;
-  }, [rules, languageKeys]);
-
   // 标签命中数：与其它维度一致，只统计该维度独立命中的规则数。
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -257,7 +180,6 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
     search.trim().length > 0 ||
     severityFilter.size > 0 ||
     categoryFilter.size > 0 ||
-    languageFilter.size > 0 ||
     tagFilter.size > 0;
 
   function toggleSeverity(sev: Severity) {
@@ -278,15 +200,6 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
     });
   }
 
-  function toggleLanguage(key: string) {
-    setLanguageFilter((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-
   function toggleTag(tag: string) {
     setTagFilter((prev) => {
       const next = new Set(prev);
@@ -300,7 +213,6 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
     setSearch('');
     setSeverityFilter(new Set());
     setCategoryFilter(new Set());
-    setLanguageFilter(new Set());
     setTagFilter(new Set());
   }
 
@@ -327,9 +239,9 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
   if (rules.length === 0) {
     return (
       <div>
-        <label className="text-[12px] font-medium text-zinc-600 mb-2 block">启用规则</label>
-        <div className="rounded-md border border-zinc-200">
-          <div className="p-3 text-[12px] text-zinc-500">暂无规则，请先到"审查规则"页面创建。</div>
+        <label className="text-[12px] font-medium text-zinc-500 mb-2 block">启用规则</label>
+        <div className="rounded-md border border-dashed border-zinc-200 bg-zinc-50/40">
+          <div className="p-4 text-[12px] text-zinc-400 text-center">暂无规则，请先到"审查规则"页面创建。</div>
         </div>
       </div>
     );
@@ -337,23 +249,24 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
 
   return (
     <div>
-      <label className="text-[12px] font-medium text-zinc-600 mb-2 block">启用规则</label>
+      <label className="text-[12px] font-medium text-zinc-500 mb-2 block">启用规则</label>
 
       {/* 搜索框 */}
-      <div className="mb-2">
+      <div className="relative mb-2.5">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-zinc-400" aria-hidden />
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="🔍 输入 rule_id 或标题关键字"
+          placeholder="输入 rule_id 或标题关键字"
           aria-label="搜索规则"
-          className="w-full rounded-md border border-zinc-200 px-3 py-1.5 text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-200"
+          className="w-full rounded-md border border-[#E4E4E7] bg-white py-1.5 pl-9 pr-3 text-[13px] placeholder:text-zinc-400 hover:border-[#D4D4D8] focus:outline-none focus:ring-2 focus:ring-ring"
         />
       </div>
 
       {/* 严重度 chip */}
-      <div className="mb-1.5 flex items-center flex-wrap gap-1.5">
-        <span className="text-[11px] text-zinc-500 mr-1">严重度：</span>
+      <div className="mb-2 flex items-center flex-wrap gap-1.5">
+        <span className="text-[11px] font-medium text-zinc-400 mr-0.5">严重度</span>
         {SEVERITY_ORDER.map((sev) => {
           const disp = severityDisplay(sev);
           const count = severityCounts.get(sev) ?? 0;
@@ -374,8 +287,8 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
       </div>
 
       {/* 分类 chip */}
-      <div className="mb-1.5 flex items-center flex-wrap gap-1.5">
-        <span className="text-[11px] text-zinc-500 mr-1">分类：</span>
+      <div className="mb-2 flex items-center flex-wrap gap-1.5">
+        <span className="text-[11px] font-medium text-zinc-400 mr-0.5">分类</span>
         {CATEGORY_ORDER.map((cat) => {
           const disp = categoryDisplay(cat);
           const count = categoryCounts.get(cat) ?? 0;
@@ -395,32 +308,10 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
         })}
       </div>
 
-      {/* 语言 chip */}
-      {languageKeys.length > 0 ? (
-        <div className="mb-2 flex items-center flex-wrap gap-1.5">
-          <span className="text-[11px] text-zinc-500 mr-1">语言：</span>
-          {languageKeys.map((key) => {
-            const count = languageCounts.get(key) ?? 0;
-            return (
-              <Chip
-                key={key}
-                active={languageFilter.has(key)}
-                disabled={count === 0}
-                onClick={() => toggleLanguage(key)}
-                ariaLabel={`筛选语言 ${languageLabel(key)}`}
-              >
-                <span>{languageLabel(key)}</span>
-                <span className="text-[10px] opacity-70">{count}</span>
-              </Chip>
-            );
-          })}
-        </div>
-      ) : null}
-
       {/* 标签 chip */}
       {allTags.length > 0 ? (
-        <div className="mb-2 flex items-center flex-wrap gap-1.5">
-          <span className="text-[11px] text-zinc-500 mr-1">标签：</span>
+        <div className="mb-2.5 flex items-center flex-wrap gap-1.5">
+          <span className="text-[11px] font-medium text-zinc-400 mr-0.5">标签</span>
           {allTags.map((tag) => {
             const count = tagCounts.get(tag) ?? 0;
             return (
@@ -440,12 +331,12 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
       ) : null}
 
       {/* 计数栏 + 批量按钮 */}
-      <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2 rounded-md bg-zinc-50/70 px-2.5 py-1.5">
         <div className="text-[11px] text-zinc-500 flex items-center gap-2">
           <span>
-            已选 <span className="text-zinc-800 font-medium">{selectedRuleIds.length}</span> / 可见{' '}
-            <span className="text-zinc-800 font-medium">{visibleRules.length}</span> / 总{' '}
-            <span className="text-zinc-800 font-medium">{rules.length}</span>
+            已选 <span className="text-zinc-800 font-semibold">{selectedRuleIds.length}</span> / 可见{' '}
+            <span className="text-zinc-800 font-semibold">{visibleRules.length}</span> / 总{' '}
+            <span className="text-zinc-800 font-semibold">{rules.length}</span>
           </span>
           {hasAnyFilter ? (
             <button
@@ -489,7 +380,7 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
       </div>
 
       {/* 列表 */}
-      <div className="rounded-md border border-zinc-200 max-h-64 overflow-y-auto">
+      <div className="rounded-md border border-zinc-200 max-h-64 overflow-y-auto divide-y divide-zinc-100">
         {visibleRules.length === 0 ? (
           <div className="p-3 text-[12px] text-zinc-500 flex items-center gap-2">
             <span>当前筛选条件无匹配规则。</span>
@@ -509,7 +400,7 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
             return (
               <label
                 key={rule.id}
-                className="flex items-center gap-2 px-3 py-2 border-b border-zinc-100 last:border-b-0 text-[13px] cursor-pointer hover:bg-zinc-50"
+                className={`flex items-center gap-2 px-3 py-2 text-[13px] cursor-pointer transition-colors hover:bg-zinc-50 ${checked ? 'bg-indigo-50/40' : ''}`}
                 title={rule.prompt_snippet}
               >
                 <input
@@ -520,10 +411,10 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
                   aria-label={`选中规则 ${rule.rule_id}`}
                 />
                 <span aria-hidden>{sevDisp.emoji}</span>
-                <span className="text-zinc-500 text-[11px]">[{sevDisp.label}]</span>
+                <span className="text-zinc-400 text-[11px] font-medium">[{sevDisp.label}]</span>
                 <span aria-hidden>{catDisp.emoji}</span>
                 <span className="text-zinc-900 font-mono text-[12px]">{rule.rule_id}</span>
-                <span className="text-zinc-500">·</span>
+                <span className="text-zinc-300">·</span>
                 <span className="text-zinc-600 truncate">{rule.title}</span>
               </label>
             );

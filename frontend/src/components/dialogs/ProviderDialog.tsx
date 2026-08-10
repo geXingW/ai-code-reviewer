@@ -15,6 +15,8 @@ import { Button } from '../ui/button';
 import { Dialog } from '../ui/dialog';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
+import { PasswordInput } from '../ui/password-input';
+import { Select } from '../ui/select';
 
 const PROTOCOL_OPTIONS = ['openai_compatible', 'anthropic', 'custom'] as const;
 
@@ -131,16 +133,15 @@ export function ProviderDialog({
 
         <div className="space-y-1.5">
           <Label htmlFor="provider-protocol">协议</Label>
-          <select
+          <Select
             id="provider-protocol"
             value={form.protocol}
             onChange={(event) => setForm({ ...form, protocol: event.target.value as ProviderFormPayload['protocol'] })}
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
           >
             {PROTOCOL_OPTIONS.map((opt) => (
               <option key={opt} value={opt}>{opt}</option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div className="space-y-1.5">
@@ -155,12 +156,12 @@ export function ProviderDialog({
 
         <div className="space-y-1.5">
           <Label htmlFor="provider-api-key">API Key</Label>
-          <Input
+          <PasswordInput
             id="provider-api-key"
-            type="password"
             value={form.api_key}
             onChange={(event) => setForm({ ...form, api_key: event.target.value })}
             placeholder="sk-..."
+            toggleAriaLabel="切换 API Key 显示"
           />
         </div>
 
@@ -185,15 +186,22 @@ export function ProviderDialog({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            id="provider-enabled"
-            checked={form.enabled}
-            onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
-            className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500"
-          />
-          <Label htmlFor="provider-enabled">启用供应商</Label>
+        <div className="flex items-center justify-between rounded-lg border border-zinc-200 bg-zinc-50/50 px-3 py-2.5">
+          <div className="flex items-center gap-2.5">
+            <input
+              type="checkbox"
+              id="provider-enabled"
+              checked={form.enabled}
+              onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
+              className="size-4 rounded border-zinc-300 accent-indigo-600 focus:ring-indigo-500"
+            />
+            <Label htmlFor="provider-enabled" className="text-[13px] text-zinc-700">
+              启用供应商
+            </Label>
+          </div>
+          <span className={`text-[11px] font-medium ${form.enabled ? 'text-emerald-600' : 'text-zinc-400'}`}>
+            {form.enabled ? '● 已启用' : '○ 已停用'}
+          </span>
         </div>
       </div>
 

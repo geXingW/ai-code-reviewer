@@ -75,23 +75,23 @@ export function Dialog({
         aria-modal="true"
         aria-labelledby={titleId}
         className={cn(
-          'relative w-full rounded-lg border border-zinc-200 bg-white shadow-xl',
+          'relative w-full rounded-xl border border-zinc-200 bg-white shadow-2xl',
           'max-h-[90vh] overflow-y-auto',
           maxWidthClass,
         )}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="border-b border-zinc-100 px-5 py-3">
-          <div id={titleId} className="text-[15px] font-semibold text-zinc-900">
+        <div className="border-b border-zinc-100 px-6 py-4">
+          <div id={titleId} className="text-[16px] font-semibold text-zinc-900">
             {title}
           </div>
           {subtitle ? (
-            <div className="mt-0.5 text-[12px] text-zinc-500">{subtitle}</div>
+            <div className="mt-1 text-[12px] text-zinc-500">{subtitle}</div>
           ) : null}
         </div>
-        <div className="px-5 py-4 space-y-4">{children}</div>
+        <div className="px-6 py-5 space-y-4">{children}</div>
         {footer ? (
-          <div className="flex items-center justify-end gap-2 border-t border-zinc-100 px-5 py-3">
+          <div className="flex items-center justify-end gap-2 border-t border-zinc-100 bg-zinc-50/50 px-6 py-3">
             {footer}
           </div>
         ) : null}
