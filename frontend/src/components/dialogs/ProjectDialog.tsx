@@ -15,6 +15,8 @@ import { Button } from '../ui/button';
 import { Dialog } from '../ui/dialog';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
+import { PasswordInput } from '../ui/password-input';
+import { Select } from '../ui/select';
 import { RuleSelector } from '../RuleSelector';
 
 const SEVERITY_OPTIONS = ['INFO', 'WARNING', 'BLOCKER'] as const;
@@ -57,6 +59,21 @@ function toggleRuleSelection(
     return [...rules, { rule_id: ruleId, enabled: true }];
   }
   return rules.filter((r) => r.rule_id !== ruleId);
+}
+
+/** 字段分组小标题：统一视觉节奏。 */
+function FieldGroup({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 pt-1">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+          {title}
+        </h3>
+        <div className="h-px flex-1 bg-zinc-100" />
+      </div>
+      <div className="space-y-3">{children}</div>
+    </div>
+  );
 }
 
 export function ProjectDialog({
@@ -147,28 +164,19 @@ export function ProjectDialog({
         </>
       }
     >
-      <div className="space-y-3">
-        <div className="space-y-1.5">
-          <Label htmlFor="project-name">项目名称</Label>
-          <Input
-            id="project-name"
-            value={form.name}
-            onChange={(event) => setForm({ ...form, name: event.target.value })}
-            placeholder="例如：my-project"
-          />
-        </div>
+      <div className="space-y-5">
+        {/* ───────── 基础信息 ───────── */}
+        <FieldGroup title="基础信息">
+          <div className="space-y-1.5">
+            <Label htmlFor="project-name">项目名称</Label>
+            <Input
+              id="project-name"
+              value={form.name}
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+              placeholder="例如：my-project"
+            />
+          </div>
 
-        <div className="space-y-1.5">
-          <Label htmlFor="project-gitlab-base-url">GitLab Base URL</Label>
-          <Input
-            id="project-gitlab-base-url"
-            value={form.gitlab_base_url}
-            onChange={(event) => setForm({ ...form, gitlab_base_url: event.target.value })}
-            placeholder="https://gitlab.example.com"
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <Label htmlFor="project-gitlab-id">GitLab Project ID</Label>
             <Input
@@ -178,93 +186,108 @@ export function ProjectDialog({
               placeholder="123456"
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="project-engine">默认审查引擎</Label>
-            <select
-              id="project-engine"
-              value={form.engine_id}
-              onChange={(event) => setForm({ ...form, engine_id: event.target.value })}
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {engineOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-          </div>
-        </div>
+        </FieldGroup>
 
-        <div className="grid grid-cols-2 gap-3">
+        {/* ───────── GitLab 连接 ───────── */}
+        <FieldGroup title="GitLab 连接">
           <div className="space-y-1.5">
-            <Label htmlFor="project-token">GitLab Access Token</Label>
+            <Label htmlFor="project-gitlab-base-url">GitLab Base URL</Label>
             <Input
-              id="project-token"
-              type="password"
-              value={form.gitlab_access_token}
-              onChange={(event) => setForm({ ...form, gitlab_access_token: event.target.value })}
-              placeholder="glpat-..."
+              id="project-gitlab-base-url"
+              value={form.gitlab_base_url}
+              onChange={(event) => setForm({ ...form, gitlab_base_url: event.target.value })}
+              placeholder="https://gitlab.example.com"
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="project-secret">Webhook Secret</Label>
-            <Input
-              id="project-secret"
-              type="password"
-              value={form.webhook_secret}
-              onChange={(event) => setForm({ ...form, webhook_secret: event.target.value })}
-            />
-          </div>
-        </div>
 
-        <div className="grid grid-cols-3 gap-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="project-timeout">超时秒数</Label>
-            <Input
-              id="project-timeout"
-              type="number"
-              value={String(form.timeout_seconds)}
-              onChange={(event) => setForm({ ...form, timeout_seconds: Number(event.target.value) || 0 })}
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="project-token">GitLab Access Token</Label>
+              <PasswordInput
+                id="project-token"
+                value={form.gitlab_access_token}
+                onChange={(event) => setForm({ ...form, gitlab_access_token: event.target.value })}
+                placeholder="glpat-..."
+                toggleAriaLabel="切换 Access Token 显示"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="project-secret">Webhook Secret</Label>
+              <PasswordInput
+                id="project-secret"
+                value={form.webhook_secret}
+                onChange={(event) => setForm({ ...form, webhook_secret: event.target.value })}
+                toggleAriaLabel="切换 Webhook Secret 显示"
+              />
+            </div>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="project-max-files">最大文件数</Label>
-            <Input
-              id="project-max-files"
-              type="number"
-              value={String(form.max_files)}
-              onChange={(event) => setForm({ ...form, max_files: Number(event.target.value) || 0 })}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="project-severity">默认阻断级别</Label>
-            <select
-              id="project-severity"
-              value={form.default_block_severity}
-              onChange={(event) => setForm({ ...form, default_block_severity: event.target.value as ProjectFormPayload['default_block_severity'] })}
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {SEVERITY_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>{opt}</option>
-              ))}
-            </select>
-          </div>
-        </div>
+        </FieldGroup>
 
-        <div className="space-y-1.5">
-          <Label htmlFor="project-provider">AI 供应商</Label>
-          <select
-            id="project-provider"
-            value={form.provider_id}
-            onChange={(event) => setForm({ ...form, provider_id: event.target.value })}
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {providerOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </div>
+        {/* ───────── 审查配置 ───────── */}
+        <FieldGroup title="审查配置">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="project-engine">默认审查引擎</Label>
+              <Select
+                id="project-engine"
+                value={form.engine_id}
+                onChange={(event) => setForm({ ...form, engine_id: event.target.value })}
+              >
+                {engineOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="project-provider">AI 供应商</Label>
+              <Select
+                id="project-provider"
+                value={form.provider_id}
+                onChange={(event) => setForm({ ...form, provider_id: event.target.value })}
+              >
+                {providerOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </Select>
+            </div>
+          </div>
 
-        <div className="space-y-1.5">
-          <Label>审查规则</Label>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="project-timeout">超时秒数</Label>
+              <Input
+                id="project-timeout"
+                type="number"
+                value={String(form.timeout_seconds)}
+                onChange={(event) => setForm({ ...form, timeout_seconds: Number(event.target.value) || 0 })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="project-max-files">最大文件数</Label>
+              <Input
+                id="project-max-files"
+                type="number"
+                value={String(form.max_files)}
+                onChange={(event) => setForm({ ...form, max_files: Number(event.target.value) || 0 })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="project-severity">默认阻断级别</Label>
+              <Select
+                id="project-severity"
+                value={form.default_block_severity}
+                onChange={(event) => setForm({ ...form, default_block_severity: event.target.value as ProjectFormPayload['default_block_severity'] })}
+              >
+                {SEVERITY_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </Select>
+            </div>
+          </div>
+        </FieldGroup>
+
+        {/* ───────── 审查规则 ───────── */}
+        <FieldGroup title="审查规则">
           <RuleSelector
             rules={rules}
             selectedRuleIds={form.rules.map((r) => r.rule_id)}
@@ -281,22 +304,30 @@ export function ProjectDialog({
               }))
             }
           />
-        </div>
+        </FieldGroup>
 
-        <div className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            id="project-enabled"
-            checked={form.enabled}
-            onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
-            className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500"
-          />
-          <Label htmlFor="project-enabled">启用项目</Label>
+        {/* ───────── 启用项目 ───────── */}
+        <div className="flex items-center justify-between rounded-lg border border-zinc-200 bg-zinc-50/50 px-3 py-2.5">
+          <div className="flex items-center gap-2.5">
+            <input
+              type="checkbox"
+              id="project-enabled"
+              checked={form.enabled}
+              onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
+              className="size-4 rounded border-zinc-300 accent-indigo-600 focus:ring-indigo-500"
+            />
+            <Label htmlFor="project-enabled" className="text-[13px] text-zinc-700">
+              启用项目
+            </Label>
+          </div>
+          <span className={`text-[11px] font-medium ${form.enabled ? 'text-emerald-600' : 'text-zinc-400'}`}>
+            {form.enabled ? '● 已启用' : '○ 已停用'}
+          </span>
         </div>
       </div>
 
       {errorMessage ? (
-        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700" role="alert">
+        <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700" role="alert">
           {errorMessage}
         </div>
       ) : null}
