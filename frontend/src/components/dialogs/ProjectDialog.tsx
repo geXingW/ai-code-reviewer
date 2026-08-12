@@ -18,6 +18,7 @@ import { Label } from '../ui/label';
 import { PasswordInput } from '../ui/password-input';
 import { Select } from '../ui/select';
 import { RuleSelector } from '../RuleSelector';
+import { NotificationChannelSection } from '../NotificationChannelSection';
 
 const SEVERITY_OPTIONS = ['INFO', 'WARNING', 'BLOCKER'] as const;
 
@@ -98,8 +99,10 @@ export function ProjectDialog({
           name: initialData.name,
           gitlab_project_id: initialData.gitlab_project_id,
           gitlab_base_url: initialData.gitlab_base_url,
-          gitlab_access_token: initialData.gitlab_access_token,
-          webhook_secret: initialData.webhook_secret,
+          // 编辑模式不反显密钥（后端返回脱敏值 "****"），置空让用户按需重填。
+          // 留空提交时由 handleSubmit 跳过，后端也不会覆盖数据库中的密钥。
+          gitlab_access_token: '',
+          webhook_secret: '',
           engine_id: initialData.engine_id || '',
           provider_id: initialData.provider_id || '',
           enabled: initialData.enabled,
@@ -127,7 +130,18 @@ export function ProjectDialog({
     setSubmitting(true);
     setErrorMessage(null);
     try {
-      await onSubmit(form);
+      const payload: Partial<ProjectFormPayload> = { ...form };
+      // 编辑模式下，密钥字段留空表示"不修改"——从 payload 中移除，
+      // JSON.stringify 会自动忽略 deleted 属性，后端 exclude_unset 也不会更新。
+      if (isEditMode) {
+        if (!payload.gitlab_access_token?.trim()) {
+          delete payload.gitlab_access_token;
+        }
+        if (!payload.webhook_secret?.trim()) {
+          delete payload.webhook_secret;
+        }
+      }
+      await onSubmit(payload as ProjectFormPayload);
     } catch (caught) {
       setErrorMessage(caught instanceof Error ? caught.message : '提交失败');
     } finally {
@@ -207,7 +221,7 @@ export function ProjectDialog({
                 id="project-token"
                 value={form.gitlab_access_token}
                 onChange={(event) => setForm({ ...form, gitlab_access_token: event.target.value })}
-                placeholder="glpat-..."
+                placeholder={isEditMode ? '为空则不修改' : 'glpat-...'}
                 toggleAriaLabel="切换 Access Token 显示"
               />
             </div>
@@ -217,6 +231,7 @@ export function ProjectDialog({
                 id="project-secret"
                 value={form.webhook_secret}
                 onChange={(event) => setForm({ ...form, webhook_secret: event.target.value })}
+                placeholder={isEditMode ? '为空则不修改' : '随机字符串'}
                 toggleAriaLabel="切换 Webhook Secret 显示"
               />
             </div>
@@ -304,6 +319,17 @@ export function ProjectDialog({
               }))
             }
           />
+        </FieldGroup>
+
+        {/* ───────── 钉钉推送配置 ───────── */}
+        <FieldGroup title="钉钉推送">
+          {isEditMode && initialData ? (
+            <NotificationChannelSection projectId={initialData.id} />
+          ) : (
+            <p className="text-[12px] text-zinc-400">
+              保存项目后可在此配置钉钉群机器人 Webhook，审查完成后自动推送汇总信息到钉钉群。
+            </p>
+          )}
         </FieldGroup>
 
         {/* ───────── 启用项目 ───────── */}

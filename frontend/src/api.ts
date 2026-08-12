@@ -159,6 +159,7 @@ export type ProjectConfig = {
   ignore_paths: unknown[] | null;
   rules: ProjectRuleConfig[];
   block_policies: BlockPolicy[];
+  notification_channels: NotificationChannel[];
   created_at?: string;
   updated_at?: string;
 };
@@ -434,13 +435,14 @@ export async function fetchEngines(): Promise<EngineSummary[]> {
   return parseJsonResponse<EngineSummary[]>(response, true);
 }
 
-export async function fetchRecentReviews(internalToken: string): Promise<RecentReview[]> {
-  const response = await fetch('/api/reviews/recent', {
-    headers: {
-      'X-Internal-Token': internalToken,
-    },
-  });
-  return parseJsonResponse<RecentReview[]>(response);
+export async function fetchRecentReviews(internalToken?: string): Promise<RecentReview[]> {
+  // 优先用 admin JWT（仪表盘自动加载时），回退到 internal token（Jenkins 调用）。
+  const headers: Record<string, string> = {};
+  if (internalToken) {
+    headers['X-Internal-Token'] = internalToken;
+  }
+  const response = await adminFetch('/api/reviews/recent', { headers });
+  return parseJsonResponse<RecentReview[]>(response, true);
 }
 
 export async function createReview(
@@ -769,4 +771,90 @@ export async function fetchStatsCategories(days = 30): Promise<CategoryStat[]> {
 export async function fetchStatsTimeseries(days = 30): Promise<TimeseriesPoint[]> {
   const response = await adminFetch(`/api/stats/timeseries?days=${days}`);
   return parseJsonResponse<TimeseriesPoint[]>(response, true);
+}
+
+// ---------------- 项目通知渠道 API（钉钉推送配置）----------------
+//
+// 后端按项目维度管理通知渠道（DingTalk Webhook），webhook_url / secret
+// 落库加密、响应脱敏为 "****"。渠道 ``enabled=false`` 即暂停推送，
+// 渠道为空则该项目不推送。NotificationService 在每次 Review 完成后
+// 按启用渠道推送汇总消息（标题 + MR 标题 + Review ID + 问题/阻断数 +
+// 详情链接），不推送逐条 finding。
+
+export type NotificationChannelType = 'dingtalk' | 'feishu';
+
+export type NotificationChannel = {
+  id: string;
+  project_id: string;
+  channel_type: NotificationChannelType;
+  name: string;
+  // 后端响应脱敏为 "****"，前端仅用于展示，不回填表单。
+  webhook_url: string;
+  secret: string | null;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type NotificationChannelFormPayload = {
+  channel_type: NotificationChannelType;
+  name: string;
+  webhook_url: string;
+  secret?: string | null;
+  enabled: boolean;
+};
+
+export type NotificationChannelUpdatePayload = Partial<NotificationChannelFormPayload>;
+
+export async function fetchNotificationChannels(
+  projectId: string,
+): Promise<NotificationChannel[]> {
+  const response = await adminFetch(
+    `/api/projects/${projectId}/notification-channels`,
+  );
+  return parseJsonResponse<NotificationChannel[]>(response, true);
+}
+
+export async function createNotificationChannel(
+  projectId: string,
+  payload: NotificationChannelFormPayload,
+): Promise<NotificationChannel> {
+  const response = await adminFetch(
+    `/api/projects/${projectId}/notification-channels`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return parseJsonResponse<NotificationChannel>(response, true);
+}
+
+export async function updateNotificationChannel(
+  projectId: string,
+  channelId: string,
+  payload: NotificationChannelUpdatePayload,
+): Promise<NotificationChannel> {
+  const response = await adminFetch(
+    `/api/projects/${projectId}/notification-channels/${channelId}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return parseJsonResponse<NotificationChannel>(response, true);
+}
+
+export async function deleteNotificationChannel(
+  projectId: string,
+  channelId: string,
+): Promise<void> {
+  const response = await adminFetch(
+    `/api/projects/${projectId}/notification-channels/${channelId}`,
+    { method: 'DELETE' },
+  );
+  if (!response.ok) {
+    throw new Error(`删除通知渠道失败：HTTP ${response.status}`);
+  }
 }

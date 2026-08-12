@@ -66,7 +66,7 @@ import {
   type TimeseriesPoint,
   RuleCreatePayload,
 } from './api';
-import { AlertOctagon, AlertTriangle, Filter, ScrollText, type LucideIcon } from 'lucide-react';
+import { AlertOctagon, AlertTriangle, Boxes, Cpu, FileX, Filter, FolderGit2, Inbox, ListChecks, ScrollText, Settings, Sparkles, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AppShell } from './components/layout/AppShell';
 import { Badge as UiBadge } from '@/components/ui/badge';
@@ -76,6 +76,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { RuleSelector } from './components/RuleSelector';
+import { EmptyState } from './components/EmptyState';
+import { PageHeader } from './components/PageHeader';
 import { MarkFalsePositiveDialog } from './components/dialogs/MarkFalsePositiveDialog';
 import { ResolveDialog } from './components/dialogs/ResolveDialog';
 import { ReviewFalsePositiveDialog } from './components/dialogs/ReviewFalsePositiveDialog';
@@ -208,34 +210,30 @@ function App() {
   const [adminToken, setAdminToken] = useState(() => getStoredAdminAccessToken());
   const [loginForm, setLoginForm] = useState<LoginFormState>(initialLoginForm);
 
-  // 从 URL ?page=xxx 读取初始页面，刷新保持不变
+  // 从 URL path 读取初始页面（/dashboard, /providers, ...），刷新保持不变
   const getInitialPage = (): PageKey => {
-    const params = new URLSearchParams(location.search);
-    const pageFromUrl = params.get('page') as PageKey;
-    if (pageFromUrl && navItems.some((item) => item.key === pageFromUrl)) {
-      return pageFromUrl;
+    const path = location.pathname.replace(/^\//, '') as PageKey;
+    if (path && navItems.some((item) => item.key === path)) {
+      return path;
     }
     return 'dashboard';
   };
 
   const [activePage, setActivePageState] = useState<PageKey>(getInitialPage);
 
-  // setActivePage 同时更新 URL
+  // setActivePage 同时更新 URL path
   const setActivePage = (page: PageKey) => {
     setActivePageState(page);
-    const params = new URLSearchParams(location.search);
-    params.set('page', page);
-    navigate(`?${params.toString()}`, { replace: true });
+    navigate(`/${page}`, { replace: true });
   };
 
   // URL 变化（浏览器后退/前进）时同步 activePage
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const pageFromUrl = params.get('page') as PageKey;
-    if (pageFromUrl && navItems.some((item) => item.key === pageFromUrl)) {
-      setActivePageState(pageFromUrl);
+    const path = location.pathname.replace(/^\//, '') as PageKey;
+    if (path && navItems.some((item) => item.key === path)) {
+      setActivePageState(path);
     }
-  }, [location.search]);
+  }, [location.pathname]);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [engines, setEngines] = useState<EngineSummary[]>([]);
   const [reviews, setReviews] = useState<RecentReview[]>([]);
@@ -337,10 +335,11 @@ function App() {
     [reviewRecordsPage],
   );
 
-  async function loadPage(page: PageKey) {
+  async function loadPage(page: PageKey, statsDaysOverride?: number) {
     if (!adminToken) {
       return;
     }
+    const effectiveDays = statsDaysOverride ?? statsDays;
     setError(null);
     try {
       if (page === 'providers') {
@@ -373,16 +372,18 @@ function App() {
         // PR-B：新页——从后端拉全部批准负样本，前端做 rule_id / 关键字过滤。
         setNegativeExamplesPage(await fetchNegativeExamples());
       } else if (page === 'dashboard') {
-        const [records, pendingFp, overview, rules, projects, categories, timeseries] = await Promise.all([
+        const [records, recentReviews, pendingFp, overview, rules, projects, categories, timeseries] = await Promise.all([
           fetchReviewRecords(),
+          fetchRecentReviews(),
           fetchPendingFalsePositives(),
-          fetchStatsOverview(statsDays),
-          fetchStatsRules(statsDays, 10),
-          fetchStatsProjects(statsDays, 10),
-          fetchStatsCategories(statsDays),
-          fetchStatsTimeseries(statsDays),
+          fetchStatsOverview(effectiveDays),
+          fetchStatsRules(effectiveDays, 10),
+          fetchStatsProjects(effectiveDays, 10),
+          fetchStatsCategories(effectiveDays),
+          fetchStatsTimeseries(effectiveDays),
         ]);
         setReviewRecordsPage(records);
+        setReviews(recentReviews.slice(0, 5));
         setPendingFpPage(pendingFp);
         setStatsBundle({ overview, rules, projects, categories, timeseries });
       } else if (page === 'engines') {
@@ -962,23 +963,10 @@ function App() {
         {/* ========== 第一行：系统级 KPI ========== */}
         <section>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            <div className="rounded-xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-indigo-100 p-5">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">总审查</div>
-              <div className="mt-3 text-3xl font-bold text-indigo-600">{reviewRecordsPage?.total ?? '—'}</div>
-            </div>
-            <div className="rounded-xl border border-rose-200 bg-gradient-to-br from-rose-50 to-rose-100 p-5">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">阻断问题</div>
-              <div className="mt-3 text-3xl font-bold text-rose-600">{blockerCount}</div>
-            </div>
-            <div className="rounded-xl border border-amber-200 bg-gradient-to-br from-amber-50 to-amber-100 p-5">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">发现问题</div>
-              <div className="mt-3 text-3xl font-bold text-amber-600">{totalFindings}</div>
-            </div>
-            <div className="rounded-xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-emerald-100 p-5">
-              <div className="text-[12px] font-medium uppercase tracking-wide text-zinc-500">待处理误报</div>
-              <div className="mt-3 text-3xl font-bold text-emerald-600">{pendingFpPage?.total ?? 0}</div>
-              <div className="mt-1 text-[11px] text-zinc-500">待处理</div>
-            </div>
+            <KpiCard label="总审查" value={reviewRecordsPage?.total ?? '—'} icon={ScrollText} />
+            <KpiCard label="阻断问题" value={blockerCount} icon={AlertOctagon} intent="danger" />
+            <KpiCard label="发现问题" value={totalFindings} icon={AlertTriangle} />
+            <KpiCard label="待处理误报" value={pendingFpPage?.total ?? 0} icon={Filter} hint="待处理" />
           </div>
         </section>
 
@@ -1002,8 +990,9 @@ function App() {
                   key={opt.value}
                   type="button"
                   onClick={() => {
-                    setStatsDays(opt.value);
-                    void loadPage('dashboard');
+                    const newDays = opt.value;
+                    setStatsDays(newDays);
+                    void loadPage('dashboard', newDays);
                   }}
                   className={cn(
                     'px-3 py-1.5 rounded-[4px] transition-colors',
@@ -1030,39 +1019,15 @@ function App() {
             </CardHeader>
             <CardContent className="pb-4">
               {statsBundle.timeseries.length === 0 ? (
-                <div className="py-6 text-center text-[13px] text-zinc-500">暂无时间序列数据</div>
+                <div className="flex flex-col items-center gap-1.5 py-8 text-center"><FileX size={18} strokeWidth={1.5} className="text-zinc-300" /><span className="text-[13px] text-zinc-400">暂无时间序列数据</span></div>
               ) : (
-                <div className="flex items-end gap-[3px] overflow-x-auto pb-2" role="list" aria-label="时间趋势柱状">
-                  {statsBundle.timeseries.map((p) => {
-                    const max = Math.max(1, ...statsBundle.timeseries.map((t) => t.review_count));
-                    const heightPct = Math.round((p.review_count / max) * 100);
-                    const hasBlockers = p.blocker_count > 0;
-                    return (
-                      <div
-                        key={p.date}
-                        role="listitem"
-                        data-testid="timeseries-bar"
-                        data-date={p.date}
-                        data-review-count={p.review_count}
-                        className="flex min-w-[12px] flex-col items-center gap-1"
-                        title={`${p.date}：审查 ${p.review_count}、问题 ${p.finding_count}、BLOCKER ${p.blocker_count}`}
-                      >
-                        <div className="relative flex h-24 w-2 items-end">
-                          <div
-                            className={cn(
-                              'absolute bottom-0 w-full rounded-t-sm',
-                              p.review_count === 0 ? 'bg-zinc-100' : 'bg-indigo-500',
-                            )}
-                            style={{ height: `${Math.max(heightPct, p.review_count === 0 ? 4 : 6)}%` }}
-                          />
-                          {hasBlockers ? (
-                            <div className="absolute -top-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-rose-500" />
-                          ) : null}
-                        </div>
-                        <span className="text-[10px] text-zinc-400">{p.date.slice(5)}</span>
-                      </div>
-                    );
-                  })}
+                <div>
+                  {/* 图例 */}
+                  <div className="mb-2 flex items-center gap-4 text-[11px] text-zinc-500">
+                    <span className="flex items-center gap-1.5"><span className="inline-block h-2 w-2 rounded-sm bg-zinc-800" />审查量</span>
+                    <span className="flex items-center gap-1.5"><span className="inline-block h-1.5 w-1.5 rounded-full bg-rose-500 ring-2 ring-white" />含 BLOCKER</span>
+                  </div>
+                  <TrendChart data={statsBundle.timeseries} />
                 </div>
               )}
             </CardContent>
@@ -1076,7 +1041,7 @@ function App() {
             </CardHeader>
             <CardContent className="pb-4">
               {statsBundle.categories.length === 0 ? (
-                <div className="py-6 text-center text-[13px] text-zinc-500">暂无分类数据</div>
+                <div className="flex flex-col items-center gap-1.5 py-8 text-center"><FileX size={18} strokeWidth={1.5} className="text-zinc-300" /><span className="text-[13px] text-zinc-400">暂无分类数据</span></div>
               ) : (
                 <div className="space-y-2">
                   {statsBundle.categories.map((cat) => {
@@ -1094,7 +1059,7 @@ function App() {
                         </div>
                         <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-100">
                           <div
-                            className="h-full rounded-full bg-indigo-500 transition-all"
+                            className="h-full rounded-full bg-zinc-800 transition-all"
                             style={{ width: `${pct}%` }}
                           />
                         </div>
@@ -1117,7 +1082,7 @@ function App() {
             </CardHeader>
             <CardContent className="pb-4">
               {statsBundle.rules.length === 0 ? (
-                <div className="py-6 text-center text-[13px] text-zinc-500">暂无问题</div>
+                <div className="flex flex-col items-center gap-1.5 py-8 text-center"><FileX size={18} strokeWidth={1.5} className="text-zinc-300" /><span className="text-[13px] text-zinc-400">暂无问题</span></div>
               ) : (
                 <div className="divide-y divide-zinc-100">
                   <div className="grid grid-cols-[minmax(0,2fr)_40px_50px] gap-2 py-1.5 text-[10px] font-medium uppercase text-zinc-400">
@@ -1174,7 +1139,7 @@ function App() {
             </CardHeader>
             <CardContent className="pb-4">
               {statsBundle.projects.length === 0 ? (
-                <div className="py-6 text-center text-[13px] text-zinc-500">暂无项目</div>
+                <div className="flex flex-col items-center gap-1.5 py-8 text-center"><FileX size={18} strokeWidth={1.5} className="text-zinc-300" /><span className="text-[13px] text-zinc-400">暂无项目</span></div>
               ) : (
                 <div className="divide-y divide-zinc-100">
                   <div className="grid grid-cols-[minmax(0,1.5fr)_35px_35px] gap-2 py-1.5 text-[10px] font-medium uppercase text-zinc-400">
@@ -1255,9 +1220,8 @@ function App() {
     const items = providersPage?.items ?? [];
     const enabledCount = items.filter((provider) => provider.enabled).length;
     return (
-      <div className="grid grid-cols-5 gap-4">
-        {/* 全宽列表卡 */}
-        <Card className="col-span-5">
+      <div className="space-y-4">
+        <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>已配置供应商</CardTitle>
@@ -1269,7 +1233,7 @@ function App() {
           </CardHeader>
           <CardContent className="p-0">
             {items.length === 0 ? (
-              <div className="p-6 text-center text-[13px] text-zinc-500">暂无模型供应商</div>
+              <EmptyState icon={Boxes} title="暂无模型供应商" action={<Button size="sm" onClick={() => setProviderDialog({ mode: 'create' })}>新增供应商</Button>} />
             ) : (
               items.map((provider) => (
                 <ProviderListItem
@@ -1290,9 +1254,8 @@ function App() {
     const items = rulesPage?.items ?? [];
     const enabledCount = items.filter((rule) => rule.enabled).length;
     return (
-      <div className="grid grid-cols-5 gap-4">
-        {/* 全宽列表卡 */}
-        <Card className="col-span-5">
+      <div className="space-y-4">
+        <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>审查规则</CardTitle>
@@ -1304,7 +1267,7 @@ function App() {
           </CardHeader>
           <CardContent className="p-0">
             {items.length === 0 ? (
-              <div className="p-6 text-center text-[13px] text-zinc-500">暂无审查规则</div>
+              <EmptyState icon={ListChecks} title="暂无审查规则" action={<Button size="sm" onClick={() => setRuleDialog({ mode: 'create' })}>新增规则</Button>} />
             ) : (
               items.map((rule) => (
                 <div key={rule.id} className="flex items-center justify-between px-4 py-3 hover:bg-zinc-50 transition-colors border-b border-zinc-100 last:border-b-0">
@@ -1351,9 +1314,8 @@ function App() {
       ...(providersPage?.items ?? []).map((provider) => ({ value: provider.id, label: provider.name })),
     ];
     return (
-      <div className="grid grid-cols-5 gap-4">
-        {/* 全宽列表卡 */}
-        <Card className="col-span-5">
+      <div className="space-y-4">
+        <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
               <CardTitle>已接入项目</CardTitle>
@@ -1365,7 +1327,7 @@ function App() {
           </CardHeader>
           <CardContent className="p-0">
             {(projectsPage?.items ?? []).length === 0 ? (
-              <div className="p-6 text-center text-[13px] text-zinc-500">暂无 GitLab 项目</div>
+              <EmptyState icon={FolderGit2} title="暂无 GitLab 项目" action={<Button size="sm" onClick={() => setProjectDialog({ mode: 'create' })}>新增项目</Button>} />
             ) : (
               (projectsPage?.items ?? []).map((project) => (
                 <ProjectCard
@@ -1399,7 +1361,7 @@ function App() {
           </CardHeader>
           <CardContent className="p-0">
             {items.length === 0 ? (
-              <div className="p-6 text-center text-[13px] text-zinc-500">暂无审查记录</div>
+              <EmptyState icon={ScrollText} title="暂无审查记录" description="当 GitLab MR 触发审查后，记录会显示在这里" />
             ) : (
               items.map((review) => (
                 <ReviewRecordRow key={review.id} review={review} onError={handleCaughtError} />
@@ -1615,7 +1577,7 @@ function App() {
           </CardHeader>
           <CardContent className="p-0">
             {items.length === 0 ? (
-              <div className="p-6 text-center text-[13px] text-zinc-500">暂无待确认误报</div>
+              <EmptyState icon={Filter} title="暂无待确认误报" description="开发者标记的误报会进入此队列" />
             ) : (
               items.map((finding) => {
                 const projectLabel = finding.project_name ?? '未知项目';
@@ -1780,7 +1742,7 @@ function App() {
           </CardHeader>
           <CardContent className="p-0">
             {items.length === 0 ? (
-              <div className="p-6 text-center text-[13px] text-zinc-500">暂无引擎配置</div>
+              <EmptyState icon={Cpu} title="暂无引擎配置" description="引擎配置会在首次启动时自动创建" />
             ) : (
               items.map((engine) => (
                 <div key={engine.id} className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors">
@@ -1921,6 +1883,90 @@ type KpiCardProps = {
   hint?: string;
   intent?: 'neutral' | 'danger';
 };
+
+/** SVG 面积趋势图（参考 Vercel Analytics 风格）。 */
+function TrendChart({ data }: { data: TimeseriesPoint[] }) {
+  const [hovered, setHovered] = useState<number | null>(null);
+  const W = 640;
+  const H = 160;
+  const P = { top: 12, right: 12, bottom: 28, left: 32 };
+  const cw = W - P.left - P.right;
+  const ch = H - P.top - P.bottom;
+  const max = Math.max(1, ...data.map((d) => d.review_count));
+  const step = data.length > 1 ? cw / (data.length - 1) : cw;
+  const pts = data.map((d, i) => ({
+    x: P.left + i * step,
+    y: P.top + ch - (d.review_count / max) * ch,
+    d,
+  }));
+  const areaPath = pts.length > 0
+    ? `M ${pts[0].x} ${P.top + ch} ` + pts.map((p) => `L ${p.x} ${p.y}`).join(' ') + ` L ${pts[pts.length - 1].x} ${P.top + ch} Z`
+    : '';
+  const linePath = pts.length > 0
+    ? pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
+    : '';
+  const yTicks = [0, Math.ceil(max / 2), max];
+  const labelInterval = data.length <= 7 ? 1 : data.length <= 30 ? 5 : 10;
+
+  return (
+    <div className="relative">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 'auto' }}>
+        <defs>
+          <linearGradient id="trendArea" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#27272A" stopOpacity={0.12} />
+            <stop offset="100%" stopColor="#27272A" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        {/* Y 轴网格线 + 刻度 */}
+        {yTicks.map((tick, i) => {
+          const y = P.top + ch - (tick / max) * ch;
+          return (
+            <g key={i}>
+              <line x1={P.left} y1={y} x2={W - P.right} y2={y} stroke="#F4F4F5" strokeWidth={1} />
+              <text x={P.left - 6} y={y + 3} textAnchor="end" fontSize={9} fill="#A1A1AA">{tick}</text>
+            </g>
+          );
+        })}
+        {/* 面积 */}
+        <path d={areaPath} fill="url(#trendArea)" />
+        {/* 折线 */}
+        <path d={linePath} fill="none" stroke="#27272A" strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
+        {/* BLOCKER 标记点 */}
+        {pts.filter((p) => p.d.blocker_count > 0).map((p, i) => (
+          <circle key={`b-${i}`} cx={p.x} cy={p.y} r={3.5} fill="#EF4444" stroke="white" strokeWidth={1.5} />
+        ))}
+        {/* hover 指示线 + 高亮点 */}
+        {hovered !== null && pts[hovered] && (
+          <g>
+            <line x1={pts[hovered].x} y1={P.top} x2={pts[hovered].x} y2={P.top + ch} stroke="#D4D4D8" strokeWidth={1} strokeDasharray="3 3" />
+            <circle cx={pts[hovered].x} cy={pts[hovered].y} r={4} fill="#27272A" stroke="white" strokeWidth={2} />
+          </g>
+        )}
+        {/* X 轴日期标签 */}
+        {data.map((d, i) => {
+          if (i % labelInterval !== 0 && i !== data.length - 1) return null;
+          const x = P.left + i * step;
+          return (
+            <text key={`l-${i}`} x={x} y={H - 8} textAnchor="middle" fontSize={9} fill="#A1A1AA" fontFamily="monospace">{d.date.slice(5)}</text>
+          );
+        })}
+        {/* 透明 hover 区域 */}
+        {pts.map((p, i) => (
+          <rect key={`h-${i}`} x={p.x - step / 2} y={0} width={step} height={H} fill="transparent"
+            onMouseEnter={() => setHovered(i)} onMouseLeave={() => setHovered(null)} />
+        ))}
+      </svg>
+      {/* hover tooltip */}
+      {hovered !== null && data[hovered] && (
+        <div className="pointer-events-none absolute top-0 z-10 rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] shadow-md"
+          style={{ left: `${(pts[hovered].x / W) * 100}%`, transform: 'translateX(-50%)' }}>
+          <div className="font-mono text-zinc-900">{data[hovered].date}</div>
+          <div className="text-zinc-500">评审 {data[hovered].review_count} 次 · 发现 {data[hovered].finding_count} 个问题 · 其中 {data[hovered].blocker_count} 个 BLOCKER</div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function KpiCard({ label, value, icon: Icon, hint, intent = 'neutral' }: KpiCardProps) {
   const danger = intent === 'danger' && Number(value) > 0;
@@ -2085,7 +2131,7 @@ function RecentReviewsPanel({ reviews, onViewAll }: RecentReviewsPanelProps) {
         </button>
       </CardHeader>
       {items.length === 0 ? (
-        <div className="p-6 text-center text-[13px] text-zinc-500">暂无审查记录</div>
+        <EmptyState icon={ScrollText} title="暂无审查记录" description="当 GitLab MR 触发审查后，记录会显示在这里" />
       ) : (
         <div>
           {items.map((review) => (
@@ -2342,7 +2388,7 @@ function BlockPolicyTable({ projectId, policies, onSave }: BlockPolicyTableProps
         <span>引擎错误阻断</span>
         <span>操作</span>
       </div>
-      {items.length === 0 ? <div className="empty">暂无阻断策略，点击下方按钮添加。</div> : null}
+      {items.length === 0 ? <div className="flex flex-col items-center gap-1.5 py-6 text-center"><Settings size={18} strokeWidth={1.5} className="text-zinc-300" /><span className="text-[13px] text-zinc-400">暂无阻断策略，点击下方按钮添加</span></div> : null}
       {items.map((item, index) => (
         <div
           key={item.key}
@@ -2529,7 +2575,7 @@ function ReviewRecordRow({ review, onError }: ReviewRecordRowProps) {
             review.lifecycle_event ? (
               <div className="py-3 text-[13px] text-zinc-500 text-center">MR 生命周期事件，未产生新的审查内容</div>
             ) : (
-              <div className="py-3 text-[13px] text-zinc-500 text-center">暂无问题</div>
+              <div className="flex flex-col items-center gap-1.5 py-6 text-center"><FileX size={18} strokeWidth={1.5} className="text-zinc-300" /><span className="text-[13px] text-zinc-400">暂无问题</span></div>
             )
           ) : null}
           {(findings ?? []).map((finding) => (
