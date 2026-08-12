@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from schemas._datetime import AwareDatetime
 from schemas.project_block_policy import ProjectBlockPolicyCreate, ProjectBlockPolicyRead
+from schemas.project_notification_channel import ProjectNotificationChannelRead
 from schemas.project_rule import ProjectRuleCreate, ProjectRuleRead
 
 BlockSeverity = Literal["INFO", "WARNING", "BLOCKER"]
@@ -101,6 +102,7 @@ class ProjectRead(BaseModel):
         serialization_alias="rules",
     )
     block_policies: list[ProjectBlockPolicyRead] = Field(default_factory=list)
+    notification_channels: list[ProjectNotificationChannelRead] = Field(default_factory=list)
     created_at: AwareDatetime
     updated_at: AwareDatetime
 

@@ -40,6 +40,7 @@
 - 模型供应商 + 模型名
 - 启用的规则集（跨项目共享，按需勾选）
 - **阻断策略**（按目标分支分级，详见下文）
+- **钉钉推送**（按项目配置机器人 Webhook，审查完成后自动推送汇总信息）
 
 ### 阻断策略（按目标分支分级）
 
@@ -226,6 +227,12 @@ curl http://localhost:8000/api/providers \
 - `GET /api/projects/{id}` — 详情（含嵌套 rules + policies）
 - `PATCH /api/projects/{id}` — 更新（传 `rules` / `block_policies` 会整体替换）
 - `DELETE /api/projects/{id}` — 删除
+
+**项目通知渠道（钉钉推送）**
+- `GET /api/projects/{id}/notification-channels` — 列表
+- `POST /api/projects/{id}/notification-channels` — 创建（webhook_url / secret 落库加密，响应脱敏 `****`）
+- `PATCH /api/projects/{id}/notification-channels/{channel_id}` — 更新（可单独切换 `enabled`）
+- `DELETE /api/projects/{id}/notification-channels/{channel_id}` — 删除
 
 **评审记录**
 - `GET /api/reviews` — 列表（支持 `project_id` / `status` / `mr_iid`）

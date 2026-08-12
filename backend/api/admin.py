@@ -368,6 +368,11 @@ async def update_project(project_id: UUID, payload: ProjectUpdate, db: DbSession
     # 显式传了 gitlab_base_url 但为空串时，也兜底到全局默认
     if "gitlab_base_url" in data and not data["gitlab_base_url"]:
         data["gitlab_base_url"] = get_settings().gitlab_base_url
+    # 密钥字段（gitlab_access_token / webhook_secret）为空字符串时跳过更新，
+    # 避免覆盖数据库中已存的密钥。前端编辑模式留空表示"不修改"。
+    for _secret_field in ("gitlab_access_token", "webhook_secret"):
+        if _secret_field in data and not data[_secret_field]:
+            del data[_secret_field]
     for field, value in data.items():
         setattr(project, field, value)
     if payload.rules is not None:
@@ -438,10 +443,24 @@ async def update_project_notification_channel(
     payload: ProjectNotificationChannelUpdate,
     db: DbSession,
 ) -> ProjectNotificationChannelRead:
-    """Update a project notification channel (partial update)."""
+    """Update a project notification channel (partial update).
+
+    前端编辑回显时 ``webhook_url`` / ``secret`` 被脱敏为 ``****``；若用户未
+    修改这两个字段，提交的值仍为 ``****``。此处过滤掉掩码值，避免把 ``****``
+    当作真实 webhook 落库加密。
+    """
 
     channel = await _get_scoped_notification_channel(db, project_id, channel_id)
-    return await _update(db, channel, payload, ProjectNotificationChannelRead)
+    data = payload.model_dump(exclude_unset=True)
+    # 过滤掩码值：webhook_url / secret 为 "****" 时视为「未修改」，跳过。
+    for masked_field in ("webhook_url", "secret"):
+        if data.get(masked_field) == "****":
+            data.pop(masked_field, None)
+    for field, value in data.items():
+        setattr(channel, field, value)
+    await _commit_or_400(db, "Notification channel update failed")
+    await db.refresh(channel)
+    return ProjectNotificationChannelRead.model_validate(channel)
 
 
 @router.delete(
@@ -1155,6 +1174,7 @@ def _project_select() -> Select[tuple[Project]]:
     return select(Project).options(
         selectinload(Project.project_rules),
         selectinload(Project.block_policies),
+        selectinload(Project.notification_channels),
     )
 
 

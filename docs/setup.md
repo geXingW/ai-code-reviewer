@@ -317,3 +317,72 @@ docker compose down -v
 **API 调用返回 401**
 - 管理台接口：确认 JWT token 有效且未过期
 - 内部接口（`/api/reviews`）：确认 `X-Internal-Token` 与 `INTERNAL_API_TOKEN` 一致
+
+---
+
+## 八、钉钉推送配置
+
+审查完成后可自动推送**汇总信息**到钉钉群（仅推送标题、MR 标题、Review ID、问题数/阻断数、详情链接，不推送逐条 finding）。
+
+### 8.1 工作原理
+
+- 推送按**项目维度**独立配置，互不影响
+- 每个项目可配置 0~N 个钉钉群机器人 Webhook
+- `enabled=false` 的渠道不推送；渠道为空则该项目不推送
+- 推送失败一律 **fail-silent**（记 warning 日志，不阻断审查主流程）
+- `webhook_url` / `secret` 落库 Fernet 加密，API 响应脱敏为 `****`
+
+### 8.2 钉钉机器人配置
+
+1. 打开钉钉群 → 群设置 → 智能群助手 → 添加机器人 → 选择「自定义」
+2. 安全设置选择「加签」（推荐）或「关键字」（关键字填 `AI Code Review`）
+3. 记录 Webhook 地址（`https://oapi.dingtalk.com/robot/send?access_token=...`）
+4. 如选加签，记录加签密钥（`SEC...` 开头）
+
+### 8.3 管理台配置
+
+1. 进入管理台 → 项目列表 → 编辑目标项目
+2. 在「钉钉推送」区块点击「+ 添加钉钉推送渠道」
+3. 填写渠道名称（如「前端组机器人」）、Webhook 地址、加签密钥（可选）
+4. 保存后默认启用；可随时点击「● 已启用 / ○ 已停用」切换推送状态
+
+### 8.4 推送消息示例
+
+```
+【AI Code Review】MR !42 审查完成 - 存在阻断
+
+MR 标题：feat: 新增用户登录接口
+Review ID：550e8400-e29b-41d4-a716-446655440000
+结果：发现问题 5 个（其中 2 个阻断）
+详情：查看详情
+```
+
+### 8.5 REST API
+
+```bash
+# 列出项目通知渠道
+curl http://localhost:8000/api/projects/{project_id}/notification-channels \
+  -H "Authorization: Bearer $TOKEN"
+
+# 创建钉钉推送渠道
+curl -X POST http://localhost:8000/api/projects/{project_id}/notification-channels \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel_type": "dingtalk",
+    "name": "前端组机器人",
+    "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=...",
+    "secret": "SEC...",
+    "enabled": true
+  }'
+
+# 切换启用/停用
+curl -X PATCH http://localhost:8000/api/projects/{project_id}/notification-channels/{channel_id} \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+
+# 删除渠道
+curl -X DELETE http://localhost:8000/api/projects/{project_id}/notification-channels/{channel_id} \
+  -H "Authorization: Bearer $TOKEN"
+```

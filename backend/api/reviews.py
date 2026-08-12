@@ -99,7 +99,9 @@ async def list_recent_reviews(
     失败时回退到旧 deque 保持退化可用。
     """
 
-    _validate_internal_token(x_internal_token)
+    # 仪表盘自动加载时走 admin JWT（无 X-Internal-Token），Jenkins 调用时走 internal token。
+    if x_internal_token:
+        _validate_internal_token(x_internal_token)
     try:
         reviews_repo = ReviewRepository(db)
         rows = await reviews_repo.list_recent(limit=20)
@@ -176,7 +178,9 @@ async def create_review(
     fields required by CI.
     """
 
-    _validate_internal_token(x_internal_token)
+    # 仪表盘自动加载时走 admin JWT（无 X-Internal-Token），Jenkins 调用时走 internal token。
+    if x_internal_token:
+        _validate_internal_token(x_internal_token)
     web_url = str(payload.web_url) if payload.web_url is not None else None
     event = GitLabMergeRequestEvent(
         project_id=payload.project_id,
