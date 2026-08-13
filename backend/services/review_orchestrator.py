@@ -319,6 +319,9 @@ class ReviewOrchestrator:
                 duration_ms=int((time.perf_counter() - started_at) * 1000),
                 plan=plan,
             )
+        # 按文件粒度并发审查时，engine 把被跳过的文件（过大 / 失败）挂在实例属性
+        # skipped_files 上；review() 成功返回后读取，交给 summary builder 渲染覆盖说明。
+        skipped_files = getattr(engine, "skipped_files", [])
         # 增量模式下把新 findings 与历史 open findings 合并，得到本次要展示的集合。
         merge = await self._merge_findings_for_plan(event, plan, findings)
         combined_findings = merge.combined_findings
@@ -352,6 +355,9 @@ class ReviewOrchestrator:
                 mode_reason=plan.reason,
                 new_findings=list(merge.new_findings),
                 carried_findings=list(merge.carried_over_untouched),
+                skipped_files=[s.model_dump() for s in skipped_files],
+                reviewed_file_count=len(context.diff_hunks) - len(skipped_files),
+                file_max_chars=get_settings().llm_file_max_chars,
             ),
         )
         await self._gitlab_client.set_commit_status(
@@ -697,6 +703,7 @@ class ReviewOrchestrator:
                             # 让 engine 侧的 _format_rules 用 'other' 兜底以对齐
                             # FindingCategory 枚举，'general' 不在合法值内。
                             category=rule.category_default,
+                            path_patterns=list(rule.path_patterns) if rule.path_patterns else [],
                             enabled=True,
                         )
                     )

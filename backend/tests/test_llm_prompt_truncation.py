@@ -74,24 +74,31 @@ def _ctx_with_diff(content: str) -> ReviewContext:
 
 
 @pytest.mark.asyncio
-async def test_prompt_truncated_when_diff_exceeds_budget(
+async def test_large_diff_skipped_when_exceeds_file_max_chars(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """diff 撑爆预算时应被截到 max_chars 以内，并留下一条截断标记 + warning 日志。"""
+    """单文件 diff 超过 llm_file_max_chars 时直接跳过（reason=too_large），不调 LLM。
+
+    按文件粒度并发审查后，超大文件不再截断后强行送审，而是整文件跳过、
+    列入 skipped_files，避免把半截 diff 送给 LLM 导致审查质量不可控。
+    """
 
     huge_diff = "@@ -1 +1 @@\n" + "+huge line of code\n" * 20_000  # 数十万字符
-    settings = Settings(llm_filter_enabled=False, llm_prompt_max_chars=8_000)
+    settings = Settings(llm_filter_enabled=False, llm_file_max_chars=8_000)
     client = _CapturingClient(responses=['{"findings": []}'])
     engine = LLMDirectEngine(client=client, settings=settings)
 
-    with caplog.at_level("WARNING", logger="engines.llm_engine.engine"):
-        await engine.review(_ctx_with_diff(huge_diff))
+    with caplog.at_level("INFO", logger="engines.llm_engine.engine"):
+        findings = await engine.review(_ctx_with_diff(huge_diff))
 
-    prompt = client.prompts[0]
-    assert len(prompt) <= settings.llm_prompt_max_chars
-    assert "diff truncated" in prompt
-    # 至少要有一条 warning，明确写出预算和截断结果。
-    assert any("prompt exceeded max chars" in record.getMessage() for record in caplog.records)
+    # 不调 LLM（大文件在信号量前就跳过了）
+    assert len(client.prompts) == 0
+    assert findings == []
+    assert len(engine.skipped_files) == 1
+    assert engine.skipped_files[0].file_path == "app/big.py"
+    assert engine.skipped_files[0].reason == "too_large"
+    # 有 info 级别日志说明跳过原因
+    assert any("too_large" in rec.getMessage() for rec in caplog.records)
 
 
 @pytest.mark.asyncio

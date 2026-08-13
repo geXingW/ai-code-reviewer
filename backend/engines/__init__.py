@@ -22,6 +22,7 @@ from engines.types import (
     ReviewContext,
     ReviewHistoryItem,
     RuleSpec,
+    SkippedFile,
 )
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "ReviewEngine",
     "ReviewHistoryItem",
     "RuleSpec",
+    "SkippedFile",
     "get_engine_registry",
     "load_builtin_engines",
     "register_engine",

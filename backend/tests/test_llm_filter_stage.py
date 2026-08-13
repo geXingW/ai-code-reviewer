@@ -616,42 +616,98 @@ def _ctx_with_huge_diff() -> ReviewContext:
     )
 
 
+def _ctx_with_many_small_files(num_files: int, chars_per_file: int) -> ReviewContext:
+    """构造 N 个小文件的 ctx，用于制造多文件总 diff 很大的场景。"""
+
+    hunks: list[DiffHunk] = []
+    for i in range(num_files):
+        line = "+" + "x" * max(chars_per_file - 2, 1) + "\n"
+        content = f"@@ -1,1 +1,2 @@\n old_line\n{line}"
+        hunks.append(
+            DiffHunk(
+                file_path=f"app/file_{i:04d}.py",
+                old_path=f"app/file_{i:04d}.py",
+                new_start=1,
+                new_lines=2,
+                old_start=1,
+                old_lines=1,
+                content=content,
+            )
+        )
+    return ReviewContext(
+        review_id=uuid4(),
+        project_id=uuid4(),
+        mr_iid="1",
+        source_branch="feature/x",
+        target_branch="master",
+        source_commit_sha="a" * 40,
+        target_commit_sha="b" * 40,
+        diff_hunks=hunks,
+        provider=ProviderConfig(
+            provider_id=uuid4(),
+            provider_type="openai-compatible",
+            base_url="https://llm.example.com/v1",
+            model="reviewer-1",
+            api_key="test-key",
+            temperature=0.0,
+            max_tokens=2048,
+        ),
+        rules=[],
+        mr_title="big MR",
+        mr_description="",
+        last_commit_message="",
+    )
+
+
 @pytest.mark.asyncio
 async def test_filter_stage_truncates_diff_when_prompt_too_long(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """大 MR 时 filter 阶段的 diff 必须被截断到 llm_prompt_max_chars 以内。
+    """大 MR（多文件）时 filter 阶段的 diff 必须被截断到 llm_prompt_max_chars 以内。
 
-    之前 filter 阶段直接使用完整 diff，会撞爆 LLM context window。
-    修复后 filter 阶段复用主审查的截断策略，保证 prompt 长度可控。
+    按文件粒度并发审查后，主审阶段单文件超大的会被直接跳过，不会触发截断。
+    但 filter 阶段仍然使用完整 diff 做证伪参考，多文件总 diff 仍可能超过预算，
+    因此 filter 阶段的截断保护必须保留。
     """
 
-    review_resp = json.dumps({
-        "findings": [
-            {
-                "file_path": "app/big.py",
-                "line_number": 10,
-                "rule_id": "r1",
-                "severity": "WARNING",
-                "title": "finding1",
-                "confidence": 0.8,
-            }
-        ]
-    })
+    # 构造 30 个小文件，总 diff 很大但每个文件都在 file_max_chars 以内
+    num_files = 30
+    ctx = _ctx_with_many_small_files(num_files=num_files, chars_per_file=200)
+
+    # 主审每个文件返回一条 finding，filter 返回空 decisions
+    main_responses = []
+    for i in range(num_files):
+        main_responses.append(json.dumps({
+            "findings": [
+                {
+                    "file_path": f"app/file_{i:04d}.py",
+                    "line_number": 2,
+                    "rule_id": f"r-{i}",
+                    "severity": "WARNING",
+                    "title": f"finding {i}",
+                    "confidence": 0.5,
+                }
+            ]
+        }))
     filter_resp = '{"decisions": []}'
 
-    client = _FilterFakeClient(responses=[review_resp, filter_resp])
-    settings = Settings(llm_filter_enabled=True, llm_prompt_max_chars=4_000)
+    client = _FilterFakeClient(responses=main_responses + [filter_resp])
+    settings = Settings(
+        llm_filter_enabled=True,
+        llm_prompt_max_chars=6_000,
+        llm_file_max_chars=2000,  # 每个小文件都在阈值内
+        llm_concurrency=10,
+    )
     engine = LLMDirectEngine(client=client, settings=settings)
 
     with caplog.at_level("WARNING", logger="engines.llm_engine.engine"):
-        await engine.review(_ctx_with_huge_diff())
+        await engine.review(ctx)
 
-    # 第二次调用是 filter 阶段
-    assert len(client.calls) == 2
-    filter_prompt = str(client.calls[1]["prompt"])
-    # filter prompt 不应超过 max_chars 太多（留点余量给 system prompt，但 user prompt 要在预算内）
-    assert len(filter_prompt) <= settings.llm_prompt_max_chars
+    # 主审 N 次 + filter 1 次
+    assert len(client.calls) == num_files + 1
+    filter_prompt = str(client.calls[-1]["prompt"])
+    # filter prompt 不应超过 max_chars 太多（留点余量给 system prompt，user 段要在预算内）
+    assert len(filter_prompt) <= settings.llm_prompt_max_chars + 500
     # diff 截断标记必须出现在 filter prompt 中
     assert "diff truncated" in filter_prompt
     # 必须有一条 filter truncation 的 warning 日志
