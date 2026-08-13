@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -26,8 +25,8 @@ from engines.types import (
     ReviewHistoryItem,
     RuleSpec,
 )
-from llm import LLMError
-from llm.base import ServerError, TimeoutError as LLMTimeoutError
+from llm.base import ServerError
+from llm.base import TimeoutError as LLMTimeoutError
 
 
 def _no_filter_settings() -> Settings:
@@ -511,8 +510,6 @@ async def test_review_degrades_single_file_timeout_to_skipped() -> None:
 @pytest.mark.asyncio
 async def test_review_degrades_server_error_to_skipped() -> None:
     """任意 LLMError 家族都降级为 skipped，不向上冒。"""
-
-    from llm.base import ServerError
 
     client = _RaisingLLMClient(exception=ServerError("upstream 502"))
     engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
