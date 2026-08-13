@@ -97,6 +97,9 @@ class RuleSpec(BaseModel):
     severity: Severity = Field(description="Severity after per-project override is applied.")
     category: str | None = None
     examples: list[str] = Field(default_factory=list)
+    # 规则适用的文件路径模式（glob），如 ['**/*.py', '**/api/*.ts']。
+    # 空列表表示不限制，所有文件都适用。用于按文件分批时减少无效规则占用 token。
+    path_patterns: list[str] = Field(default_factory=list)
     enabled: bool = True
 
 
@@ -212,6 +215,32 @@ class Finding(BaseModel):
     # 时默认保留，LLM 自己发挥出来的 finding 才走强对抗证伪。默认值刻意
     # 选最不受保护的 ``LLM_INFERRED``，避免调用方忘了打标签导致"误保护"。
     source: FindingSource = FindingSource.LLM_INFERRED
+
+
+class SkippedFile(BaseModel):
+    """未被审查的文件及其原因（按文件粒度并发审查时产生）。
+
+    单文件 diff 过大、LLM 调用失败或响应解析失败时，该文件不参与主审查，
+    记录为 skipped 由 orchestrator 透传给 summary builder 在 GitLab 摘要里
+    明确展示，避免用户误以为"全部审查通过"实际有文件没覆盖。
+
+    不修改 ``ReviewEngine.review()`` 的返回签名（仍是 ``list[Finding]``）：
+    skipped_files 通过 ``LLMDirectEngine`` 的实例属性回传，orchestrator 在
+    review 完成后读取。
+
+    Attributes:
+        file_path: 被跳过的文件路径。
+        reason: 跳过原因。``too_large``=diff 超过 ``llm_file_max_chars``；
+            ``review_failed``=LLM 调用或响应解析失败；``filtered_out``=预留，
+            当前 filter 阶段 fail-open 不会产生此原因。
+        detail: 人类可读的补充说明（如 diff 字符数、错误信息），用于摘要展示。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_path: str
+    reason: Literal["too_large", "review_failed", "filtered_out"]
+    detail: str | None = None
 
 
 class HealthStatus(BaseModel):

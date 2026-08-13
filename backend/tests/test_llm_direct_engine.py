@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -24,7 +27,7 @@ from engines.types import (
     RuleSpec,
 )
 from llm import LLMError
-from llm.base import TimeoutError as LLMTimeoutError
+from llm.base import ServerError, TimeoutError as LLMTimeoutError
 
 
 def _no_filter_settings() -> Settings:
@@ -486,49 +489,69 @@ class _RaisingLLMClient:
 
 
 @pytest.mark.asyncio
-async def test_review_raises_on_llm_timeout() -> None:
-    """主 LLM 超时必须抛 LLMError 让 orchestrator 走 engine_error 分支，不能装成 []。"""
+async def test_review_degrades_single_file_timeout_to_skipped() -> None:
+    """单文件 LLM 超时降级为 skipped(reason=review_failed)，不拖垮整体。
+
+    按文件粒度并发后，超时等 LLMError 不再向上冒——orchestrator 侧通过
+    ``engine.skipped_files`` 获知哪些文件没覆盖，而不是整个 review 标 error。
+    """
 
     client = _RaisingLLMClient(exception=LLMTimeoutError("LLM provider request timed out"))
     engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
-    with pytest.raises(LLMError):
-        await engine.review(_ctx())
+    findings = await engine.review(_ctx())
+
+    assert findings == []
+    assert len(engine.skipped_files) == 1
+    assert engine.skipped_files[0].file_path == "app/auth.py"
+    assert engine.skipped_files[0].reason == "review_failed"
+    assert "timed out" in (engine.skipped_files[0].detail or "")
 
 
 @pytest.mark.asyncio
-async def test_review_raises_on_llm_server_error() -> None:
-    """任意 LLMError 都必须往上冒——orchestrator 才能在 GitLab 写"审查失败"。"""
+async def test_review_degrades_server_error_to_skipped() -> None:
+    """任意 LLMError 家族都降级为 skipped，不向上冒。"""
 
     from llm.base import ServerError
 
     client = _RaisingLLMClient(exception=ServerError("upstream 502"))
     engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
-    with pytest.raises(LLMError):
-        await engine.review(_ctx())
+    findings = await engine.review(_ctx())
+
+    assert findings == []
+    assert len(engine.skipped_files) == 1
+    assert engine.skipped_files[0].reason == "review_failed"
+    assert "502" in (engine.skipped_files[0].detail or "")
 
 
 @pytest.mark.asyncio
-async def test_review_raises_on_malformed_json_response() -> None:
-    """模型返回非 JSON 内容时，engine 必须包成 LLMError 抛出，不能返回 []。"""
+async def test_review_degrades_malformed_json_to_skipped() -> None:
+    """模型返回非 JSON 内容时，降级为 skipped，不抛 LLMError。"""
 
     client = _FakeLLMClient(responses=["this is not JSON at all"])
     engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
-    with pytest.raises(LLMError):
-        await engine.review(_ctx())
+    findings = await engine.review(_ctx())
+
+    assert findings == []
+    assert len(engine.skipped_files) == 1
+    assert engine.skipped_files[0].reason == "review_failed"
+    assert "parsing failed" in (engine.skipped_files[0].detail or "").lower()
 
 
 @pytest.mark.asyncio
-async def test_review_raises_when_response_is_not_object() -> None:
-    """LLM 返回 JSON array（不是 object）时也走 LLMError。"""
+async def test_review_degrades_non_object_json_to_skipped() -> None:
+    """LLM 返回 JSON array（不是 object）时也降级为 skipped。"""
 
     client = _FakeLLMClient(responses=["[1, 2, 3]"])
     engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
 
-    with pytest.raises(LLMError):
-        await engine.review(_ctx())
+    findings = await engine.review(_ctx())
+
+    assert findings == []
+    assert len(engine.skipped_files) == 1
+    assert engine.skipped_files[0].reason == "review_failed"
 
 
 @pytest.mark.asyncio
@@ -710,3 +733,227 @@ async def test_finding_source_ignores_disabled_rules_in_ctx() -> None:
 
     assert len(findings) == 1
     assert findings[0].source == FindingSource.LLM_INFERRED
+
+
+# --- 按文件粒度并发审查 -----------------------------------------------
+
+
+def _ctx_multi_files(num_files: int) -> ReviewContext:
+    """构造包含 N 个文件的 ReviewContext，用于并发测试。"""
+
+    hunks: list[DiffHunk] = []
+    for i in range(num_files):
+        hunks.append(
+            DiffHunk(
+                file_path=f"app/module_{i}.py",
+                old_path=f"app/module_{i}.py",
+                new_start=10 + i,
+                new_lines=3,
+                old_start=10 + i,
+                old_lines=2,
+                content=(
+                    f"@@ -{10 + i},2 +{10 + i},3 @@ def func_{i}():\n"
+                    f"     a = 1\n"
+                    f"+    print(f\"debug {i}\")\n"
+                    f"     return a\n"
+                ),
+            )
+        )
+    ctx = _ctx()
+    return ctx.model_copy(update={"diff_hunks": hunks})
+
+
+@pytest.mark.asyncio
+async def test_concurrent_review_multiple_files_all_success() -> None:
+    """多文件并发审查：所有文件成功，findings 合并正确，skipped 为空。"""
+
+    num_files = 5
+    responses = []
+    for i in range(num_files):
+        responses.append(
+            json.dumps(
+                {
+                    "findings": [
+                        {
+                            "file_path": f"app/module_{i}.py",
+                            "line_number": 11 + i,
+                            "rule_id": f"rule-{i}",
+                            "severity": "WARNING",
+                            "title": f"finding in module {i}",
+                            "confidence": 0.8,
+                        }
+                    ]
+                }
+            )
+        )
+
+    client = _FakeLLMClient(responses=responses)
+    settings = Settings(llm_filter_enabled=False, llm_concurrency=4)
+    engine = LLMDirectEngine(client=client, settings=settings)
+
+    findings = await engine.review(_ctx_multi_files(num_files))
+
+    assert len(findings) == num_files
+    assert len(engine.skipped_files) == 0
+    paths = {f.file_path for f in findings}
+    assert paths == {f"app/module_{i}.py" for i in range(num_files)}
+    assert len(client.prompts) == num_files
+
+
+@pytest.mark.asyncio
+async def test_concurrent_review_concurrency_limited_by_semaphore() -> None:
+    """并发度受 llm_concurrency 限制：同时进行的 LLM 调用不超过该值。"""
+
+    num_files = 8
+    concurrency = 3
+
+    active_count = 0
+    max_active = 0
+    lock = asyncio.Lock()
+
+    @dataclass
+    class _ThrottledClient:
+        async def complete(
+            self,
+            *,
+            provider: ProviderConfig,
+            prompt: str,
+            timeout_seconds: float,
+            system_prompt: str | None = None,
+        ) -> str:
+            nonlocal active_count, max_active
+            async with lock:
+                active_count += 1
+                if active_count > max_active:
+                    max_active = active_count
+            await asyncio.sleep(0.05)
+            async with lock:
+                active_count -= 1
+            return '{"findings": []}'
+
+    client = _ThrottledClient()
+    settings = Settings(llm_filter_enabled=False, llm_concurrency=concurrency)
+    engine = LLMDirectEngine(client=client, settings=settings)
+
+    findings = await engine.review(_ctx_multi_files(num_files))
+
+    assert len(findings) == 0
+    assert len(engine.skipped_files) == 0
+    assert max_active <= concurrency
+    assert max_active >= 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_review_large_file_skipped_too_large() -> None:
+    """单文件 diff 超过 llm_file_max_chars → 跳过，不调 LLM。"""
+
+    big_hunk = DiffHunk(
+        file_path="app/big_file.py",
+        old_path="app/big_file.py",
+        new_start=1,
+        new_lines=500,
+        old_start=1,
+        old_lines=500,
+        content="@@ -1,500 +1,500 @@\n" + "\n".join([f"+line {i}: x = {i}" for i in range(500)]),
+    )
+    ctx = _ctx()
+    ctx = ctx.model_copy(update={"diff_hunks": [big_hunk]})
+
+    client = _FakeLLMClient(responses=[])
+    settings = Settings(llm_filter_enabled=False, llm_file_max_chars=500)
+    engine = LLMDirectEngine(client=client, settings=settings)
+
+    findings = await engine.review(ctx)
+
+    assert findings == []
+    assert len(client.prompts) == 0
+    assert len(engine.skipped_files) == 1
+    assert engine.skipped_files[0].file_path == "app/big_file.py"
+    assert engine.skipped_files[0].reason == "too_large"
+    assert "chars" in (engine.skipped_files[0].detail or "")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_review_partial_success_partial_failed() -> None:
+    """部分文件成功、部分失败：成功的 findings 正常返回，失败的进 skipped。"""
+
+    num_files = 4
+
+    @dataclass
+    class _PartialFailClient:
+        call_count: int = 0
+
+        async def complete(
+            self,
+            *,
+            provider: ProviderConfig,
+            prompt: str,
+            timeout_seconds: float,
+            system_prompt: str | None = None,
+        ) -> str:
+            self.call_count += 1
+            import re as _re
+            m = _re.search(r"module_(\d+)\.py", prompt)
+            idx = int(m.group(1)) if m else 0
+            if idx in (1, 3):
+                raise LLMTimeoutError("simulated timeout")
+            return json.dumps(
+                {
+                    "findings": [
+                        {
+                            "file_path": f"app/module_{idx}.py",
+                            "line_number": 11 + idx,
+                            "rule_id": f"rule-{idx}",
+                            "severity": "WARNING",
+                            "title": f"finding {idx}",
+                            "confidence": 0.7,
+                        }
+                    ]
+                }
+            )
+
+    client = _PartialFailClient()
+    settings = Settings(llm_filter_enabled=False, llm_concurrency=2)
+    engine = LLMDirectEngine(client=client, settings=settings)
+
+    findings = await engine.review(_ctx_multi_files(num_files))
+
+    assert len(findings) == 2
+    assert len(engine.skipped_files) == 2
+    skipped_paths = {s.file_path for s in engine.skipped_files}
+    assert skipped_paths == {"app/module_1.py", "app/module_3.py"}
+    assert all(s.reason == "review_failed" for s in engine.skipped_files)
+    assert client.call_count == num_files
+
+
+@pytest.mark.asyncio
+async def test_concurrent_review_empty_diff_hunks() -> None:
+    """空 diff → 空 findings，skipped 也为空。"""
+
+    ctx = _ctx()
+    ctx = ctx.model_copy(update={"diff_hunks": []})
+
+    client = _FakeLLMClient(responses=[])
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
+
+    findings = await engine.review(ctx)
+
+    assert findings == []
+    assert engine.skipped_files == []
+    assert len(client.prompts) == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_review_skipped_reset_between_reviews() -> None:
+    """多次 review 之间，skipped_files 会被重置。"""
+
+    client = _RaisingLLMClient(exception=LLMTimeoutError("boom"))
+    engine = LLMDirectEngine(client=client, settings=_no_filter_settings())
+
+    await engine.review(_ctx())
+    assert len(engine.skipped_files) == 1
+
+    ctx_no_provider = _ctx(response_provider=False)
+    findings = await engine.review(ctx_no_provider)
+    assert findings == []
+    assert engine.skipped_files == []

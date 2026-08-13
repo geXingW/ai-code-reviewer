@@ -1,0 +1,278 @@
+# 按文件分批评审 + 并发处理 — 实施 Spec
+
+## 目标
+
+将 `LLMDirectEngine` 从「串行按批处理」改为「按文件粒度并发处理」：
+- 每个文件（或小文件组合）独立调用一次 LLM
+- 使用 `asyncio.Semaphore` 控制并发度，默认 4 并发
+- 单文件 diff 超过阈值 → 整文件跳过，不做截断
+- 单文件 LLM 调用失败 → 降级为 skipped，不拖垮整体 review
+- 所有文件的 findings 合并返回，skipped_files 在 GitLab 摘要中明确展示
+
+## 背景（现状）
+
+当前 `LLMDirectEngine.review()` 实现：
+1. `_build_batches()` 按字符预算贪心装箱，把文件分成若干 batch
+2. 串行遍历 batch，每批调一次 LLM
+3. 单文件超预算 → 独占一批，批内 `_truncate_diff` 把 diff 文本拦腰截断
+4. 任何一批 LLM 失败 → 整个 review 抛异常 → orchestrator 标 engine_error
+
+问题：
+- 大文件 diff 被截断，审查质量不可控
+- 串行慢，大 MR 几十文件要等很久
+- 单个文件 LLM 挂了导致整个 MR 审查失败，颗粒度太粗
+
+## 改动范围
+
+### 1. types.py — 新增 SkippedFile + EngineReviewResult
+
+在 `engines/types.py` 新增：
+
+```python
+class SkippedFile(BaseModel):
+    """未被审查的文件及其原因。"""
+    file_path: str
+    reason: Literal["too_large", "review_failed", "filtered_out"]
+    detail: str | None = None
+```
+
+注意：**不修改 `ReviewEngine.review()` 的返回签名**（仍然是 `list[Finding]`），
+因为 engine 基类是公共契约，改了影响所有 engine 实现。
+skipped_files 通过 `ReviewContext.extra` 回传（engine 可写 ctx.extra），
+或者更干净的做法：在 `LLMDirectEngine` 上挂一个属性 `last_skipped_files`，
+orchestrator 在 `engine.review()` 返回后读取。
+
+→ 选后者：`LLMDirectEngine` 增加实例属性 `skipped_files: list[SkippedFile]`，
+每次 `review()` 开始时清空，结束时填充。orchestrator 侧在 review 完成后
+读取并传递给 summary builder。
+
+### 2. config.py — 新增两个配置项
+
+在 `Settings` 中增加：
+
+```python
+llm_concurrency: Annotated[
+    int,
+    Field(
+        ge=1,
+        le=32,
+        description="LLM 文件级并发数。默认 4。",
+    ),
+] = 4
+
+llm_file_max_chars: Annotated[
+    int,
+    Field(
+        gt=0,
+        description=(
+            "单个文件 diff 的最大字符数。超过此阈值的文件直接跳过，"
+            "列入 skipped_files。默认 12000（约 3K tokens）。"
+        ),
+    ),
+] = 12000
+```
+
+环境变量：`LLM_CONCURRENCY`、`LLM_FILE_MAX_CHARS`。
+
+### 3. engine.py — 核心改造：并发 + 单文件跳过 + 失败降级
+
+#### 3.1 新增 `_review_single_file()` 方法
+
+```python
+async def _review_single_file(
+    self,
+    ctx: ReviewContext,
+    hunk: DiffHunk,
+    sem: asyncio.Semaphore,
+) -> tuple[list[Finding], SkippedFile | None]:
+    """并发审查单个文件。获取信号量后调用 LLM，释放后返回结果。
+    
+    返回 (findings, skipped)：
+    - 成功：(findings_list, None)
+    - 跳过（太大）：([], SkippedFile)
+    - LLM 失败：([], SkippedFile(reason="review_failed"))
+    - 解析失败：([], SkippedFile(reason="review_failed"))
+    """
+```
+
+实现要点：
+- 先用 `_format_diff([hunk])` 算出单文件 diff 长度
+- 超过 `llm_file_max_chars` → 直接返回 skipped（reason=too_large），不占信号量
+- 否则 `async with sem:` 内调 LLM
+- prompt 构建复用 `_build_batch_prompt`（batch_index/total_batches 传占位值或去掉 batch info 段）
+- LLM 抛 `LLMError` → catch 住，返回 skipped（reason=review_failed，detail=错误信息）
+- 解析失败（JSON/schema 错）→ 同上
+
+#### 3.2 改造 `review()` 方法
+
+旧逻辑（串行 batch）→ 新逻辑（并发单文件）：
+
+```python
+async def review(self, ctx: ReviewContext) -> list[Finding]:
+    # ... 现有前置检查（provider、diff_hunks 为空）保持不变 ...
+    
+    self.skipped_files: list[SkippedFile] = []  # 重置
+    
+    sem = asyncio.Semaphore(self._settings.llm_concurrency)
+    tasks = [
+        self._review_single_file(ctx, hunk, sem)
+        for hunk in ctx.diff_hunks
+    ]
+    
+    results = await asyncio.gather(*tasks)  # 永不抛异常（内部 catch）
+    
+    all_findings: list[Finding] = []
+    for findings, skipped in results:
+        all_findings.extend(findings)
+        if skipped:
+            self.skipped_files.append(skipped)
+    
+    # 日志：多少文件成功、多少跳过、跳过原因分布
+    logger.info(
+        "llm-direct concurrent review: %d files reviewed, %d skipped "
+        "(too_large=%d, review_failed=%d, review_id=%s)",
+        len(ctx.diff_hunks) - len(self.skipped_files),
+        len(self.skipped_files),
+        sum(1 for s in self.skipped_files if s.reason == "too_large"),
+        sum(1 for s in self.skipped_files if s.reason == "review_failed"),
+        ctx.review_id,
+    )
+    
+    # Filter 阶段保持不变（对全部 findings 统一过滤）
+    return await self._filter_findings(ctx, all_findings)
+```
+
+#### 3.3 移除/改造 `_build_batches()`
+
+- `_build_batches` 方法不再被 `review()` 调用
+- 保留方法但标记 deprecated，或者直接删掉
+- 相关测试需要更新
+
+#### 3.4 `_build_batch_prompt` 调整
+
+单文件模式下不需要 "Batch X/Y" 信息。改造为：
+- 当只有一个文件时，不注入 batch_info 段
+- 或者增加一个 `show_batch_info: bool = True` 参数
+
+更简单的做法：在 `_review_single_file` 里调用 `_build_batch_prompt` 时
+传 `batch_index=1, total_batches=1`，现有逻辑已经支持。
+batch info 段显示 "1 file(s)" 也没问题，不影响质量。
+
+#### 3.5 `_truncate_diff` 的角色变化
+
+- `_truncate_diff` 仍然保留，用于 **filter 阶段**的 diff 截断（filter 阶段用完整 diff 做证伪，大 MR 时仍需截断）
+- 但主审查阶段（单文件）不再触发截断——因为超阈值的文件已经被跳过了
+- `_build_batch_prompt` 里的截断逻辑保留作为兜底防御（万一估算不准），
+  但正常情况下不会触发
+
+### 4. review_orchestrator.py — 读取 skipped_files 并传给摘要
+
+在 `review_merge_request()` 中，`engine.review(context)` 返回后：
+
+```python
+findings = await engine.review(context)
+
+# 读取 skipped_files（如果 engine 支持）
+skipped_files = getattr(engine, 'skipped_files', [])
+```
+
+然后把 `skipped_files` 传给 `build_review_summary_note()`。
+
+**注意**：engine_error 的判定逻辑不变——只有当 `engine.review()` 本身抛异常
+时才走 `_handle_engine_error`。单文件失败已经被 engine 内部降级为
+skipped，不会触发 engine_error。
+
+### 5. summary_builder.py — 渲染跳过文件清单
+
+在 `build_review_summary_note()` 增加参数：
+
+```python
+skipped_files: Sequence[SkippedFile] | None = None
+```
+
+在摘要末尾（`_Generated by ai-code-reviewer_` 之前）追加一个段落：
+
+```
+---
+### 审查覆盖说明
+
+已审查 **{reviewed_count}** 个文件，跳过 **{skipped_count}** 个文件：
+
+**文件过大（>{threshold} chars）：** {too_large_count} 个
+- `src/services/big_service.py` (18.4K chars)
+- `tests/test_big_service.py` (15.2K chars)
+
+**审查失败：** {failed_count} 个
+- `src/integrations/legacy_client.py` (LLM timeout)
+```
+
+没有 skipped_files 时不展示该段落。
+
+导入 `SkippedFile` 时注意循环依赖：`summary_builder` 在 `core/`，`SkippedFile`
+在 `engines/types.py`。可以：
+- 把 `SkippedFile` 放到 `core/` 下的某个模块
+- 或者在 summary_builder 里用 Protocol / dict 形状，不直接 import
+
+→ 选后者更干净：`skipped_files` 参数类型用
+`Sequence[Mapping[str, str]]` 或者定义一个轻量 dataclass/TypedDict。
+实际传入时把 `SkippedFile.model_dump()` 传进去。
+
+## 测试用例
+
+### 单元测试（engine 层）
+
+1. **单文件正常审查**：1 个小文件 → 返回 findings，skipped 为空
+2. **单文件过大跳过**：1 个超 `llm_file_max_chars` 的文件 → findings 为空，
+   skipped_files 有 1 条 reason=too_large
+3. **多文件并发**：5 个文件，并发度 2 → 全部成功，findings 数量正确
+4. **单文件 LLM 失败降级**：mock client 让第 3 个文件抛 LLMError →
+   整体不抛异常，skipped_files 有 1 条 reason=review_failed，
+   其他文件 findings 正常
+5. **单文件解析失败降级**：mock 返回垃圾 JSON → 同上
+6. **全部失败**：所有文件都失败 → findings 为空，skipped 全量，
+   review() 不抛异常（orchestrator 侧根据 finding_count + skipped_count
+   决定是否标 engine_error，见下方讨论）
+7. **并发度控制**：mock client 加延迟，验证同时执行的任务数 ≤ concurrency
+8. **空 diff**：ctx.diff_hunks 为空 → 返回空列表，skipped 为空
+9. **provider 为 None**：返回空列表
+
+### 集成测试（orchestrator + summary）
+
+1. **有 skipped_files 时摘要渲染正确**：构造包含 too_large 和
+   review_failed 两种 skipped 文件，验证摘要包含覆盖说明段落
+2. **无 skipped 时摘要不显示覆盖说明**：向后兼容
+3. **engine 内部降级不触发 engine_error**：单文件失败 → review status=done，
+   有 findings + 有 skipped
+
+### 错误路径测试（重点）
+
+1. **LLM 超时**：mock client 对部分文件抛 TimeoutError → 验证降级为
+   skipped，不影响其他文件
+2. **LLM 返回非 JSON**：返回纯文本 → 解析失败 → skipped
+3. **LLM 返回空 findings**：返回 `{"findings": []}` → 正常，0 findings 不 skipped
+4. **超大 MR（100 文件）**：验证并发度正确、内存不爆、skipped 统计正确
+5. **并发安全**：验证 findings 列表和 skipped_files 列表无竞态条件
+   （因为是 gather 后汇总，应该没有，但需确认）
+
+## 不做的事（Out of Scope）
+
+- 不加总 token 预算（后续迭代再加）
+- 不加 Plan+Main 两阶段
+- 不加 dedup / 项目级摘要
+- 不改造 filter 阶段（filter 仍然是单轮全量，截断逻辑保留）
+- 不改 engine 基类契约（`review()` 仍返回 `list[Finding]`）
+
+## 风险与注意事项
+
+1. **并发请求可能触发 LLM 提供商限流**：默认 4 并发比较保守，
+   同时保留了 `llm_concurrency` 配置可调。如果遇到 429，用户可以降到 1-2。
+2. **Filter 阶段的 diff 截断**：filter 阶段用完整 diff（所有文件）做大证伪，
+   大 MR 时 diff 还是会被截断。这是已知 trade-off，后续可以考虑
+   按 file 分组做 filter（不在本次范围内）。
+3. **engine 基类契约不变**：通过实例属性回传 skipped_files，
+   不影响其他 engine 实现。如果后续多个 engine 都需要这个概念，
+   再考虑提升到基类。
+4. **错误语义变化**：以前「任何 LLM 失败 = 整个 review 失败」，
+   现在「部分失败 = 部分降级」。这符合用户确认的方案 a（单文件失败降级），
+   但需要确保 GitLab 摘要里明确展示了跳过文件，避免用户以为"全部审查通过"
+   实际上有文件没覆盖。

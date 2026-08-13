@@ -101,6 +101,28 @@ class Settings(BaseSettings):
             ),
         ),
     ] = 32000
+    # feat/per-file-concurrent-review：按文件粒度并发审查的两项开关。
+    llm_concurrency: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=32,
+            description=(
+                "LLM 文件级并发数。每个文件独立调用一次 LLM，用 asyncio.Semaphore "
+                "按此值限流。默认 4：保守并发，遇到 429 限流可降到 1-2。"
+            ),
+        ),
+    ] = 4
+    llm_file_max_chars: Annotated[
+        int,
+        Field(
+            gt=0,
+            description=(
+                "单个文件 diff 的最大字符数。超过此阈值的文件直接跳过（列入 "
+                "skipped_files，reason=too_large），不做截断。默认 12000（约 3K tokens）。"
+            ),
+        ),
+    ] = 12000
     # PR-B2：负例反哺 prompt 的两项开关。0 表示彻底禁用负例注入，让 context.history
     # 保持空；> 0 时按 scope 从 negative_examples 表拉批准过的负例。
     llm_history_max_items: Annotated[

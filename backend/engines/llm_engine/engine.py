@@ -12,6 +12,7 @@ without changing the engine contract or tests.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -43,6 +44,7 @@ from engines.types import (
     ReviewContext,
     ReviewHistoryItem,
     RuleSpec,
+    SkippedFile,
 )
 from llm import AsyncHTTPClient, ChatMessage, LLMError, build_provider
 
@@ -234,14 +236,19 @@ class LLMDirectEngine(ReviewEngine):
             timeout_seconds=effective_timeout,
         )
         self._timeout_seconds = effective_timeout
+        # 按文件粒度并发审查时记录被跳过的文件（过大 / 失败），由 orchestrator
+        # 在 review() 返回后读取并交给 summary builder 渲染。每次 review() 重置。
+        self.skipped_files: list[SkippedFile] = []
         # 启动/构造时打一次配置，便于线上排查"到底用了哪套 timeout/重试/filter 开关"。
         logger.debug(
             "LLM engine config: timeout=%.1fs, max_retries=%d, filter_enabled=%s, "
-            "prompt_max_chars=%d",
+            "prompt_max_chars=%d, concurrency=%d, file_max_chars=%d",
             self._timeout_seconds,
             self._settings.llm_max_retries,
             self._settings.llm_filter_enabled,
             self._settings.llm_prompt_max_chars,
+            self._settings.llm_concurrency,
+            self._settings.llm_file_max_chars,
         )
 
     def name(self) -> str:
@@ -252,20 +259,25 @@ class LLMDirectEngine(ReviewEngine):
     async def review(self, ctx: ReviewContext) -> list[Finding]:
         """Review ``ctx`` and return structured findings.
 
-        错误传播契约（Issue: fix/main-llm-fail-error-and-config）：
+        按文件粒度并发审查（feat/per-file-concurrent-review）：
 
-        - Provider 缺失 / diff 为空：安静降级为空列表——这些是可预期的"没什么要审
-          的"场景，不能污染 orchestrator 的 engine_error 通道。
-        - LLM 请求失败（TimeoutError / AuthError / ServerError / 其他 LLMError）：
-          **直接抛出**，让 orchestrator 的 ``_handle_engine_error`` 落 status=
-          engine_error、在 MR 上写"AI 审查失败"，绝不能把 timeout 装成 0 findings
-          冒充 PASSED。
-        - 响应解析失败（JSON 坏 / schema 错 / 值类型不对）：包装成 ``LLMError``
-          再抛。在用户视角，"主 LLM 请求失败"与"主 LLM 输出无法解析"是同一件
-          事——AI 审查未能给出可信结论。
-        - Filter 阶段（``_filter_findings``）内部保留 fail-open：filter 挂了返回主
-          审 findings 是刻意的降级策略。
+        - 每个 diff hunk（单文件）独立调用一次 LLM，用 ``asyncio.Semaphore``
+          按 ``llm_concurrency`` 控制并发度。
+        - 单文件 diff 超过 ``llm_file_max_chars`` -> 整文件跳过（reason=too_large），
+          不截断、不占并发槽。
+        - 单文件 LLM 调用 / 响应解析失败 -> 降级为 skipped（reason=review_failed），
+          不拖垮整体 review。``review()`` 本身不再因单文件失败而抛异常。
+        - 跳过的文件记录在实例属性 ``self.skipped_files``，由 orchestrator 在
+          review 完成后读取并交给 summary builder 渲染，避免用户误以为“全部审查通过”。
+        - 全部文件的 findings 合并后统一走 ``_filter_findings``（filter 阶段
+          逻辑不变，仍是单轮全量、fail-open）。
+
+        Provider 缺失 / diff 为空仍安静降级为空列表。engine_error 仍只在
+        ``review()`` 自身抛异常时触发：单文件失败已被内部降级，不会触发。
         """
+
+        # 每次 review 重置 skipped_files，避免跨 review 串味。
+        self.skipped_files = []
 
         if ctx.provider is None:
             logger.info("llm-direct review skipped: provider config missing")
@@ -277,36 +289,128 @@ class LLMDirectEngine(ReviewEngine):
         # 每次 review 打一条运行配置，方便对齐日志上"当前 review 走的是哪套 timeout"。
         logger.debug(
             "llm-direct review start: timeout=%.1fs, max_retries=%d, "
-            "filter_enabled=%s, review_id=%s",
+            "filter_enabled=%s, concurrency=%d, file_max_chars=%d, review_id=%s",
             self._timeout_seconds,
             self._settings.llm_max_retries,
             self._settings.llm_filter_enabled,
+            self._settings.llm_concurrency,
+            self._settings.llm_file_max_chars,
             ctx.review_id,
         )
 
-        prompt = self._build_prompt(ctx)
-        try:
-            raw_response = await self._client.complete(
-                provider=ctx.provider,
-                prompt=prompt,
-                timeout_seconds=self._timeout_seconds,
-            )
-        except LLMError:
-            # LLMError 家族（TimeoutError / AuthError / ServerError / …）直接向
-            # 上冒到 orchestrator，让 _handle_engine_error 走引擎失败分支。
-            raise
-        try:
-            findings = self._parse_findings(raw_response, ctx)
-        except (ValueError, TypeError, json.JSONDecodeError, ValidationError) as exc:
-            # 解析异常升级为 LLMError：模型返回垃圾 JSON，视为审查失败而非"0 findings PASSED"。
-            logger.error(
-                "llm-direct: failed to parse LLM response: %s",
-                exc,
-                exc_info=True,
-            )
-            raise LLMError(f"LLM response parsing failed: {exc}") from exc
+        sem = asyncio.Semaphore(self._settings.llm_concurrency)
+        tasks = [
+            self._review_single_file(ctx, hunk, sem)
+            for hunk in ctx.diff_hunks
+        ]
+        # _review_single_file 内部已 catch 所有单文件异常，gather 不会因单文件
+        # 失败而抛异常；各文件的 findings 与 skipped 在 gather 完成后顺序汇总。
+        results = await asyncio.gather(*tasks)
 
-        return await self._filter_findings(ctx, findings)
+        all_findings: list[Finding] = []
+        for findings, skipped in results:
+            all_findings.extend(findings)
+            if skipped is not None:
+                self.skipped_files.append(skipped)
+
+        logger.info(
+            "llm-direct concurrent review: %d files reviewed, %d skipped "
+            "(too_large=%d, review_failed=%d, filtered_out=%d, review_id=%s)",
+            len(ctx.diff_hunks) - len(self.skipped_files),
+            len(self.skipped_files),
+            sum(1 for s in self.skipped_files if s.reason == "too_large"),
+            sum(1 for s in self.skipped_files if s.reason == "review_failed"),
+            sum(1 for s in self.skipped_files if s.reason == "filtered_out"),
+            ctx.review_id,
+        )
+
+        return await self._filter_findings(ctx, all_findings)
+
+    async def _review_single_file(
+        self,
+        ctx: ReviewContext,
+        hunk: DiffHunk,
+        sem: asyncio.Semaphore,
+    ) -> tuple[list[Finding], SkippedFile | None]:
+        """并发审查单个文件，返回 ``(findings, skipped)``。
+
+        - 成功：``(findings_list, None)``
+        - 跳过（diff 过大）：``([], SkippedFile(reason="too_large"))``，不占信号量
+        - LLM 调用失败：``([], SkippedFile(reason="review_failed"))``
+        - 响应解析失败：``([], SkippedFile(reason="review_failed"))``
+
+        内部 catch 住所有 ``Exception``（LLMError 家族 + 解析异常 + 未预期异常），
+        保证 ``asyncio.gather`` 不会因单文件失败而中断。``BaseException``
+        （如 ``CancelledError``）不 catch，让其正常传播以支持取消。
+        """
+
+        max_chars = self._settings.llm_file_max_chars
+        # 先用单文件 diff 长度判是否超阈值；超阈值直接跳过，不占并发槽。
+        single_diff = self._format_diff([hunk])
+        if len(single_diff) > max_chars:
+            logger.info(
+                "llm-direct file skipped (too_large): %s (%d chars > %d, review_id=%s)",
+                hunk.file_path,
+                len(single_diff),
+                max_chars,
+                ctx.review_id,
+            )
+            return [], SkippedFile(
+                file_path=hunk.file_path,
+                reason="too_large",
+                detail=f"{len(single_diff)} chars",
+            )
+
+        try:
+            prompt = self._build_batch_prompt(
+                ctx=ctx,
+                batch_hunks=[hunk],
+                batch_index=1,
+                total_batches=1,
+            )
+            async with sem:
+                raw_response = await self._client.complete(
+                    provider=ctx.provider,
+                    prompt=prompt,
+                    timeout_seconds=self._timeout_seconds,
+                )
+            findings = self._parse_findings(raw_response, ctx)
+        except LLMError as exc:
+            logger.warning(
+                "llm-direct file review_failed (llm call): %s (review_id=%s): %s",
+                hunk.file_path,
+                ctx.review_id,
+                exc,
+            )
+            return [], SkippedFile(
+                file_path=hunk.file_path,
+                reason="review_failed",
+                detail=f"LLM error: {exc}",
+            )
+        except (ValueError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+            logger.warning(
+                "llm-direct file review_failed (parse): %s (review_id=%s): %s",
+                hunk.file_path,
+                ctx.review_id,
+                exc,
+            )
+            return [], SkippedFile(
+                file_path=hunk.file_path,
+                reason="review_failed",
+                detail=f"response parsing failed: {exc}",
+            )
+        except Exception as exc:  # noqa: BLE001 - 防御兜底，保证单文件异常不拖垮 gather
+            logger.exception(
+                "llm-direct file review_failed (unexpected): %s (review_id=%s)",
+                hunk.file_path,
+                ctx.review_id,
+            )
+            return [], SkippedFile(
+                file_path=hunk.file_path,
+                reason="review_failed",
+                detail=f"unexpected error: {exc}",
+            )
+        return findings, None
 
     def supports_feedback(self) -> bool:
         """Return ``True`` because false-positive history is included in prompt/filtering."""
@@ -330,30 +434,177 @@ class LLMDirectEngine(ReviewEngine):
             ),
         )
 
-    def _build_prompt(self, ctx: ReviewContext) -> str:
-        """构建 user prompt，system prompt 由 complete() 单独处理。
+    def _build_batches(self, ctx: ReviewContext) -> list[list[DiffHunk]]:
+        """把 diff_hunks 按文件贪心装箱，分成若干批次。
 
-        历史上一个函数拼了两段（system + user），改造后：
-        - system prompt 是纯静态文件（``system.md``）
-        - user prompt 从 ``user.md`` 渲染，注入 diff / rules / history / MR 上下文
+        .. deprecated:: feat/per-file-concurrent-review
+            ``review()`` 已改为按文件粒度并发审查，不再调用本方法。保留实现
+            仅供旧测试与潜在外部调用兼容，后续可删除。
 
-        对超大 diff 有一层软保护：如果按原样渲染会超过
-        ``settings.llm_prompt_max_chars``，就把 ``diff_block`` 截断到能塞下，其余
-        section（rules / checklist / history / MR context）**不动**——这些是本次
-        审查的语义骨架，比某几行 diff 尾巴重要得多。
+        算法：
+        - 按文件顺序逐个放入当前批次
+        - 放入前估算「当前批次 + 该文件」的总 prompt 字符数是否超预算
+        - 超预算 -> 关闭当前批次，开新批次
+        - 单个文件就超预算 -> 独占一批（内部 diff 截断兜底）
+        - 只有一批且装得下 -> 返回单元素列表，行为与改造前一致
+
+        估算方式：直接渲染「固定段 + 当前批次 diff + 新文件 diff」的 prompt 长度，
+        调用通用的 ``_truncate_diff`` 来判断是否需要截断（即是否超预算）。
         """
 
-        languages = detect_languages(ctx.diff_hunks)
-        # 运营排查用：知道这次审查究竟叠加了哪些语言 checklist。
-        logger.info(
-            "LLM engine: detected languages=%s for review %s",
-            languages,
-            ctx.review_id,
-        )
         max_chars = self._settings.llm_prompt_max_chars
         template = _load_prompt("user.md")
-        diff_block = self._format_diff(ctx.diff_hunks)
-        fixed_values = {
+        languages = detect_languages(ctx.diff_hunks)
+        base_fixed = self._base_fixed_values(ctx, languages)
+        # 加上批次信息的额外开销（保守估算 200 字符）
+        batch_info_overhead = 200
+        effective_max = max_chars - batch_info_overhead
+        if effective_max <= 0:
+            effective_max = max_chars
+
+        batches: list[list[DiffHunk]] = []
+        current_batch: list[DiffHunk] = []
+        current_diff_len = 0
+
+        for hunk in ctx.diff_hunks:
+            hunk_diff = self._format_diff([hunk])
+            # 每个文件之间有 "\n\n" 分隔
+            additional_len = len(hunk_diff) + (2 if current_batch else 0)
+
+            if not current_batch:
+                # 当前批次为空，直接放进去（哪怕单文件超预算也独占一批）
+                current_batch.append(hunk)
+                current_diff_len = len(hunk_diff)
+                continue
+
+            # 估算：固定段 + （当前 diff + 新增 diff） 是否超预算
+            total_len = (
+                self._prompt_fixed_len(template, base_fixed)
+                + current_diff_len
+                + additional_len
+            )
+            if total_len <= effective_max:
+                current_batch.append(hunk)
+                current_diff_len += additional_len
+            else:
+                # 当前批次满了，开新批次
+                batches.append(current_batch)
+                current_batch = [hunk]
+                current_diff_len = len(hunk_diff)
+
+        if current_batch:
+            batches.append(current_batch)
+
+        return batches
+
+    def _build_batch_prompt(
+        self,
+        *,
+        ctx: ReviewContext,
+        batch_hunks: list[DiffHunk],
+        batch_index: int,
+        total_batches: int,
+    ) -> str:
+        """构建单批次的 user prompt。
+
+        与 ``_build_prompt`` 的区别：
+        - diff 只包含本批次文件
+        - rules 只包含与本批次文件匹配的规则（按 path_patterns 过滤）
+        - 加上批次信息（第 X/Y 批，本批文件列表）
+        """
+
+        languages = detect_languages(batch_hunks)
+        max_chars = self._settings.llm_prompt_max_chars
+        template = _load_prompt("user.md")
+        diff_block = self._format_diff(batch_hunks)
+
+        # 按本批次文件路径过滤规则
+        batch_rules = self._rules_for_files(
+            ctx.rules,
+            [h.file_path for h in batch_hunks],
+        )
+
+        # 批次信息注入到 mr_description 字段的位置不合适，
+        # 我们用一个额外的 "batch_info" 字段注入到 rules_block 之前
+        # 简单起见：把批次信息拼在 diff_block 前面
+        batch_info = (
+            f"> **Batch {batch_index}/{total_batches}** - "
+            f"reviewing {len(batch_hunks)} file(s): "
+            f"{', '.join(h.file_path for h in batch_hunks[:5])}"
+            f"{'...' if len(batch_hunks) > 5 else ''}\n"
+        )
+
+        base_fixed = self._base_fixed_values(ctx, languages)
+        # 用过滤后的规则替换
+        fixed_values = {**base_fixed, "rules_block": self._format_rules(batch_rules)}
+
+        rendered_diff, truncated = self._truncate_diff(
+            template=template,
+            fixed_values=fixed_values,
+            diff_block=batch_info + diff_block,
+            max_chars=max_chars,
+            diff_key="diff_block",
+        )
+        if truncated:
+            logger.warning(
+                "main batch %d/%d prompt exceeded max chars=%d, "
+                "truncated diff from %d to %d chars (review_id=%s)",
+                batch_index,
+                total_batches,
+                max_chars,
+                len(diff_block),
+                len(rendered_diff) - len(batch_info),
+                ctx.review_id,
+            )
+        values = {**fixed_values, "diff_block": rendered_diff}
+        return _render_template(template, values)
+
+    @staticmethod
+    def _rules_for_files(rules: list[RuleSpec], file_paths: list[str]) -> list[RuleSpec]:
+        """按文件路径过滤规则，只保留与本批次文件相关的规则。
+
+        - 规则 ``path_patterns`` 为空 -> 通用规则，始终保留
+        - 规则有 ``path_patterns`` -> 只要有任意一个文件匹配任意一个 pattern 就保留
+        - 匹配使用 fnmatch（支持 * ** ? 等 glob 模式）
+        """
+
+        if not rules:
+            return []
+
+        import fnmatch
+
+        relevant: list[RuleSpec] = []
+        for rule in rules:
+            if not rule.enabled:
+                continue
+            # 没有路径限制的规则 = 通用规则，始终注入
+            if not rule.path_patterns:
+                relevant.append(rule)
+                continue
+            # 有路径限制的规则：只要匹配任一文件的任一 pattern 就保留
+            matched = False
+            for pattern in rule.path_patterns:
+                for path in file_paths:
+                    if fnmatch.fnmatch(path, pattern):
+                        matched = True
+                        break
+                if matched:
+                    break
+            if matched:
+                relevant.append(rule)
+        return relevant
+
+    def _base_fixed_values(
+        self, ctx: ReviewContext, languages: list[str] | None = None
+    ) -> dict[str, str]:
+        """构建 prompt 固定段的 values 字典（不含 diff_block）。
+
+        供分批逻辑复用，避免每批重复计算。languages 为 None 时从 ctx.diff_hunks 检测。
+        """
+
+        if languages is None:
+            languages = detect_languages(ctx.diff_hunks)
+        return {
             "mr_title": ctx.mr_title,
             "mr_description": ctx.mr_description or "（无描述）",
             "last_commit_message": ctx.last_commit_message or "（无最新 commit message）",
@@ -365,24 +616,27 @@ class LLMDirectEngine(ReviewEngine):
             "rules_block": self._format_rules(ctx.rules),
             "history_block": self._format_history(ctx.history),
         }
-        rendered_diff, truncated = self._truncate_diff(
-            template=template,
-            fixed_values=fixed_values,
-            diff_block=diff_block,
-            max_chars=max_chars,
-            diff_key="diff_block",
+
+    @staticmethod
+    def _prompt_fixed_len(template: str, fixed_values: dict[str, str]) -> int:
+        """计算「空 diff」版本的 prompt 长度（固定段开销）。"""
+
+        values_without_diff = {**fixed_values, "diff_block": ""}
+        return len(_render_template(template, values_without_diff))
+
+    def _build_prompt(self, ctx: ReviewContext) -> str:
+        """构建单批 user prompt（向后兼容，内部委托给 _build_batch_prompt）。
+
+        保留此方法是为了不破坏现有测试和外部调用。
+        实际逻辑已迁移到分批版本。
+        """
+
+        return self._build_batch_prompt(
+            ctx=ctx,
+            batch_hunks=ctx.diff_hunks,
+            batch_index=1,
+            total_batches=1,
         )
-        if truncated:
-            logger.warning(
-                "main prompt exceeded max chars=%d, truncated diff from %d to %d chars "
-                "(review_id=%s)",
-                max_chars,
-                len(diff_block),
-                len(rendered_diff),
-                ctx.review_id,
-            )
-        values = {**fixed_values, "diff_block": rendered_diff}
-        return _render_template(template, values)
 
     @staticmethod
     def _truncate_diff(
@@ -399,7 +653,7 @@ class LLMDirectEngine(ReviewEngine):
         ``max_chars - fixed``。若 diff 已经在预算内直接返回；否则保留前
         ``budget - marker_len`` 个字符并在末尾追加截断标记。
 
-        当固定开销自己就 >= max_chars 时，直接返回一个仅含截断标记的 diff——
+        当固定开销自己就 >= max_chars 时，直接返回一个仅含截断标记的 diff--
         绝对不能返回负预算或空串再让下游猜。
 
         Args:
@@ -573,7 +827,7 @@ class LLMDirectEngine(ReviewEngine):
             "description": _optional_str(raw.get("description")),
             "suggestion": _optional_str(raw.get("suggestion")),
             "existing_code": existing_code,
-            # 模型偶尔会填 "null" 字符串或者空串——``_optional_str`` 只把空/None
+            # 模型偶尔会填 "null" 字符串或者空串--``_optional_str`` 只把空/None
             # 归成 None，其它字符串一律原样透传。合法性交给渲染层收敛。
             "category": _optional_str(raw.get("category")),
             "confidence": _clamp_confidence(raw.get("confidence")),
@@ -587,9 +841,9 @@ class LLMDirectEngine(ReviewEngine):
         """对 findings 做证伪式后置过滤。
 
         Fail-open 契约：
-        - 开关关闭 → 原样返回，**不调用 LLM**。
-        - findings 为空 → 原样返回，**不调用 LLM**。
-        - LLM 抛错 / 返回非 JSON / decisions 全部非法 → warning 日志 + 原样返回。
+        - 开关关闭 -> 原样返回，**不调用 LLM**。
+        - findings 为空 -> 原样返回，**不调用 LLM**。
+        - LLM 抛错 / 返回非 JSON / decisions 全部非法 -> warning 日志 + 原样返回。
         - 只保留输入顺序中未被 drop 的 finding；downgrade 换新 severity。
         """
 
@@ -723,11 +977,11 @@ def _loads_model_json(raw_response: str) -> dict[str, Any]:
 def _tag_finding_source(finding: Finding, ctx: ReviewContext) -> Finding:
     """按 ``finding.rule_id`` 是否命中 ``ctx.rules`` 打来源标签。
 
-    命中启用中的团队/项目规则 → ``USER_RULE``（Filter 默认保留）。
+    命中启用中的团队/项目规则 -> ``USER_RULE``（Filter 默认保留）。
 
     其余一律 ``LLM_INFERRED``。语言 checklist 的内容里没有明确的
     rule_id 锚点，LLM 拿到 checklist 之后自己编 rule_id，无法反向回溯
-    到具体 checklist——所以 ``FindingSource.LANGUAGE_CHECKLIST`` 目前
+    到具体 checklist--所以 ``FindingSource.LANGUAGE_CHECKLIST`` 目前
     保留占位、暂不使用（future work）。
     """
 
