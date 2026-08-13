@@ -345,6 +345,8 @@ class LLMDirectEngine(ReviewEngine):
         """
 
         max_chars = self._settings.llm_file_max_chars
+        # review() 入口已校验 provider 非 None；这里 assert 给 mypy 做类型收窄。
+        assert ctx.provider is not None, "ctx.provider must not be None at this point"
         # 先用单文件 diff 长度判是否超阈值；超阈值直接跳过，不占并发槽。
         single_diff = self._format_diff([hunk])
         if len(single_diff) > max_chars:
