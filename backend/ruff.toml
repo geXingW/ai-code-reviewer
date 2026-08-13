@@ -1,0 +1,12 @@
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "ANN", "ASYNC", "S"]
+ignore = ["S101", "S104", "S105", "S110"]
+
+[lint.per-file-ignores]
+# Tests use mock secrets in fixtures; suppress hard-coded password warnings.
+"tests/**/*.py" = ["ANN201", "S106", "S107"]
+# Alembic migrations are auto-generated and line breaks hurt readability.
+"alembic/versions/*.py" = ["E501"]
