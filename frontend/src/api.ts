@@ -564,8 +564,12 @@ export async function createProject(payload: ProjectFormPayload): Promise<Projec
     timeout_seconds: payload.timeout_seconds,
     max_files: payload.max_files,
     default_block_severity: payload.default_block_severity,
-    rules: payload.rules,
   };
+  // 仅当用户主动选了规则时才传 rules；为空时不传，让后端走「安全默认」
+  // 策略（自动关联所有启用的 BLOCKER 规则）。
+  if (payload.rules.length > 0) {
+    body.rules = payload.rules;
+  }
   if (payload.engine_id) {
     body.engine_id = payload.engine_id;
   }

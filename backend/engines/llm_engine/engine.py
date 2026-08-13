@@ -353,73 +353,71 @@ class LLMDirectEngine(ReviewEngine):
         max_chars = self._settings.llm_prompt_max_chars
         template = _load_prompt("user.md")
         diff_block = self._format_diff(ctx.diff_hunks)
-        rendered_diff, truncated = self._maybe_truncate_diff(
+        fixed_values = {
+            "mr_title": ctx.mr_title,
+            "mr_description": ctx.mr_description or "（无描述）",
+            "last_commit_message": ctx.last_commit_message or "（无最新 commit message）",
+            "source_branch": ctx.source_branch,
+            "target_branch": ctx.target_branch,
+            "source_commit_sha": ctx.source_commit_sha,
+            "target_commit_sha": ctx.target_commit_sha,
+            "language_checklist_block": self._format_language_checklists(languages),
+            "rules_block": self._format_rules(ctx.rules),
+            "history_block": self._format_history(ctx.history),
+        }
+        rendered_diff, truncated = self._truncate_diff(
             template=template,
+            fixed_values=fixed_values,
             diff_block=diff_block,
-            ctx=ctx,
-            languages=languages,
             max_chars=max_chars,
+            diff_key="diff_block",
         )
         if truncated:
             logger.warning(
-                "prompt exceeded max chars=%d, truncated diff from %d to %d chars "
+                "main prompt exceeded max chars=%d, truncated diff from %d to %d chars "
                 "(review_id=%s)",
                 max_chars,
                 len(diff_block),
                 len(rendered_diff),
                 ctx.review_id,
             )
-        values = {
-            "mr_title": ctx.mr_title,
-            "mr_description": ctx.mr_description or "（无描述）",
-            "last_commit_message": ctx.last_commit_message or "（无最新 commit message）",
-            "source_branch": ctx.source_branch,
-            "target_branch": ctx.target_branch,
-            "source_commit_sha": ctx.source_commit_sha,
-            "target_commit_sha": ctx.target_commit_sha,
-            "language_checklist_block": self._format_language_checklists(languages),
-            "rules_block": self._format_rules(ctx.rules),
-            "history_block": self._format_history(ctx.history),
-            "diff_block": rendered_diff,
-        }
+        values = {**fixed_values, "diff_block": rendered_diff}
         return _render_template(template, values)
 
-    def _maybe_truncate_diff(
-        self,
+    @staticmethod
+    def _truncate_diff(
         *,
         template: str,
+        fixed_values: dict[str, str],
         diff_block: str,
-        ctx: ReviewContext,
-        languages: list[str],
         max_chars: int,
+        diff_key: str = "diff_block",
     ) -> tuple[str, bool]:
-        """如果整个 prompt 超过 max_chars，截断 diff_block 到能塞下。
+        """通用 diff 截断：把 diff_block 截到模板 + 固定变量内能容纳的长度。
 
-        算法：先渲染出"空 diff"版本算固定开销 ``fixed``，允许给 diff 的预算是
+        算法：先渲染出「空 diff」版本算固定开销 ``fixed``，允许给 diff 的预算是
         ``max_chars - fixed``。若 diff 已经在预算内直接返回；否则保留前
         ``budget - marker_len`` 个字符并在末尾追加截断标记。
 
-        当固定开销自己就 >= max_chars（rules / history / MR context 极大）时，直接
-        返回一个仅含截断标记的 diff——绝对不能返回负预算或空串再让下游猜。
+        当固定开销自己就 >= max_chars 时，直接返回一个仅含截断标记的 diff——
+        绝对不能返回负预算或空串再让下游猜。
+
+        Args:
+            template: prompt 模板字符串，含 ``{{key}}`` 占位符。
+            fixed_values: 除 diff 外所有占位符的值字典。
+            diff_block: 完整 diff 文本。
+            max_chars: 整个 prompt 的最大字符数预算。
+            diff_key: diff 在模板中的占位符 key，默认 ``diff_block``。
+
+        Returns:
+            ``(truncated_diff, was_truncated)`` 元组。
         """
 
         marker_template = "\n\n...(diff truncated: original %d chars, kept %d chars for length)"
         # 用 0-length marker 估算最大 marker 尺寸（避免 marker 自身让 budget 变负）。
         marker_reserve = len(marker_template % (10**9, 10**9))
 
-        values_without_diff: dict[str, str] = {
-            "mr_title": ctx.mr_title,
-            "mr_description": ctx.mr_description or "（无描述）",
-            "last_commit_message": ctx.last_commit_message or "（无最新 commit message）",
-            "source_branch": ctx.source_branch,
-            "target_branch": ctx.target_branch,
-            "source_commit_sha": ctx.source_commit_sha,
-            "target_commit_sha": ctx.target_commit_sha,
-            "language_checklist_block": self._format_language_checklists(languages),
-            "rules_block": self._format_rules(ctx.rules),
-            "history_block": self._format_history(ctx.history),
-            "diff_block": "",
-        }
+        values_without_diff = {**fixed_values, diff_key: ""}
         fixed_prompt = _render_template(template, values_without_diff)
         fixed_len = len(fixed_prompt)
 
@@ -611,12 +609,40 @@ class LLMDirectEngine(ReviewEngine):
 
         candidate_block = format_candidates(findings)
         diff_block = self._format_diff(ctx.diff_hunks)
+        filter_template = _load_prompt("filter_user.md")
+        max_chars = self._settings.llm_prompt_max_chars
+        # Filter 阶段也要做 diff 截断，避免大 MR 时完整 diff 撑爆 context window。
+        # 固定开销 = MR 上下文 + candidate findings 列表，diff 是可裁剪部分。
+        filter_fixed_values = {
+            "mr_title": ctx.mr_title or "（无标题）",
+            "mr_description": ctx.mr_description or "（无描述）",
+            "source_branch": ctx.source_branch,
+            "target_branch": ctx.target_branch,
+            "candidate_findings_block": candidate_block,
+        }
+        truncated_diff, filter_truncated = self._truncate_diff(
+            template=filter_template,
+            fixed_values=filter_fixed_values,
+            diff_block=diff_block,
+            max_chars=max_chars,
+            diff_key="diff_block",
+        )
+        if filter_truncated:
+            logger.warning(
+                "filter prompt exceeded max chars=%d, truncated diff from %d to %d chars "
+                "(review_id=%s, candidate_findings=%d)",
+                max_chars,
+                len(diff_block),
+                len(truncated_diff),
+                ctx.review_id,
+                len(findings),
+            )
         try:
             user_prompt = format_filter_user_prompt(
-                template=_load_prompt("filter_user.md"),
+                template=filter_template,
                 context=ctx,
                 candidate_findings_block=candidate_block,
-                diff_block=diff_block,
+                diff_block=truncated_diff,
             )
             system_prompt = _load_prompt("filter_system.md")
         except OSError as exc:

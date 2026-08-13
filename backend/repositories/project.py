@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from models.project import Project
+from models.project_rule import ProjectRule
 from repositories.base import BaseRepository
 
 if TYPE_CHECKING:
@@ -47,8 +48,20 @@ class ProjectRepository(BaseRepository[Project]):
         return list(result.scalars().unique().all())
 
     async def get_by_gitlab_project_id(self, gitlab_project_id: str) -> Project | None:
-        """按 GitLab 项目 ID 匹配，用于 webhook 落库前的存在性判断。"""
+        """按 GitLab 项目 ID 匹配，用于 webhook 落库前的存在性判断。
 
-        stmt = select(Project).where(Project.gitlab_project_id == gitlab_project_id)
+        显式 selectinload 关联关系（project_rules + rule），避免 async 环境下
+        隐式 lazy load 触发 MissingGreenlet 被静默吞掉，导致规则查询失败
+        却不报错。调用方可安全地访问 project.project_rules[*].rule。
+        """
+
+        stmt = (
+            select(Project)
+            .options(
+                selectinload(Project.project_rules).selectinload(ProjectRule.rule),
+                selectinload(Project.block_policies),
+            )
+            .where(Project.gitlab_project_id == gitlab_project_id)
+        )
         result = await self._session.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.scalars().unique().one_or_none()
