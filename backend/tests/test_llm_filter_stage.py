@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from uuid import uuid4
@@ -568,3 +569,124 @@ def test_summarize_decisions_tracks_user_rule_counts() -> None:
     # 两条 user_rule 都最终保留（一条未被 decisions 触及，一条 drop 被兜底）
     assert user_rule_kept == 2
     assert user_rule_blocked == 1
+
+
+# --- Filter 阶段 diff 截断 --------------------------------------------------
+
+
+def _ctx_with_huge_diff() -> ReviewContext:
+    """构造一个超大 diff 的 ctx，用于测试 filter 阶段截断。"""
+
+    huge_content = (
+        "@@ -1,3 +1,4 @@\n"
+        + "+huge line of code\n" * 20_000  # 数十万字符
+    )
+    return ReviewContext(
+        review_id=uuid4(),
+        project_id=uuid4(),
+        mr_iid="1",
+        source_branch="feature/x",
+        target_branch="master",
+        source_commit_sha="a" * 40,
+        target_commit_sha="b" * 40,
+        diff_hunks=[
+            DiffHunk(
+                file_path="app/big.py",
+                old_path="app/big.py",
+                new_start=1,
+                new_lines=20_000,
+                old_start=1,
+                old_lines=1,
+                content=huge_content,
+            )
+        ],
+        provider=ProviderConfig(
+            provider_id=uuid4(),
+            provider_type="openai-compatible",
+            base_url="https://llm.example.com/v1",
+            model="reviewer-1",
+            api_key="test-key",
+            temperature=0.0,
+            max_tokens=2048,
+        ),
+        rules=[],
+        mr_title="huge MR",
+        mr_description="",
+        last_commit_message="",
+    )
+
+
+@pytest.mark.asyncio
+async def test_filter_stage_truncates_diff_when_prompt_too_long(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """大 MR 时 filter 阶段的 diff 必须被截断到 llm_prompt_max_chars 以内。
+
+    之前 filter 阶段直接使用完整 diff，会撞爆 LLM context window。
+    修复后 filter 阶段复用主审查的截断策略，保证 prompt 长度可控。
+    """
+
+    review_resp = json.dumps({
+        "findings": [
+            {
+                "file_path": "app/big.py",
+                "line_number": 10,
+                "rule_id": "r1",
+                "severity": "WARNING",
+                "title": "finding1",
+                "confidence": 0.8,
+            }
+        ]
+    })
+    filter_resp = '{"decisions": []}'
+
+    client = _FilterFakeClient(responses=[review_resp, filter_resp])
+    settings = Settings(llm_filter_enabled=True, llm_prompt_max_chars=4_000)
+    engine = LLMDirectEngine(client=client, settings=settings)
+
+    with caplog.at_level("WARNING", logger="engines.llm_engine.engine"):
+        await engine.review(_ctx_with_huge_diff())
+
+    # 第二次调用是 filter 阶段
+    assert len(client.calls) == 2
+    filter_prompt = str(client.calls[1]["prompt"])
+    # filter prompt 不应超过 max_chars 太多（留点余量给 system prompt，但 user prompt 要在预算内）
+    assert len(filter_prompt) <= settings.llm_prompt_max_chars
+    # diff 截断标记必须出现在 filter prompt 中
+    assert "diff truncated" in filter_prompt
+    # 必须有一条 filter truncation 的 warning 日志
+    assert any(
+        "filter prompt exceeded max chars" in rec.getMessage() for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_filter_stage_short_diff_not_truncated() -> None:
+    """小 diff 时 filter 阶段不触发截断，完整保留 diff 内容。"""
+
+    review_resp = json.dumps({
+        "findings": [
+            {
+                "file_path": "app/auth.py",
+                "line_number": 11,
+                "rule_id": "no-secret-logging",
+                "severity": "BLOCKER",
+                "title": "Password is printed",
+                "confidence": 0.9,
+            }
+        ]
+    })
+    filter_resp = '{"decisions": []}'
+
+    client = _FilterFakeClient(responses=[review_resp, filter_resp])
+    settings = Settings(llm_filter_enabled=True, llm_prompt_max_chars=32_000)
+    engine = LLMDirectEngine(client=client, settings=settings)
+
+    await engine.review(_ctx())
+
+    assert len(client.calls) == 2
+    filter_prompt = str(client.calls[1]["prompt"])
+    # 小 diff 不应有截断标记
+    assert "diff truncated" not in filter_prompt
+    # 原始 diff 内容（+print(user.password)）应完整保留
+    assert "+print(user.password)" in filter_prompt
