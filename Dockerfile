@@ -34,12 +34,11 @@ WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Pre-install build dependency to avoid PEP 517 build-isolation network issues.
-RUN pip install --upgrade pip && \
-    pip install "setuptools>=68"
+# Pre-install pip upgrade (no build tooling needed for requirements.txt install).
+RUN pip install --upgrade pip
 
-COPY backend/pyproject.toml backend/README.md ./
-RUN pip install --no-cache-dir --no-build-isolation .
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 # ---------- 阶段 3：运行时 ----------
 FROM python:3.11-slim AS runtime

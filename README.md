@@ -146,7 +146,7 @@ open http://localhost:8000
 git clone https://github.com/geXingW/ai-code-reviewer.git
 cd ai-code-reviewer/backend
 python -m venv .venv && source .venv/bin/activate
-pip install -e .
+pip install -r requirements.txt
 
 # 2. 配置环境变量
 export SECRET_KEY=...

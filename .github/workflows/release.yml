@@ -46,7 +46,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install backend dependencies
-        run: pip install -e .
+        run: pip install -r requirements.txt
         working-directory: backend
 
       - name: Generate release SQL artifacts
@@ -86,7 +86,7 @@ jobs:
           cp -r static "dist/${PKG_NAME}/"
 
           # 依赖清单
-          cp pyproject.toml "dist/${PKG_NAME}/"
+          cp requirements.txt "dist/${PKG_NAME}/"
 
           # 数据库迁移 + 种子脚本
           cp -r alembic "dist/${PKG_NAME}/alembic"
@@ -117,7 +117,7 @@ jobs:
           # 安装依赖（如果还没装）
           if ! python -c "import fastapi" 2>/dev/null; then
             echo "Installing dependencies..."
-            pip install -e .
+            pip install -r requirements.txt
           fi
 
           # 启动（自动加载 ./.env，自动执行数据库迁移）

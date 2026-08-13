@@ -14,13 +14,12 @@ WORKDIR /app
 RUN addgroup --gid 1000 appuser \
     && adduser --disabled-password --gecos "" --uid 1000 --gid 1000 appuser
 
-# Pre-install build dependency to avoid PEP 517 build-isolation network issues.
-RUN pip install --upgrade pip && \
-    pip install "setuptools>=68"
+# Pre-install pip upgrade (no build tooling needed for requirements.txt install).
+RUN pip install --upgrade pip
 
 # Install dependencies first (better cache)
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir --no-build-isolation .
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py __main__.py ./
