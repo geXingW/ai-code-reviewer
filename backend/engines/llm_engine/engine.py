@@ -80,7 +80,8 @@ def _load_prompt(name: str) -> str:
 # ---- 全局提示词（带 TTL 缓存）----
 
 _GLOBAL_PROMPT_KEY = "global_system_prompt"
-_global_prompt_cache: dict[str, Any] = {"value": "", "expires_at": 0.0}
+_global_prompt_value: str = ""
+_global_prompt_expires_at: float = 0.0
 _GLOBAL_PROMPT_TTL_SECONDS = 60
 
 
@@ -91,10 +92,13 @@ async def _load_global_prompt() -> str:
     空字符串表示不注入任何额外内容，行为与未配置时完全一致。
     """
 
-    now = time.monotonic()
-    if now < _global_prompt_cache["expires_at"]:
-        return _global_prompt_cache["value"]
+    global _global_prompt_value, _global_prompt_expires_at
 
+    now = time.monotonic()
+    if now < _global_prompt_expires_at:
+        return _global_prompt_value
+
+    value = _global_prompt_value
     try:
         from sqlalchemy import select
 
@@ -110,19 +114,20 @@ async def _load_global_prompt() -> str:
     except Exception:  # noqa: BLE001 — DB 故障不应该阻塞审查
         logger.warning("failed to load global prompt from DB, using cached/empty value")
         # 失败时保持旧缓存值（如果有），但缩短 TTL 到 10 秒后重试
-        _global_prompt_cache["expires_at"] = now + 10
-        return _global_prompt_cache["value"]
+        _global_prompt_expires_at = now + 10
+        return _global_prompt_value
 
-    _global_prompt_cache["value"] = value
-    _global_prompt_cache["expires_at"] = now + _GLOBAL_PROMPT_TTL_SECONDS
+    _global_prompt_value = value
+    _global_prompt_expires_at = now + _GLOBAL_PROMPT_TTL_SECONDS
     return value
 
 
 def _reset_global_prompt_cache() -> None:
     """Reset the global prompt cache (used by tests)."""
 
-    _global_prompt_cache["value"] = ""
-    _global_prompt_cache["expires_at"] = 0.0
+    global _global_prompt_value, _global_prompt_expires_at
+    _global_prompt_value = ""
+    _global_prompt_expires_at = 0.0
 
 
 @cache
