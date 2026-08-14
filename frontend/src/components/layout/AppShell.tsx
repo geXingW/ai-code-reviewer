@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils';
 export type PageKey =
   | 'dashboard'
   | 'providers'
+  | 'global-prompt'
   | 'rules'
   | 'projects'
   | 'reviews'
@@ -65,6 +66,7 @@ const NAV_SECTIONS: NavSection[] = [
     label: '配置',
     items: [
       { key: 'providers', label: '模型供应商', icon: Boxes },
+      { key: 'global-prompt', label: '全局提示词', icon: ScrollText },
       { key: 'rules', label: '审查规则', icon: ListChecks },
       { key: 'projects', label: 'GitLab 项目', icon: FolderGit2 },
       { key: 'engines', label: '引擎配置', icon: Cpu },

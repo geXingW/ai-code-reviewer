@@ -51,6 +51,8 @@ import {
   fetchStatsProjects,
   fetchStatsRules,
   fetchStatsTimeseries,
+  fetchGlobalPrompt,
+  updateGlobalPrompt,
   clearStoredAdminAccessToken,
   getStoredAdminAccessToken,
   getStoredAdminUsername,
@@ -91,6 +93,7 @@ import { categoryDisplay, severityDisplay, SEVERITY_ORDER, Severity, isKnownSeve
 type PageKey =
   | 'dashboard'
   | 'providers'
+  | 'global-prompt'
   | 'rules'
   | 'projects'
   | 'reviews'
@@ -179,6 +182,7 @@ const BLOCK_POLICY_SEVERITY_OPTIONS: BlockPolicySeverity[] = [
 const navItems: Array<{ key: PageKey; label: string }> = [
   { key: 'dashboard', label: '仪表盘' },
   { key: 'providers', label: '模型供应商' },
+  { key: 'global-prompt', label: '全局提示词' },
   { key: 'rules', label: '审查规则' },
   { key: 'projects', label: 'GitLab 项目' },
   { key: 'reviews', label: '审查记录' },
@@ -245,6 +249,8 @@ function App() {
   const [pendingFpPage, setPendingFpPage] = useState<Page<FindingRecord> | null>(null);
   const [negativeExamplesPage, setNegativeExamplesPage] = useState<Page<NegativeExample> | null>(null);
   const [engineConfigsPage, setEngineConfigsPage] = useState<Page<EngineConfig> | null>(null);
+  const [globalPrompt, setGlobalPrompt] = useState<string>('');
+  const [globalPromptSaving, setGlobalPromptSaving] = useState(false);
   const [form, setForm] = useState<FormState>(initialForm);
   const [providerForm, setProviderForm] = useState<ProviderFormPayload>(initialProviderForm);
   const [projectForm, setProjectForm] = useState<ProjectFormPayload>(initialProjectForm);
@@ -388,6 +394,9 @@ function App() {
         setStatsBundle({ overview, rules, projects, categories, timeseries });
       } else if (page === 'engines') {
         setEngineConfigsPage(await fetchEngineConfigs());
+      } else if (page === 'global-prompt') {
+        const result = await fetchGlobalPrompt();
+        setGlobalPrompt(result.content);
       }
     } catch (caught) {
       handleCaughtError(caught);
@@ -860,6 +869,7 @@ function App() {
       {activePage === 'falsePositives' ? renderFalsePositives() : null}
       {activePage === 'negativeExamples' ? renderNegativeExamples() : null}
       {activePage === 'engines' ? renderEngineConfigs() : null}
+      {activePage === 'global-prompt' ? renderGlobalPrompt() : null}
 
       {/* PR-B：误报处理弹窗。挂在 AppShell 里，便于任何页面上的按钮触发。 */}
       <MarkFalsePositiveDialog
@@ -1755,6 +1765,57 @@ function App() {
                 </div>
               ))
             )}
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  async function handleSaveGlobalPrompt() {
+    setGlobalPromptSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      await updateGlobalPrompt(globalPrompt);
+      setMessage('全局提示词已保存。');
+    } catch (caught) {
+      handleCaughtError(caught);
+    } finally {
+      setGlobalPromptSaving(false);
+    }
+  }
+
+  function renderGlobalPrompt() {
+    return (
+      <div className="space-y-4">
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>全局提示词</CardTitle>
+              <CardDescription>
+                这段提示词会被注入到每次 LLM 代码审查的 system prompt 开头，用于定义全局审查原则和风格。为空时不注入。
+              </CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="global-prompt-textarea">提示词内容</Label>
+              <Textarea
+                id="global-prompt-textarea"
+                value={globalPrompt}
+                onChange={(event) => setGlobalPrompt(event.target.value)}
+                placeholder="例如：请特别关注安全性问题，优先审查输入验证、权限控制、SQL 注入等..."
+                className="min-h-[320px] font-mono text-sm leading-relaxed"
+              />
+              <span className="block text-[11px] text-zinc-500">
+                最长 50000 字符。修改后约 60 秒内生效（带缓存）。
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button onClick={handleSaveGlobalPrompt} disabled={globalPromptSaving}>
+                {globalPromptSaving ? '保存中...' : '保存'}
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>

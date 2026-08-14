@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
+import { HashRouter } from 'react-router-dom';
 
 import App from './App';
 import './styles.css';
@@ -23,9 +23,9 @@ async function bootstrap() {
     const { UiPreview } = await import('./preview/UiPreview');
     ReactDOM.createRoot(rootElement!).render(
       <React.StrictMode>
-        <BrowserRouter>
+        <HashRouter>
           <UiPreview />
-        </BrowserRouter>
+        </HashRouter>
       </React.StrictMode>,
     );
     return;
@@ -33,9 +33,9 @@ async function bootstrap() {
 
   ReactDOM.createRoot(rootElement!).render(
     <React.StrictMode>
-      <BrowserRouter>
+      <HashRouter>
         <App />
-      </BrowserRouter>
+      </HashRouter>
     </React.StrictMode>,
   );
 }

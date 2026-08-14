@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
@@ -74,6 +75,59 @@ def _load_prompt(name: str) -> str:
     """从 prompts/ 目录读取指定 prompt 模板。lru_cache 避免每次 IO。"""
 
     return (_PROMPTS_DIR / name).read_text(encoding="utf-8")
+
+
+# ---- 全局提示词（带 TTL 缓存）----
+
+_GLOBAL_PROMPT_KEY = "global_system_prompt"
+_global_prompt_value: str = ""
+_global_prompt_expires_at: float = 0.0
+_GLOBAL_PROMPT_TTL_SECONDS = 60
+
+
+async def _load_global_prompt() -> str:
+    """从数据库读取全局 system prompt，带 60s 内存缓存。
+
+    数据库未就绪或读取失败时返回空字符串，保证引擎可用性不受影响。
+    空字符串表示不注入任何额外内容，行为与未配置时完全一致。
+    """
+
+    global _global_prompt_value, _global_prompt_expires_at
+
+    now = time.monotonic()
+    if now < _global_prompt_expires_at:
+        return _global_prompt_value
+
+    value = _global_prompt_value
+    try:
+        from sqlalchemy import select
+
+        from core.db import AsyncSessionLocal
+        from models.global_setting import GlobalSetting
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(GlobalSetting).where(GlobalSetting.key == _GLOBAL_PROMPT_KEY),
+            )
+            setting = result.scalar_one_or_none()
+            value = setting.value if setting is not None else ""
+    except Exception:  # noqa: BLE001 — DB 故障不应该阻塞审查
+        logger.warning("failed to load global prompt from DB, using cached/empty value")
+        # 失败时保持旧缓存值（如果有），但缩短 TTL 到 10 秒后重试
+        _global_prompt_expires_at = now + 10
+        return _global_prompt_value
+
+    _global_prompt_value = value
+    _global_prompt_expires_at = now + _GLOBAL_PROMPT_TTL_SECONDS
+    return value
+
+
+def _reset_global_prompt_cache() -> None:
+    """Reset the global prompt cache (used by tests)."""
+
+    global _global_prompt_value, _global_prompt_expires_at
+    _global_prompt_value = ""
+    _global_prompt_expires_at = 0.0
 
 
 @cache
@@ -150,9 +204,24 @@ class OpenAICompatibleLLMClient:
             timeout_seconds=effective_timeout,
             max_retries=self._max_retries,
         )
-        effective_system_prompt = (
+        base_system_prompt = (
             system_prompt if system_prompt is not None else _load_prompt("system.md")
         )
+        # 主审查（使用默认 system.md）时，注入全局提示词到最前面。
+        # filter 等专用 system prompt 不注入。
+        if system_prompt is None:
+            global_prompt = await _load_global_prompt()
+            if global_prompt:
+                effective_system_prompt = (
+                    "=== 全局审查原则 ===\n"
+                    f"{global_prompt}\n"
+                    "====================\n\n"
+                    f"{base_system_prompt}"
+                )
+            else:
+                effective_system_prompt = base_system_prompt
+        else:
+            effective_system_prompt = base_system_prompt
         # 请求前记录关键元信息 + prompt 头部预览，避免刷屏；DEBUG 时打全量便于排查。
         logger.info(
             "llm request",
