@@ -862,3 +862,23 @@ export async function deleteNotificationChannel(
     throw new Error(`删除通知渠道失败：HTTP ${response.status}`);
   }
 }
+
+// ---------------- 全局设置 API（全局提示词）----------------
+
+export type GlobalPrompt = {
+  content: string;
+};
+
+export async function fetchGlobalPrompt(): Promise<GlobalPrompt> {
+  const response = await adminFetch('/api/settings/global-prompt');
+  return parseJsonResponse<GlobalPrompt>(response, true);
+}
+
+export async function updateGlobalPrompt(content: string): Promise<GlobalPrompt> {
+  const response = await adminFetch('/api/settings/global-prompt', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  return parseJsonResponse<GlobalPrompt>(response, true);
+}

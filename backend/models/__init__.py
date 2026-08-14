@@ -3,6 +3,7 @@
 from models.audit_log import AuditLog
 from models.engine import Engine
 from models.finding import Finding
+from models.global_setting import GlobalSetting
 from models.negative_example import NegativeExample
 from models.project import Project
 from models.project_block_policy import ProjectBlockPolicy
@@ -16,6 +17,7 @@ __all__ = [
     "AuditLog",
     "Engine",
     "Finding",
+    "GlobalSetting",
     "NegativeExample",
     "Project",
     "ProjectBlockPolicy",

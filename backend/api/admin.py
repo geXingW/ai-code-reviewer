@@ -45,6 +45,7 @@ from repositories import (
 )
 from schemas.engine import EngineCreate, EngineRead, EngineUpdate
 from schemas.finding import FindingCreate, FindingRead, FindingUpdate
+from schemas.global_setting import GlobalPromptResponse, GlobalPromptUpdate
 from schemas.negative_example import NegativeExampleRead
 from schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
 from schemas.project_block_policy import ProjectBlockPolicyCreate
@@ -1021,6 +1022,40 @@ async def delete_engine_config(engine_id: UUID, db: DbSession) -> None:
     """Delete a persisted engine configuration."""
 
     await _delete(db, Engine, engine_id, "Engine config")
+
+
+# ---- 全局设置 ----
+
+_GLOBAL_PROMPT_KEY = "global_system_prompt"
+
+
+@router.get("/settings/global-prompt", response_model=GlobalPromptResponse)
+async def get_global_prompt(db: DbSession) -> GlobalPromptResponse:
+    """Return the current global system prompt content.
+
+    Returns an empty string when the setting has never been configured.
+    """
+
+    from repositories.global_setting import GlobalSettingRepository
+
+    repo = GlobalSettingRepository(db)
+    content = await repo.get_value(_GLOBAL_PROMPT_KEY, default="")
+    return GlobalPromptResponse(content=content)
+
+
+@router.put("/settings/global-prompt", response_model=GlobalPromptResponse)
+async def update_global_prompt(
+    payload: GlobalPromptUpdate,
+    db: DbSession,
+) -> GlobalPromptResponse:
+    """Update the global system prompt and return the saved value."""
+
+    from repositories.global_setting import GlobalSettingRepository
+
+    repo = GlobalSettingRepository(db)
+    await repo.set_value(_GLOBAL_PROMPT_KEY, payload.content)
+    await _commit_or_400(db, detail="Failed to save global prompt")
+    return GlobalPromptResponse(content=payload.content)
 
 
 async def _paginate(

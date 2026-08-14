@@ -18,6 +18,7 @@
 from repositories.audit_log import AuditLogRepository
 from repositories.base import BaseRepository
 from repositories.engine import EngineRepository
+from repositories.global_setting import GlobalSettingRepository
 from repositories.negative_example import NegativeExampleRepository
 from repositories.project import ProjectRepository
 from repositories.project_block_policy import ProjectBlockPolicyRepository
@@ -34,6 +35,7 @@ __all__ = [
     "BaseRepository",
     "EngineRepository",
     "FindingRepository",
+    "GlobalSettingRepository",
     "NegativeExampleRepository",
     "ProjectBlockPolicyRepository",
     "ProjectNotificationChannelRepository",

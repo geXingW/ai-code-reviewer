@@ -3,6 +3,7 @@
 from schemas.audit_log import AuditLogCreate, AuditLogRead, AuditLogUpdate
 from schemas.engine import EngineCreate, EngineRead, EngineUpdate
 from schemas.finding import FindingCreate, FindingRead, FindingUpdate
+from schemas.global_setting import GlobalPromptResponse, GlobalPromptUpdate
 from schemas.negative_example import (
     NegativeExampleCreate,
     NegativeExampleRead,
@@ -29,6 +30,8 @@ __all__ = [
     "FindingCreate",
     "FindingRead",
     "FindingUpdate",
+    "GlobalPromptResponse",
+    "GlobalPromptUpdate",
     "NegativeExampleCreate",
     "NegativeExampleRead",
     "NegativeExampleUpdate",
