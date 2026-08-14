@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
 
+from api.admin import _sign_token
 from engines import (
     Finding,
     HealthStatus,
@@ -37,23 +39,22 @@ class _BoomEngine(ReviewEngine):
 
 
 @pytest.fixture(autouse=True)
-def _isolated_registry() -> Iterator[None]:
-    """Provide a clean registry per test, then restore built-ins.
+def _isolated_registry(client: AsyncClient) -> Iterator[None]:
+    """Provide a clean registry + admin JWT per test.
 
-    ``load_builtin_engines`` relies on import-time decorators, so once
-    a module has been imported, calling it again is a no-op (Python
-    caches modules). To get a fresh registry every test, we clear it
-    and re-register the built-in engines explicitly.
+    注册内置 engine，并给 client 默认带上 admin JWT（engines 端点现在需要认证）。
     """
+
+    # 注入 admin JWT
+    token = _sign_token("admin", datetime.now(UTC) + timedelta(hours=1))
+    client.headers.update({"Authorization": f"Bearer {token}"})
 
     registry = get_engine_registry()
     registry.clear()
-    # Re-create built-ins explicitly so each test sees a clean state.
     registry.register(LLMDirectEngine())
-    # Defensive: also call the builtin loader in case future engines
-    # are added that do not rely solely on the LLMDirectEngine import.
     load_builtin_engines()
     yield
+    client.headers.pop("Authorization", None)
     registry.clear()
     registry.register(LLMDirectEngine())
 
