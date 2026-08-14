@@ -435,11 +435,7 @@ function App() {
   async function handleRefreshReviews() {
     setError(null);
     try {
-      const token = form.internalToken.trim();
-      if (!token) {
-        throw new Error('内部调用 Token 不能为空。');
-      }
-      setReviews(await fetchRecentReviews(token));
+      setReviews(await fetchRecentReviews());
     } catch (caught) {
       handleCaughtError(caught);
     }
@@ -477,7 +473,7 @@ function App() {
 
       const result = await createReview(payload, form.internalToken.trim());
       setSubmitResult(result);
-      setReviews(await fetchRecentReviews(form.internalToken.trim()));
+      setReviews(await fetchRecentReviews());
     } catch (caught) {
       handleCaughtError(caught);
     } finally {

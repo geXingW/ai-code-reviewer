@@ -130,13 +130,13 @@ async def test_create_review_builds_fallback_review_url(
 
 
 @pytest.mark.asyncio
-async def test_recent_reviews_rejects_missing_internal_token(client: AsyncClient) -> None:
-    """Dashboard review history is protected by the internal token."""
+async def test_recent_reviews_rejects_missing_auth(client: AsyncClient) -> None:
+    """Dashboard recent reviews endpoint 受 admin JWT 保护，缺 token 返回 401。"""
 
     response = await client.get("/api/reviews/recent")
 
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid internal token"
+    assert response.json()["detail"] == "Invalid admin token"
 
 
 @pytest.mark.asyncio
@@ -164,7 +164,18 @@ async def test_recent_reviews_returns_latest_manual_review(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dashboard can read a sanitized list of recently triggered reviews."""
+    """Dashboard can read a sanitized list of recently triggered reviews.
+
+    验证 DB 失败时回退到内存 deque 的行为仍然正常。
+    """
+
+    # 生成合法 admin JWT（/api/reviews/recent 现在走 JWT 认证）
+    from datetime import UTC, datetime, timedelta
+
+    from api.admin import _sign_token
+
+    token = _sign_token("admin", datetime.now(UTC) + timedelta(hours=1))
+    auth_headers = {"Authorization": f"Bearer {token}"}
 
     reviews.clear_recent_reviews_for_tests()
 
@@ -197,9 +208,10 @@ async def test_recent_reviews_returns_latest_manual_review(
     )
     assert create_response.status_code == 200
 
+    # GET /recent 走 JWT 认证；DB 查询失败（client fixture 无 DB）时回退到 deque
     list_response = await client.get(
         "/api/reviews/recent",
-        headers={"X-Internal-Token": "test-internal-token"},
+        headers=auth_headers,
     )
 
     assert list_response.status_code == 200
@@ -217,12 +229,9 @@ async def test_recent_reviews_returns_latest_manual_review(
             "blocker_count": 1,
             "policy_applied": "master -> BLOCKER",
             "review_url": "https://gitlab.example.com/group/demo/-/merge_requests/7#note_88",
-            # Issue #76：schema 新增字段，deque 回退项没有这两条数据，默认 None。
             "engine_used": None,
             "created_at": None,
-            # PR #89 UI（PR #90）：review_mode 走 schema 默认值 'full'。
             "review_mode": "full",
-            # PR #96：普通审查 lifecycle_event 为 None（deque 回退项也不带此字段）。
             "lifecycle_event": None,
         }
     ]
