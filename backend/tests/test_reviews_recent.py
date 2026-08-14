@@ -52,6 +52,14 @@ async def db_client(
     app.dependency_overrides[get_db] = override_get_db
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # 登录获取 admin JWT
+        login_response = await client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin"},
+        )
+        if login_response.status_code == 200:
+            token = login_response.json()["access_token"]
+            client.headers.update({"Authorization": f"Bearer {token}"})
         yield client, session_factory
 
     app.dependency_overrides.clear()
@@ -116,10 +124,7 @@ async def test_recent_reviews_reads_from_db(
         )
         await session.commit()
 
-    response = await client.get(
-        "/api/reviews/recent",
-        headers={"X-Internal-Token": "test-internal-token"},
-    )
+    response = await client.get("/api/reviews/recent")
 
     assert response.status_code == 200
     body = response.json()
@@ -136,3 +141,22 @@ async def test_recent_reviews_reads_from_db(
     assert item["has_blocker"] is True
     assert item["finding_count"] == 3
     assert item["blocker_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_recent_reviews_rejects_missing_auth(
+    db_client: tuple[AsyncClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Dashboard recent reviews endpoint 受 admin JWT 保护，缺 token 返回 401。"""
+
+    client, _ = db_client
+    # 临时去掉 Authorization header
+    original_auth = client.headers.get("Authorization")
+    client.headers.pop("Authorization", None)
+    try:
+        response = await client.get("/api/reviews/recent")
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Invalid admin token"
+    finally:
+        if original_auth:
+            client.headers["Authorization"] = original_auth

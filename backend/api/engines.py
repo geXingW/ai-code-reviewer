@@ -8,14 +8,19 @@ CRUD router landing in Issue #10).
 
 import logging
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from api.admin import _require_admin_auth
 from engines.registry import EngineNotFoundError, get_engine_registry
 from schemas.engine_runtime import EngineHealth, EngineSummary
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/engines", tags=["engines"])
+router = APIRouter(
+    prefix="/api/engines",
+    tags=["engines"],
+    dependencies=[Depends(_require_admin_auth)],
+)
 
 
 @router.get("", response_model=list[EngineSummary])

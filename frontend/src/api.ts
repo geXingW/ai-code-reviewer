@@ -435,13 +435,8 @@ export async function fetchEngines(): Promise<EngineSummary[]> {
   return parseJsonResponse<EngineSummary[]>(response, true);
 }
 
-export async function fetchRecentReviews(internalToken?: string): Promise<RecentReview[]> {
-  // 优先用 admin JWT（仪表盘自动加载时），回退到 internal token（Jenkins 调用）。
-  const headers: Record<string, string> = {};
-  if (internalToken) {
-    headers['X-Internal-Token'] = internalToken;
-  }
-  const response = await adminFetch('/api/reviews/recent', { headers });
+export async function fetchRecentReviews(): Promise<RecentReview[]> {
+  const response = await adminFetch('/api/reviews/recent');
   return parseJsonResponse<RecentReview[]>(response, true);
 }
 

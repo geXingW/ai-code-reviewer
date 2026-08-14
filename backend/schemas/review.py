@@ -105,3 +105,30 @@ class ReviewRead(BaseModel):
     lifecycle_event: ReviewLifecycleEvent | None = None
     created_at: AwareDatetime
     updated_at: AwareDatetime
+
+
+class RecentReviewRead(BaseModel):
+    """首页最近审查面板用的精简 Review 摘要。
+
+    比 ``ReviewRead`` 字段少很多，专用于 dashboard 最近列表展示。
+    DB 查询失败时，内存 deque 回退路径也复用此 schema。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: UUID | None
+    project_id: int
+    project_path: str
+    mr_iid: int
+    title: str
+    web_url: str | None
+    status: str
+    has_blocker: bool
+    finding_count: int
+    blocker_count: int
+    policy_applied: str | None
+    review_url: str | None
+    engine_used: str | None = None
+    created_at: AwareDatetime | None = None
+    review_mode: str | None = "full"
+    lifecycle_event: str | None = None
