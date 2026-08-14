@@ -62,7 +62,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install backend dependencies
-        run: pip install -e "backend[dev]"
+        run: pip install -r backend/requirements-dev.txt
       - name: Lint backend
         run: ruff check .
         working-directory: backend
@@ -100,7 +100,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install backend dependencies
-        run: pip install -e "backend[dev]"
+        run: pip install -r backend/requirements-dev.txt
       - name: Lint backend
         run: ruff check .
         working-directory: backend

@@ -27,7 +27,7 @@ docker compose up -d postgres
 # 后端
 cd backend
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -r requirements-dev.txt
 alembic upgrade head
 python app.py --reload
 

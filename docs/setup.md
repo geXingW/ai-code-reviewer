@@ -89,7 +89,7 @@ cd ai-code-reviewer/backend
 # 安装（推荐用虚拟环境）
 python -m venv /opt/ai-code-reviewer/venv
 source /opt/ai-code-reviewer/venv/bin/activate
-pip install -e .
+pip install -r requirements.txt
 ```
 
 ### 2.3 配置

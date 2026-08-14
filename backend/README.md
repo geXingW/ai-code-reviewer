@@ -21,7 +21,11 @@ backend/
 ├── alembic/           # Database migrations
 ├── scripts/           # seed.py / seed_rules.py / generate_release_sql.py
 ├── tests/             # pytest test suite
-└── pyproject.toml     # Project metadata + dependencies
+├── requirements.txt        # Production dependencies
+├── requirements-dev.txt    # Dev dependencies (test + lint + type-check)
+├── pytest.ini              # pytest configuration
+├── ruff.toml               # ruff linter configuration
+└── mypy.ini                # mypy type-checker configuration
 ```
 
 ## Local development
@@ -30,7 +34,7 @@ backend/
 cd backend
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -r requirements-dev.txt
 python app.py --reload
 ```
 

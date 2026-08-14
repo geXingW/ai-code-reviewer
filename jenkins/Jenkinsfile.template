@@ -57,7 +57,7 @@ pipeline {
                     # Add your build commands here, e.g.:
                     # mvn clean package -DskipTests
                     # npm ci && npm run build
-                    # pip install -e ".[dev]"
+                    # pip install -r requirements-dev.txt
                 '''
             }
         }
