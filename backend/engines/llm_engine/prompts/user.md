@@ -14,10 +14,6 @@
 
 {{last_commit_message}}
 
-## Language-specific checklist
-
-{{language_checklist_block}}
-
 ## Active Rules
 
 {{rules_block}}

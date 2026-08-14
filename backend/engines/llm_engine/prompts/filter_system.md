@@ -33,9 +33,6 @@ Each candidate finding carries a `source` label. Apply different rigor:
   * Severity is inflated (INFO/WARNING mislabeled as BLOCKER without a real
     blocking condition).
 
-- **`source=language_checklist`** — Treat the same as `llm_inferred` for
-  now (the tag is reserved for future work; you will rarely see it).
-
 Prefer dropping over keeping for `llm_inferred` when you are unsure — a
 false alarm from an LLM-inferred finding costs more than a missed minor
 issue. **Never** apply this default to `user_rule`.

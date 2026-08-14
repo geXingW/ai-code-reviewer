@@ -34,7 +34,6 @@ from engines.llm_engine.filter_stage import (
     parse_filter_response,
     summarize_decisions,
 )
-from engines.llm_engine.language_detect import detect_languages
 from engines.registry import register_engine
 from engines.types import (
     DiffHunk,
@@ -54,8 +53,6 @@ logger = logging.getLogger(__name__)
 _ALLOWED_SEVERITIES = {"INFO", "WARNING", "BLOCKER"}
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.*?)\s*```", re.DOTALL | re.IGNORECASE)
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
-_RULE_DOCS_DIR = Path(__file__).resolve().parent / "rule_docs"
-_EMPTY_LANGUAGE_CHECKLIST = "No specific language checklists apply to this diff."
 
 
 def _render_template(template: str, values: dict[str, str]) -> str:
@@ -128,19 +125,6 @@ def _reset_global_prompt_cache() -> None:
     global _global_prompt_value, _global_prompt_expires_at
     _global_prompt_value = ""
     _global_prompt_expires_at = 0.0
-
-
-@cache
-def _load_rule_doc(language: str) -> str | None:
-    """从 rule_docs/<language>.md 读 checklist；文件不存在返回 None。
-
-    未来新增语言时若忘记补 md 文件，也只是跳过而不是抛异常。
-    """
-
-    path = _RULE_DOCS_DIR / f"{language}.md"
-    if not path.is_file():
-        return None
-    return path.read_text(encoding="utf-8").strip()
 
 
 class LLMCompletionClient(Protocol):
@@ -525,8 +509,7 @@ class LLMDirectEngine(ReviewEngine):
 
         max_chars = self._settings.llm_prompt_max_chars
         template = _load_prompt("user.md")
-        languages = detect_languages(ctx.diff_hunks)
-        base_fixed = self._base_fixed_values(ctx, languages)
+        base_fixed = self._base_fixed_values(ctx)
         # 加上批次信息的额外开销（保守估算 200 字符）
         batch_info_overhead = 200
         effective_max = max_chars - batch_info_overhead
@@ -584,7 +567,6 @@ class LLMDirectEngine(ReviewEngine):
         - 加上批次信息（第 X/Y 批，本批文件列表）
         """
 
-        languages = detect_languages(batch_hunks)
         max_chars = self._settings.llm_prompt_max_chars
         template = _load_prompt("user.md")
         diff_block = self._format_diff(batch_hunks)
@@ -605,7 +587,7 @@ class LLMDirectEngine(ReviewEngine):
             f"{'...' if len(batch_hunks) > 5 else ''}\n"
         )
 
-        base_fixed = self._base_fixed_values(ctx, languages)
+        base_fixed = self._base_fixed_values(ctx)
         # 用过滤后的规则替换
         fixed_values = {**base_fixed, "rules_block": self._format_rules(batch_rules)}
 
@@ -666,15 +648,13 @@ class LLMDirectEngine(ReviewEngine):
         return relevant
 
     def _base_fixed_values(
-        self, ctx: ReviewContext, languages: list[str] | None = None
+        self, ctx: ReviewContext
     ) -> dict[str, str]:
         """构建 prompt 固定段的 values 字典（不含 diff_block）。
 
-        供分批逻辑复用，避免每批重复计算。languages 为 None 时从 ctx.diff_hunks 检测。
+        供分批逻辑复用，避免每批重复计算。
         """
 
-        if languages is None:
-            languages = detect_languages(ctx.diff_hunks)
         return {
             "mr_title": ctx.mr_title,
             "mr_description": ctx.mr_description or "（无描述）",
@@ -683,7 +663,6 @@ class LLMDirectEngine(ReviewEngine):
             "target_branch": ctx.target_branch,
             "source_commit_sha": ctx.source_commit_sha,
             "target_commit_sha": ctx.target_commit_sha,
-            "language_checklist_block": self._format_language_checklists(languages),
             "rules_block": self._format_rules(ctx.rules),
             "history_block": self._format_history(ctx.history),
         }
@@ -756,27 +735,6 @@ class LLMDirectEngine(ReviewEngine):
 
         kept = diff_block[:budget]
         return kept + marker_template % (len(diff_block), len(kept)), True
-
-    @staticmethod
-    def _format_language_checklists(languages: list[str]) -> str:
-        """把每种语言的 checklist 拼成 markdown 段落。
-
-        - 空列表返回默认占位文案
-        - 缺 md 文件的 language 直接跳过（不占位不报错）
-        - 每种语言渲染成 ``### <Language> checklist`` 段落，段落之间空行分隔
-        """
-
-        if not languages:
-            return _EMPTY_LANGUAGE_CHECKLIST
-        blocks: list[str] = []
-        for language in languages:
-            body = _load_rule_doc(language)
-            if body is None:
-                continue
-            blocks.append(f"### {language.capitalize()} checklist\n\n{body}")
-        if not blocks:
-            return _EMPTY_LANGUAGE_CHECKLIST
-        return "\n\n".join(blocks)
 
     @staticmethod
     def _format_rules(rules: list[RuleSpec]) -> str:
@@ -1050,10 +1008,7 @@ def _tag_finding_source(finding: Finding, ctx: ReviewContext) -> Finding:
 
     命中启用中的团队/项目规则 -> ``USER_RULE``（Filter 默认保留）。
 
-    其余一律 ``LLM_INFERRED``。语言 checklist 的内容里没有明确的
-    rule_id 锚点，LLM 拿到 checklist 之后自己编 rule_id，无法反向回溯
-    到具体 checklist--所以 ``FindingSource.LANGUAGE_CHECKLIST`` 目前
-    保留占位、暂不使用（future work）。
+    其余一律 ``LLM_INFERRED``（Filter 阶段最激进证伪的一档）。
     """
 
     user_rule_ids = {rule.rule_id for rule in ctx.rules if rule.enabled}
