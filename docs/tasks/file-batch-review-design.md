@@ -3,7 +3,7 @@
 ## 背景
 当前 `LLMDirectEngine` 把所有文件的 diff 拼在一个 prompt 里，超过 `llm_prompt_max_chars` 就硬截断尾部——导致后面的文件完全漏审。
 
-对标 alibaba/open-code-review 的「按文件并发评审」模式，改为按文件分批调用 LLM，每批控制在 token/字符预算内，最后合并结果。
+采用业界主流的「按文件分批评审」模式，按文件分批调用 LLM，每批控制在 token/字符预算内，最后合并结果。
 
 ## 设计
 

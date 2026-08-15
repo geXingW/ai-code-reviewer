@@ -23,7 +23,7 @@
 通过 `ReviewEngine` 抽象层支持多种评审引擎：
 
 - **LLMEngine**（MVP 自带）：直连 LLM API，5 段式 Prompt（plan / main / filter / re-locate / compress）+ 滑动窗口行号定位 + 二次过滤
-- **OcrEngine**（Phase 2）：适配阿里 [open-code-review](https://github.com/alibaba/open-code-review) CLI，企业级评审质量
+- **OcrEngine**（Phase 2）：适配开源 OCR CLI，企业级评审质量
 - **AgentEngine**（Phase 3）：适配 Claude Code 等 Agent CLI，深度代码库探索
 
 ### 可插拔 LLM 供应商
@@ -36,7 +36,7 @@
 
 每个 GitLab 项目独立配置：
 
-- 评审引擎（LLM 直连 / 阿里 ocr）
+- 评审引擎（LLM 直连 / OCR CLI）
 - 模型供应商 + 模型名
 - 启用的规则集（跨项目共享，按需勾选）
 - **阻断策略**（按目标分支分级，详见下文）
@@ -91,7 +91,7 @@ CONFIRMED 写入 negative_examples
 
 ### v0.2.0（Phase 2）
 
-- [ ] OcrEngine 适配器（接入阿里 ocr CLI）
+- [ ] OcrEngine 适配器（接入开源 OCR CLI）
 - [x] 误报评审管理（CONFIRMED → negative_examples）
 - [x] 数据存储层跨方言（PostgreSQL + MySQL 8.0）
 - [x] Repository 层解耦（数据访问抽象）
@@ -311,22 +311,6 @@ curl -X POST http://localhost:8000/api/false-positives/{id}/confirm \
 | `CORS_ORIGINS` | 允许的跨域来源 | `["http://localhost:5173"]` |
 
 > **注意**：`GITLAB_BASE_URL`、`GITLAB_TOKEN`、`GITLAB_WEBHOOK_SECRET` 已从全局 ENV 移除，下沉到项目级配置。在管理台创建项目时，每个项目独立填写 GitLab 地址、Access Token 和 Webhook Secret，支持对接多个 GitLab 实例。
-
----
-
-## 与同类项目对比
-
-**对比 [sunmh207/AI-Codereview-Gitlab](https://github.com/sunmh207/AI-Codereview-Gitlab)**：
-
-- ✅ 我们：阻断合并 / 行级 Discussion / 误报反馈 / 规则可配置
-- ❌ 他们：不阻断 / 只整体评论 / 无反馈 / 规则写死
-
-**对比 [alibaba/open-code-review](https://github.com/alibaba/open-code-review)**：
-
-- ✅ 我们：Web 服务形态 / 阻断 / 后台管理 / 误报闭环 / 可作为 ocr 上层平台
-- ⚙️ 他们：CLI 形态 / 不阻断 / 无后台 / 评审引擎质量高（我们 Phase 2 适配它）
-
-详见 [docs/ARCHITECTURE.md#业界对比](docs/ARCHITECTURE.md)。
 
 ## 贡献
 
