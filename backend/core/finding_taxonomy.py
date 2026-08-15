@@ -11,7 +11,7 @@ from enum import StrEnum
 
 
 class FindingCategory(StrEnum):
-    """Finding 大类。参考 alibaba/open-code-review 的 8 分类简化到 6 类。"""
+    """Finding 大类。业界主流 8 分类简化为 6 类。"""
 
     SECURITY = "security"          # 🔒 安全
     BUG = "bug"                    # 🐛 缺陷

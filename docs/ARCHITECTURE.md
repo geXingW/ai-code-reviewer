@@ -96,14 +96,14 @@ class ReviewEngine(ABC):
 **为什么这么抽象**：
 
 - 解耦评审能力与平台集成（webhook / 阻断 / 后台 / 反馈闭环跟引擎无关）
-- 留口子接外部引擎（阿里 ocr CLI、Claude Code 等）
+- 留口子接外部引擎（OCR CLI、Agent CLI 等）
 - 业务能力（引擎 A 试不行换 B）
 
 **Phase 1 必交付**：`ReviewEngine` 接口 + `EngineRegistry` + `LLMEngine` 实现。
 
 ## 四、LLMEngine 内部设计
 
-借鉴 alibaba/open-code-review 的 5 段式 Prompt：
+采用业界主流的 5 段式 Prompt 设计：
 
 ```
 1. plan_task          — 规划：哪些文件评、按什么顺序
@@ -317,27 +317,13 @@ stage('AI Code Review') {
 - GitLab 项目设置勾选 "Pipelines must succeed"
 - (可选) 勾选 "All threads must be resolved"
 
-## 九、业界对比与设计取舍
-
-参考分析见 Issue 中附的两份调研报告。本项目相对两个同类项目的差异：
-
-**对比 sunmh207/AI-Codereview-Gitlab**：
-
-- 我们额外做：阻断 / 行级 Discussion / 误报反馈 / 规则可配置
-- 借鉴：统一 webhook 端点 + GitLab API 调用细节（changes API 延迟重试）
-
-**对比 alibaba/open-code-review**：
-
-- 我们形态：Web 服务（vs 他们 CLI）
-- 借鉴：Provider 注册表、5 段式 Prompt、path_rule_map、code_comment 滑动窗口定位
-
-## 十、关键工程取舍
+## 九、关键工程取舍
 
 | 取舍点 | 选择 | 理由 |
 |---|---|---|
 | 同步 / 异步 | MVP 同步，Phase 2 加 Celery | 同步够用且简单；超 30s 评审才需要异步 |
-| 数据库 | PostgreSQL（不用 SQLite） | sunmh207 SQLite 并发锁死的教训 |
-| 行号定位 | 滑动窗口（不依赖 LLM 给行号） | 阿里 ocr 验证有效，根治行号漂移 |
+| 数据库 | PostgreSQL（不用 SQLite） | SQLite 并发写入锁粒度大，生产环境体验差 |
+| 行号定位 | 滑动窗口（不依赖 LLM 给行号） | 业界成熟方案，根治行号漂移问题 |
 | 多次 push | 全量评审 | MVP 简单优先；增量评审复杂度高 |
 | 误报反馈 | 半自动（管理员审定） | 避免 prompt 被污染 |
 | 阻断默认 | master/release → BLOCKER, 其他 NONE | 渐进引入，让团队先用起来 |
