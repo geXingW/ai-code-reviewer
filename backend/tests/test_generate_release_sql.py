@@ -8,14 +8,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 
 def test_get_revision_order_single_head_linear(tmp_path: Path) -> None:
     """Linear history (no merge) produces a straightforward oldest→newest list."""
 
-    from scripts.generate_release_sql import _get_revision_order
     from alembic.config import Config
+
+    from scripts.generate_release_sql import _get_revision_order
 
     cfg = Config("alembic.ini")
     result = _get_revision_order(cfg)
@@ -37,8 +36,9 @@ def test_get_revision_order_single_head_linear(tmp_path: Path) -> None:
 def test_get_revision_order_contains_both_0008_branches(tmp_path: Path) -> None:
     """Both 0008 migrations must appear (they come from different branches)."""
 
-    from scripts.generate_release_sql import _get_revision_order
     from alembic.config import Config
+
+    from scripts.generate_release_sql import _get_revision_order
 
     cfg = Config("alembic.ini")
     result = _get_revision_order(cfg)
