@@ -35,6 +35,7 @@ from models.project_rule import ProjectRule
 from models.provider import Provider
 from models.review import Review
 from models.rule import Rule
+from models.user_mapping import UserMapping
 from repositories import (
     BaseRepository,
     FindingRepository,
@@ -42,6 +43,7 @@ from repositories import (
     ProjectRepository,
     ReviewRepository,
     RuleRepository,
+    UserMappingRepository,
 )
 from schemas.engine import EngineCreate, EngineRead, EngineUpdate
 from schemas.finding import FindingCreate, FindingRead, FindingUpdate
@@ -58,6 +60,11 @@ from schemas.project_rule import ProjectRuleCreate
 from schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
 from schemas.review import RecentReviewRead, ReviewCreate, ReviewRead, ReviewUpdate
 from schemas.rule import RuleCreate, RuleRead, RuleUpdate
+from schemas.user_mapping import (
+    UserMappingCreate,
+    UserMappingResponse,
+    UserMappingUpdate,
+)
 
 if TYPE_CHECKING:
     from integrations.gitlab.client import GitLabClient
@@ -499,6 +506,81 @@ async def _get_scoped_notification_channel(
             detail="Notification channel not found",
         )
     return channel
+
+
+@router.get(
+    "/projects/{project_id}/user-mappings",
+    response_model=list[UserMappingResponse],
+)
+async def list_project_user_mappings(
+    project_id: UUID,
+    db: DbSession,
+) -> list[UserMappingResponse]:
+    """List GitLab↔DingTalk user mappings configured for a project."""
+
+    await _get_or_404(db, Project, project_id, "Project")
+    repo = UserMappingRepository(db)
+    mappings = await repo.list_by_project(project_id)
+    return [UserMappingResponse.model_validate(mapping) for mapping in mappings]
+
+
+@router.post(
+    "/projects/{project_id}/user-mappings",
+    response_model=UserMappingResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_project_user_mapping(
+    project_id: UUID,
+    payload: UserMappingCreate,
+    db: DbSession,
+) -> UserMappingResponse:
+    """Create a GitLab↔DingTalk user mapping for a project.
+
+    同一项目下 ``gitlab_username`` 唯一；重复创建会因唯一约束返回 409。
+    """
+
+    await _get_or_404(db, Project, project_id, "Project")
+    mapping = UserMapping(
+        project_id=project_id,
+        **payload.model_dump(exclude={"project_id"}),
+    )
+    # 与 notification-channels 一致：flush=False 让唯一约束冲突在 commit 时
+    # 暴露，由 _commit_or_400 统一映射为 409。
+    repo = UserMappingRepository(db)
+    await repo.add(mapping, flush=False)
+    await _commit_or_400(db, "User mapping already exists")
+    await db.refresh(mapping)
+    return UserMappingResponse.model_validate(mapping)
+
+
+@router.put("/user-mappings/{mapping_id}", response_model=UserMappingResponse)
+async def update_user_mapping(
+    mapping_id: UUID,
+    payload: UserMappingUpdate,
+    db: DbSession,
+) -> UserMappingResponse:
+    """Update a user mapping (partial update semantics; unset fields unchanged)."""
+
+    mapping = await _get_or_404(db, UserMapping, mapping_id, "User mapping")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(mapping, field, value)
+    # commit 阶段统一由 _commit_or_400 处理唯一约束冲突（改 gitlab_username 撞车 -> 409）。
+    await _commit_or_400(db, "User mapping update failed")
+    await db.refresh(mapping)
+    return UserMappingResponse.model_validate(mapping)
+
+
+@router.delete(
+    "/user-mappings/{mapping_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_user_mapping(mapping_id: UUID, db: DbSession) -> None:
+    """Delete a user mapping."""
+
+    mapping = await _get_or_404(db, UserMapping, mapping_id, "User mapping")
+    repo = UserMappingRepository(db)
+    await repo.delete(mapping, flush=False)
+    await _commit_or_400(db, "User mapping delete failed")
 
 
 @router.get("/reviews/recent", response_model=list[RecentReviewRead])

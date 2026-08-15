@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from models.project_rule import ProjectRule
     from models.provider import Provider
     from models.review import Review
+    from models.user_mapping import UserMapping
 
 
 class Project(Base, TimestampMixin):
@@ -84,6 +85,11 @@ class Project(Base, TimestampMixin):
         lazy="selectin",
     )
     notification_channels: Mapped[list["ProjectNotificationChannel"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    user_mappings: Mapped[list["UserMapping"]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
         lazy="selectin",

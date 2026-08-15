@@ -29,6 +29,7 @@ from repositories.project_rule import ProjectRuleRepository
 from repositories.provider import ProviderRepository
 from repositories.review import FindingRepository, ReviewRepository
 from repositories.rule import RuleRepository
+from repositories.user_mapping_repository import UserMappingRepository
 
 __all__ = [
     "AuditLogRepository",
@@ -44,4 +45,5 @@ __all__ = [
     "ProviderRepository",
     "ReviewRepository",
     "RuleRepository",
+    "UserMappingRepository",
 ]

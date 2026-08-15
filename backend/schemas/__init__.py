@@ -19,6 +19,7 @@ from schemas.project_rule import ProjectRuleCreate, ProjectRuleRead, ProjectRule
 from schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
 from schemas.review import ReviewCreate, ReviewRead, ReviewUpdate
 from schemas.rule import RuleCreate, RuleRead, RuleUpdate
+from schemas.user_mapping import UserMappingCreate, UserMappingResponse, UserMappingUpdate
 
 __all__ = [
     "AuditLogCreate",
@@ -53,4 +54,7 @@ __all__ = [
     "RuleCreate",
     "RuleRead",
     "RuleUpdate",
+    "UserMappingCreate",
+    "UserMappingResponse",
+    "UserMappingUpdate",
 ]

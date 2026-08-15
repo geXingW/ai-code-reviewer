@@ -12,6 +12,7 @@ from models.project_rule import ProjectRule
 from models.provider import Provider
 from models.review import Review
 from models.rule import Rule
+from models.user_mapping import UserMapping
 
 __all__ = [
     "AuditLog",
@@ -26,4 +27,5 @@ __all__ = [
     "Provider",
     "Review",
     "Rule",
+    "UserMapping",
 ]

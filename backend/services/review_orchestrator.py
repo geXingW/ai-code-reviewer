@@ -74,6 +74,9 @@ class GitLabMergeRequestEvent:
         description: MR 描述正文；来自 ``object_attributes.description``，可能为空。
         last_commit_message: MR head 分支最近一次 commit 的 message；来自
             ``object_attributes.last_commit.message``，可能为空。
+        author_username: MR 创建人（open 事件）/ 触发者的 GitLab 用户名；来自
+            webhook 顶层 ``user.username``，缺失时为 ``None``（通知侧不 @ 人）。
+        author_name: 同上，取 ``user.name`` 显示名。
     """
 
     project_id: int
@@ -88,6 +91,8 @@ class GitLabMergeRequestEvent:
     web_url: str | None = None
     description: str = ""
     last_commit_message: str = ""
+    author_username: str | None = None
+    author_name: str | None = None
 
     @property
     def project_uuid(self) -> UUID:
@@ -319,9 +324,6 @@ class ReviewOrchestrator:
                 duration_ms=int((time.perf_counter() - started_at) * 1000),
                 plan=plan,
             )
-        # 按文件粒度并发审查时，engine 把被跳过的文件（过大 / 失败）挂在实例属性
-        # skipped_files 上；review() 成功返回后读取，交给 summary builder 渲染覆盖说明。
-        skipped_files = getattr(engine, "skipped_files", [])
         # 增量模式下把新 findings 与历史 open findings 合并，得到本次要展示的集合。
         merge = await self._merge_findings_for_plan(event, plan, findings)
         combined_findings = merge.combined_findings
@@ -355,9 +357,6 @@ class ReviewOrchestrator:
                 mode_reason=plan.reason,
                 new_findings=list(merge.new_findings),
                 carried_findings=list(merge.carried_over_untouched),
-                skipped_files=[s.model_dump() for s in skipped_files],
-                reviewed_file_count=len(context.diff_hunks) - len(skipped_files),
-                file_max_chars=get_settings().llm_file_max_chars,
             ),
         )
         await self._gitlab_client.set_commit_status(
@@ -395,6 +394,7 @@ class ReviewOrchestrator:
             has_blocker=has_blocker,
             blocker_count=blocker_count,
             status_value="done",
+            findings=combined_findings,
         )
         return OrchestratorResult(
             review_id=review_id,
@@ -577,6 +577,7 @@ class ReviewOrchestrator:
             has_blocker=has_blocker,
             blocker_count=blocker_count,
             status_value="engine_error",
+            findings=[],
         )
         return OrchestratorResult(
             review_id=review_id,
@@ -703,7 +704,6 @@ class ReviewOrchestrator:
                             # 让 engine 侧的 _format_rules 用 'other' 兜底以对齐
                             # FindingCategory 枚举，'general' 不在合法值内。
                             category=rule.category_default,
-                            path_patterns=list(rule.path_patterns) if rule.path_patterns else [],
                             enabled=True,
                         )
                     )
@@ -1616,12 +1616,15 @@ class ReviewOrchestrator:
         has_blocker: bool,
         blocker_count: int,
         status_value: str,
+        findings: Sequence[Finding] | None = None,
     ) -> None:
         """推送 Review 完成通知（best-effort，失败不影响主流程）。
 
         成功 / 引擎异常两条路径共用：把评审摘要交给 :class:`NotificationService`，
-        由其按项目配置的渠道分发。未注入 ``notification_service`` 时直接跳过；
-        任何异常（含推送失败）都被吞成 warning 日志，绝不阻断 Review 主流程。
+        由其按项目配置的渠道分发。除旧有的计数字段外，还带上 MR 链接、作者信息
+        （供 @ 创建人）与按严重级别分组的 ``findings_summary``（供正文列表）。
+        未注入 ``notification_service`` 时直接跳过；任何异常（含推送失败）都被
+        吞成 warning 日志，绝不阻断 Review 主流程。
         """
 
         if self._notification_service is None:
@@ -1638,6 +1641,10 @@ class ReviewOrchestrator:
                     "blocker_count": blocker_count,
                     "detail_url": self._build_review_detail_url(review_id),
                     "status": status_value,
+                    "mr_author_username": event.author_username,
+                    "mr_author_name": event.author_name,
+                    "mr_web_url": event.web_url,
+                    "findings_summary": _build_findings_summary(findings or []),
                 },
             )
         except Exception as exc:
@@ -1653,6 +1660,34 @@ def _match_int(match: re.Match[str] | None, group: str, *, default: int) -> int:
     if value is None:
         return default
     return int(value)
+
+
+_SEVERITY_ORDER = ("BLOCKER", "WARNING", "INFO")
+
+
+def _build_findings_summary(findings: Sequence[Finding]) -> list[dict[str, Any]]:
+    """把 finding 列表按严重级别分组，构造成通知正文用的精简摘要。
+
+    每组形如 ``{"severity": "BLOCKER", "items": [{"title", "file_path",
+    "line_number"}, ...]}``，按 BLOCKER -> WARNING -> INFO 固定顺序输出；
+    空级别不生成组。截断（WARNING/INFO 各最多 5 条等）由通知服务在渲染时
+    决定，这里只负责全量分组。
+    """
+
+    summary: list[dict[str, Any]] = []
+    for severity in _SEVERITY_ORDER:
+        items = [
+            {
+                "title": finding.title,
+                "file_path": finding.file_path,
+                "line_number": finding.line_number,
+            }
+            for finding in findings
+            if finding.severity == severity
+        ]
+        if items:
+            summary.append({"severity": severity, "items": items})
+    return summary
 
 
 def _extract_int(payload: dict[str, Any], key: str) -> int | None:
