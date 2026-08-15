@@ -205,6 +205,10 @@ def _validate_webhook_secret(token: str | None, project: Project) -> None:
 def _parse_merge_request_event(payload: dict[str, Any]) -> GitLabMergeRequestEvent:
     """Normalize a raw GitLab MR webhook payload.
 
+    MR 作者信息取顶层 ``user`` 对象（触发事件的用户）：open 事件中即为 MR
+    创建人；update 事件中是触发者，@ 触发者同样是合理的通知对象。字段缺失
+    时留 ``None``，通知侧 fail-silent 不 @ 人。
+
     Raises:
         HTTPException: If required fields are absent or invalid.
     """
@@ -214,6 +218,7 @@ def _parse_merge_request_event(payload: dict[str, Any]) -> GitLabMergeRequestEve
         attrs = _expect_dict(payload["object_attributes"], "object_attributes")
         last_commit = _expect_dict(attrs.get("last_commit", {}), "last_commit")
         target = _expect_dict(attrs.get("target", {}), "target")
+        user = _expect_dict(payload.get("user", {}), "user")
         project_id = int(project["id"])
         mr_iid = int(attrs["iid"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -242,6 +247,8 @@ def _parse_merge_request_event(payload: dict[str, Any]) -> GitLabMergeRequestEve
         web_url=str(attrs.get("url") or "") or None,
         description=str(attrs.get("description") or ""),
         last_commit_message=str(last_commit.get("message") or ""),
+        author_username=str(user.get("username") or "") or None,
+        author_name=str(user.get("name") or "") or None,
     )
 
 

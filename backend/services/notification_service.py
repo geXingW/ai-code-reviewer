@@ -20,6 +20,7 @@ from repositories.project import ProjectRepository
 from repositories.project_notification_channel import (
     ProjectNotificationChannelRepository,
 )
+from repositories.user_mapping_repository import UserMappingRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -31,6 +32,22 @@ if TYPE_CHECKING:
     SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
 logger = logging.getLogger(__name__)
+
+# 严重级别 -> (emoji 徽章, 中文标签)。通知正文分组与结果行共用。
+_SEVERITY_META: dict[str, tuple[str, str]] = {
+    "BLOCKER": ("🔴", "阻断"),
+    "WARNING": ("🟡", "警告"),
+    "INFO": ("🔵", "提示"),
+}
+# 每个级别在正文中最多展示的条数；None 表示全部展示（BLOCKER 通常数量少）。
+_MAX_ITEMS_PER_SEVERITY: dict[str, int | None] = {
+    "BLOCKER": None,
+    "WARNING": 5,
+    "INFO": 5,
+}
+# 钉钉 markdown 正文上限约 20000 字，超长会被整条拒绝；预留安全余量，
+# 超出部分截断并提示到详情页。
+_MAX_MESSAGE_LENGTH = 12_000
 
 
 class NotificationService:
@@ -68,16 +85,21 @@ class NotificationService:
         if not channels:
             return
         title, text = self._build_review_message(review_data)
+        at_mobiles = await self._resolve_at_mobiles(gitlab_project_id, review_data)
         for channel in channels:
-            await self._dispatch(channel, title, text)
+            await self._dispatch(channel, title, text, at_mobiles)
 
     async def _dispatch(
         self,
         channel: ProjectNotificationChannel,
         title: str,
         text: str,
+        at_mobiles: list[str] | None = None,
     ) -> None:
         """单渠道推送；任何异常吞掉，不影响其它渠道与主流程。
+
+        ``at_mobiles`` 为 MR 创建人的钉钉手机号（来自 user_mappings 映射表），
+        传给钉钉客户端实现 @ 人；为空时不 @。
 
         ``channel.webhook_url`` / ``channel.secret`` 由 :class:`EncryptedString`
         读取时自动解密；解密失败会在访问属性时抛异常，被这里的 ``except`` 兜住。
@@ -94,7 +116,7 @@ class NotificationService:
                 webhook_url=channel.webhook_url,
                 secret=channel.secret,
             )
-            await client.send_markdown(title, text)
+            await client.send_markdown(title, text, at_mobiles=at_mobiles or None)
         except Exception:
             logger.warning(
                 "failed to push review notification; continuing",
@@ -136,12 +158,72 @@ class NotificationService:
             )
             return []
 
+    async def _resolve_at_mobiles(
+        self,
+        gitlab_project_id: int,
+        review_data: dict[str, Any],
+    ) -> list[str]:
+        """解析要 @ 的手机号列表（MR 创建人的钉钉绑定手机号）。
+
+        - ``review_data["mr_author_username"]`` 缺失 / ``session_factory`` 未注入：
+          返回空列表（MVP 兼容、MR 无作者信息时不 @ 人）。
+        - Project 未注册：返回空。
+        - 映射表查不到该 GitLab 用户名：**fail-silent**，记 debug 日志返回空，
+          绝不因「没配置映射」阻断通知。
+        - DB 异常：记 warning 返回空，不影响推送。
+        """
+
+        author_username = review_data.get("mr_author_username")
+        if not author_username or self._session_factory is None:
+            return []
+        try:
+            async with self._session_factory() as session:
+                project_repo = ProjectRepository(session)
+                project = await project_repo.get_by_gitlab_project_id(
+                    str(gitlab_project_id),
+                )
+                if project is None:
+                    return []
+                mapping_repo = UserMappingRepository(session)
+                mapping = await mapping_repo.get_by_gitlab_username(
+                    project.id,
+                    str(author_username),
+                )
+                if mapping is None:
+                    logger.debug(
+                        "no user mapping for mr author; skipping @ mention",
+                        extra={
+                            "gitlab_project_id": gitlab_project_id,
+                            "gitlab_username": author_username,
+                        },
+                    )
+                    return []
+                return [mapping.dingtalk_mobile]
+        except Exception:
+            logger.warning(
+                "failed to resolve at-mobiles for mr author; pushing without @",
+                exc_info=True,
+                extra={
+                    "gitlab_project_id": gitlab_project_id,
+                    "gitlab_username": author_username,
+                },
+            )
+            return []
+
     def _build_review_message(self, review_data: dict[str, Any]) -> tuple[str, str]:
         """构造消息标题与 markdown 正文。
 
         ``review_data`` 约定字段：``review_id`` / ``mr_iid`` / ``mr_title`` /
         ``finding_count`` / ``has_blocker`` / ``blocker_count`` / ``detail_url`` /
-        ``status``（``"done"`` / ``"engine_error"``）。
+        ``status``（``"done"`` / ``"engine_error"``），以及本次扩展的可选字段：
+
+        - ``mr_web_url: str | None``：MR 跳转链接，正文「链接」行。
+        - ``mr_author_username`` / ``mr_author_name``：MR 创建人信息（@ 人由
+          :meth:`_resolve_at_mobiles` 单独处理，这里不使用）。
+        - ``findings_summary: list[dict] | None``：按严重级别分组的精简 finding
+          列表，形如 ``[{"severity": "BLOCKER", "items": [{"title", "file_path",
+          "line_number"}, ...]}, ...]``。BLOCKER 全部展示，WARNING / INFO 各
+          最多 5 条，超出显示「还有 N 条，详见详情页」。
 
         Returns:
             ``(title, text)``：标题用于钉钉通知列表展示，text 为 markdown 正文。
@@ -150,11 +232,13 @@ class NotificationService:
         status_value = str(review_data.get("status") or "done")
         mr_iid = review_data.get("mr_iid")
         mr_title = str(review_data.get("mr_title") or "")
+        mr_web_url = review_data.get("mr_web_url")
         finding_count = int(review_data.get("finding_count") or 0)
         blocker_count = int(review_data.get("blocker_count") or 0)
         has_blocker = bool(review_data.get("has_blocker"))
         review_id = review_data.get("review_id")
         detail_url = review_data.get("detail_url")
+        findings_summary = review_data.get("findings_summary")
 
         mr_label = f"!{mr_iid}" if mr_iid is not None else "未知"
         if status_value == "engine_error":
@@ -162,16 +246,82 @@ class NotificationService:
             result_line = "引擎执行失败，未产出审查结果"
         elif has_blocker:
             title = f"【AI Code Review】MR {mr_label} 审查完成 - 存在阻断"
-            result_line = f"发现问题 {finding_count} 个（其中 {blocker_count} 个阻断）"
+            result_line = self._build_result_line(findings_summary, finding_count, blocker_count)
         else:
             title = f"【AI Code Review】MR {mr_label} 审查完成 - 无阻断"
-            result_line = f"发现问题 {finding_count} 个（无阻断）"
+            result_line = self._build_result_line(findings_summary, finding_count, blocker_count)
 
         lines = [f"### {title}", ""]
         if mr_title:
             lines.append(f"**MR 标题**：{mr_title}")
+        if mr_web_url:
+            lines.append(f"**链接**：[点击查看]({mr_web_url})")
         lines.append(f"**Review ID**：{review_id}")
         lines.append(f"**结果**：{result_line}")
+
+        if findings_summary:
+            lines.append("")
+            lines.append("---")
+            lines.extend(self._build_findings_section(findings_summary))
+
         if detail_url:
-            lines.append(f"**详情**：[查看详情]({detail_url})")
-        return title, "\n".join(lines)
+            lines.append("")
+            lines.append(f"**详情**：[点击查看详情]({detail_url})")
+
+        text = "\n".join(lines)
+        if len(text) > _MAX_MESSAGE_LENGTH:
+            # 超长会被钉钉整条拒绝；截断保底，细节引导到详情页。
+            text = (
+                text[:_MAX_MESSAGE_LENGTH]
+                + "\n\n...（消息过长已截断，详见详情页）"
+            )
+        return title, text
+
+    @staticmethod
+    def _build_result_line(
+        findings_summary: list[dict[str, Any]] | None,
+        finding_count: int,
+        blocker_count: int,
+    ) -> str:
+        """构造「结果」行；有分组摘要时按级别计数，否则退回旧的总量文案。"""
+
+        if not findings_summary:
+            if blocker_count:
+                return f"发现问题 {finding_count} 个（其中 {blocker_count} 个阻断）"
+            return f"发现问题 {finding_count} 个（无阻断）"
+        counts = {severity: 0 for severity in _SEVERITY_META}
+        for group in findings_summary:
+            severity = str(group.get("severity") or "")
+            if severity in counts:
+                counts[severity] = len(group.get("items") or [])
+        return "  ·  ".join(
+            f"{badge} {label} {counts[severity]} 个"
+            for severity, (badge, label) in _SEVERITY_META.items()
+        )
+
+    @staticmethod
+    def _build_findings_section(findings_summary: list[dict[str, Any]]) -> list[str]:
+        """按严重级别渲染分组 finding 列表（BLOCKER 全展示，其余各最多 5 条）。"""
+
+        lines: list[str] = []
+        for group in findings_summary:
+            severity = str(group.get("severity") or "")
+            if severity not in _SEVERITY_META:
+                continue
+            badge, label = _SEVERITY_META[severity]
+            items = list(group.get("items") or [])
+            max_items = _MAX_ITEMS_PER_SEVERITY[severity]
+            shown = items if max_items is None else items[:max_items]
+            lines.append("")
+            lines.append(f"#### {badge} {label}问题 ({len(items)})")
+            lines.append("")
+            for index, item in enumerate(shown, start=1):
+                title_text = str(item.get("title") or "")
+                file_path = str(item.get("file_path") or "")
+                line_number = item.get("line_number")
+                location = f"{file_path}:{line_number}" if line_number else file_path
+                lines.append(f"{index}. **{title_text}** - `{location}`")
+            omitted = len(items) - len(shown)
+            if omitted > 0:
+                lines.append(f"...（还有 {omitted} 条，详见详情页）")
+        return lines

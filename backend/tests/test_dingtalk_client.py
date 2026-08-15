@@ -122,3 +122,64 @@ async def test_send_markdown_raises_on_non_json_body() -> None:
     client = DingTalkClient(webhook_url=_WEBHOOK)
     with pytest.raises(DingTalkClientError):
         await client.send_markdown("审查完成", "## hello")
+
+
+# --------------------------------------------------------------------------- #
+# @ 功能（atMobiles / atUserIds / isAtAll）
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_send_markdown_with_at_mobiles_appends_at_field_and_text() -> None:
+    """传 at_mobiles 时：请求体带 ``at.atMobiles``，正文末尾追加 ``@手机号``。"""
+
+    route = respx.post(_ROUTE).mock(
+        return_value=Response(200, json={"errcode": 0, "errmsg": "ok"}),
+    )
+    client = DingTalkClient(webhook_url=_WEBHOOK)
+    await client.send_markdown("审查完成", "## hello", at_mobiles=["13800138000"])
+
+    assert route.called
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["at"] == {"atMobiles": ["13800138000"], "atUserIds": [], "isAtAll": False}
+    # 钉钉约定：正文中也要出现 @手机号 才会真正高亮提醒。
+    assert payload["markdown"]["text"] == "## hello\n\n@13800138000"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_send_markdown_with_at_user_ids_and_is_at_all() -> None:
+    """at_user_ids / is_at_all 填入 ``at`` 字段，但不改动正文。"""
+
+    route = respx.post(_ROUTE).mock(
+        return_value=Response(200, json={"errcode": 0, "errmsg": "ok"}),
+    )
+    client = DingTalkClient(webhook_url=_WEBHOOK)
+    await client.send_markdown(
+        "审查完成",
+        "## hello",
+        at_user_ids=["user-1"],
+        is_at_all=True,
+    )
+
+    assert route.called
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["at"] == {"atMobiles": [], "atUserIds": ["user-1"], "isAtAll": True}
+    assert payload["markdown"]["text"] == "## hello"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_send_markdown_without_at_keeps_legacy_payload() -> None:
+    """未传任何 @ 参数时请求体保持旧结构，不含 ``at`` 字段。"""
+
+    route = respx.post(_ROUTE).mock(
+        return_value=Response(200, json={"errcode": 0, "errmsg": "ok"}),
+    )
+    client = DingTalkClient(webhook_url=_WEBHOOK)
+    await client.send_markdown("审查完成", "## hello")
+
+    payload = json.loads(route.calls.last.request.content)
+    assert "at" not in payload
+    assert payload["markdown"]["text"] == "## hello"

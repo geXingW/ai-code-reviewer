@@ -83,12 +83,25 @@ class DingTalkClient:
             f"timestamp={timestamp}&sign={quote_plus(sign)}"
         )
 
-    async def send_markdown(self, title: str, text: str) -> dict[str, Any]:
-        """发送 markdown 类型消息。
+    async def send_markdown(
+        self,
+        title: str,
+        text: str,
+        at_mobiles: list[str] | None = None,
+        at_user_ids: list[str] | None = None,
+        is_at_all: bool = False,
+    ) -> dict[str, Any]:
+        """发送 markdown 类型消息，支持 @ 人。
 
         Args:
             title: 消息标题（钉钉通知列表展示用）。
             text: markdown 正文。
+            at_mobiles: 被 @ 人的手机号列表。钉钉约定：``atMobiles`` 只指定
+                @ 范围，**正文中还需出现 ``@手机号`` 文本**才会真正高亮提醒，
+                因此这里会把 ``\\n\\n@手机号`` 追加到正文末尾。
+            at_user_ids: 被 @ 人的钉钉 userid 列表（同样依赖正文 @ 文本高亮，
+                userid 无法拼进正文，一般配合 at_mobiles 使用或仅用于免打扰配置）。
+            is_at_all: @ 所有人（``isAtAll=true``）。
 
         Returns:
             钉钉返回的 JSON 响应。
@@ -103,13 +116,25 @@ class DingTalkClient:
         if not text.strip():
             msg = "DingTalk message text must not be empty."
             raise ValueError(msg)
+        effective_text = text
+        if at_mobiles:
+            # 正文末尾追加 @手机号，钉钉 markdown 消息需要正文也有 @ 才高亮。
+            at_suffix = "".join(f"@{mobile}" for mobile in at_mobiles)
+            effective_text = f"{text}\n\n{at_suffix}"
         # 钉钉加签要求毫秒级时间戳。
         timestamp = int(time.time() * 1000)
         url = self._build_url(timestamp)
         payload: dict[str, Any] = {
             "msgtype": "markdown",
-            "markdown": {"title": title, "text": text},
+            "markdown": {"title": title, "text": effective_text},
         }
+        # 未传任何 @ 参数时保持旧请求体（无 ``at`` 字段），兼容既有调用方与测试。
+        if at_mobiles or at_user_ids or is_at_all:
+            payload["at"] = {
+                "atMobiles": list(at_mobiles or []),
+                "atUserIds": list(at_user_ids or []),
+                "isAtAll": bool(is_at_all),
+            }
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(url, json=payload)
 

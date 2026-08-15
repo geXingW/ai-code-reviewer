@@ -261,3 +261,43 @@ async def test_gitlab_webhook_returns_422_when_payload_lacks_project_id(
     )
 
     assert response.status_code == 422
+
+
+def _minimal_mr_payload() -> dict[str, object]:
+    """构造能通过 ``_parse_merge_request_event`` 校验的最小 MR payload。"""
+
+    return {
+        "object_kind": "merge_request",
+        "project": {"id": 123, "path_with_namespace": "group/demo"},
+        "object_attributes": {
+            "iid": 7,
+            "action": "open",
+            "source_branch": "feature/demo",
+            "target_branch": "master",
+            "last_commit": {"id": "abc123"},
+            "target": {"default_branch": "master"},
+            "title": "Demo MR",
+            "url": "https://gitlab.example.com/group/demo/-/merge_requests/7",
+        },
+    }
+
+
+def test_parse_merge_request_event_extracts_author_from_user() -> None:
+    """顶层 ``user`` 对象解析为 MR 作者信息（open 事件中即创建人）。"""
+
+    payload = _minimal_mr_payload()
+    payload["user"] = {"username": "alice", "name": "Alice Zhang"}
+
+    event = gitlab_webhook._parse_merge_request_event(payload)
+
+    assert event.author_username == "alice"
+    assert event.author_name == "Alice Zhang"
+
+
+def test_parse_merge_request_event_without_user_leaves_author_none() -> None:
+    """payload 无 ``user`` 对象时作者信息留空（通知侧不 @ 人）。"""
+
+    event = gitlab_webhook._parse_merge_request_event(_minimal_mr_payload())
+
+    assert event.author_username is None
+    assert event.author_name is None
