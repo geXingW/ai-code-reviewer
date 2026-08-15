@@ -52,6 +52,11 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_SEVERITIES = {"INFO", "WARNING", "BLOCKER"}
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.*?)\s*```", re.DOTALL | re.IGNORECASE)
+# 与 review_orchestrator._DIFF_HEADER_RE 保持一致：Git 省略 ",1" 时计数组不出现。
+_DIFF_HEADER_RE = re.compile(
+    r"@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? "
+    r"\+(?P<new_start>\d+)(?:,(?P<new_lines>\d+))? @@"
+)
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 _RULE_DOCS_DIR = Path(__file__).resolve().parent / "rule_docs"
 _EMPTY_LANGUAGE_CHECKLIST = "No specific language checklists apply to this diff."
@@ -756,17 +761,35 @@ class LLMDirectEngine(ReviewEngine):
     def _format_diff(diff_hunks: list[DiffHunk]) -> str:
         blocks: list[str] = []
         for hunk in diff_hunks:
-            blocks.append(
-                "\n".join(
-                    [
-                        f"### File: {hunk.file_path}",
-                        f"new_start={hunk.new_start}, new_lines={hunk.new_lines}",
-                        "```diff",
-                        hunk.content,
-                        "```",
-                    ]
+            file_block = [f"### File: {hunk.file_path}"]
+            real_hunks = _split_real_hunks(hunk.content)
+            if real_hunks:
+                # content 里有多个真实 hunk 时，逐个标注 new_start，
+                # 避免模型按第一个 hunk 的起始行去数后面的 hunk。
+                for new_start, new_lines, content in real_hunks:
+                    file_block.append(
+                        "\n".join(
+                            [
+                                f"#### Hunk: new_start={new_start}, new_lines={new_lines}",
+                                "```diff",
+                                content,
+                                "```",
+                            ]
+                        )
+                    )
+            else:
+                # 兜底：content 中没有 @@ header（异常数据），保持旧格式。
+                file_block.append(
+                    "\n".join(
+                        [
+                            f"new_start={hunk.new_start}, new_lines={hunk.new_lines}",
+                            "```diff",
+                            hunk.content,
+                            "```",
+                        ]
+                    )
                 )
-            )
+            blocks.append("\n\n".join(file_block))
         return "\n\n".join(blocks)
 
     def _parse_findings(self, raw_response: str, ctx: ReviewContext) -> list[Finding]:
@@ -1038,6 +1061,24 @@ def _added_line_numbers(hunk: DiffHunk) -> set[int]:
     return {line_no for line_no, _ in _iter_added_lines(hunk)}
 
 
+def _split_real_hunks(content: str) -> list[tuple[int, int, str]]:
+    """Split a file's diff content into real hunks.
+
+    一个 ``DiffHunk.content`` 可能包含多个 ``@@`` hunk。返回
+    ``(new_start, new_lines, hunk_text)`` 列表；没有 @@ header 时返回空列表。
+    """
+
+    matches = list(_DIFF_HEADER_RE.finditer(content))
+    result: list[tuple[int, int, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        hunk_text = content[match.start() : end].strip("\n")
+        new_lines_raw = match.group("new_lines")
+        new_lines = int(new_lines_raw) if new_lines_raw else 1
+        result.append((int(match.group("new_start")), new_lines, hunk_text))
+    return result
+
+
 def _iter_added_lines(hunk: DiffHunk) -> list[tuple[int, str]]:
     """Return added lines with new-file line numbers for a unified diff hunk."""
 
@@ -1045,6 +1086,11 @@ def _iter_added_lines(hunk: DiffHunk) -> list[tuple[int, str]]:
     added: list[tuple[int, str]] = []
     for raw_line in hunk.content.splitlines():
         if raw_line.startswith("@@"):
+            # content 可能包含多个真实 hunk（一个 DiffHunk = 一个文件的全部 diff），
+            # 遇到新的 @@ header 时必须重置行号计数器。
+            header = _DIFF_HEADER_RE.search(raw_line)
+            if header:
+                current_new_line = int(header.group("new_start"))
             continue
         if raw_line.startswith("+") and not raw_line.startswith("+++"):
             added.append((current_new_line, raw_line[1:]))
