@@ -9,9 +9,12 @@ The script uses Alembic's offline mode (``--sql``) so no live database
 connection is required. It works by calling Alembic's Python API directly
 and capturing the generated SQL.
 
+Dialect is controlled by ``--dialect`` (default: ``mysql``, matching the
+deployment target). Pass ``postgresql`` to generate PG-flavored SQL.
+
 Usage::
 
-    python scripts/generate_release_sql.py [--output-dir sql]
+    python scripts/generate_release_sql.py [--output-dir sql] [--dialect mysql]
 
 Run from the ``backend/`` directory (where ``alembic.ini`` lives).
 """
@@ -26,6 +29,21 @@ from pathlib import Path
 from alembic.config import Config
 
 from alembic import command
+
+
+def _dialect_url(dialect: str) -> str:
+    """Return a dummy DSN for the given dialect for offline SQL generation.
+
+    Offline mode only needs the dialect part of the URL; the host/user/password
+    are irrelevant because no real connection is made.
+    """
+
+    if dialect == "mysql":
+        return "mysql+aiomysql://dummy:dummy@localhost:3306/dummy"
+    if dialect in {"postgresql", "postgres", "pg"}:
+        return "postgresql+asyncpg://dummy:dummy@localhost:5432/dummy"
+    msg = f"Unsupported dialect: {dialect} (expected 'mysql' or 'postgresql')"
+    raise ValueError(msg)
 
 
 def _capture_offline_sql(alembic_cfg: Config, revision_range: str) -> str:
@@ -90,12 +108,12 @@ def _get_revision_order(alembic_cfg: Config) -> list[tuple[str, str]]:
     single parent; for merge revisions it is the first parent in the tuple.
     """
 
+    from collections import deque
+
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(alembic_cfg)
     heads = script.get_heads()
-    if not heads:
-        return []
 
     # 收集所有 revision: DFS 从所有 head 倒推到 base
     all_revs: dict[str, list[str]] = {}  # revision -> list of down revisions
@@ -131,17 +149,21 @@ def _get_revision_order(alembic_cfg: Config) -> list[tuple[str, str]]:
             children[p].append(rev)
 
     # 起点：in_degree 为 0 的节点（base revision，即 down_revision 为 None 的）
-    queue = [rev for rev, deg in in_degree.items() if deg == 0]
-    queue.sort()  # 稳定排序
+    queue: deque[str] = deque(
+        sorted(rev for rev, deg in in_degree.items() if deg == 0)
+    )
     topo_order: list[str] = []
     while queue:
-        rev = queue.pop(0)
+        rev = queue.popleft()
         topo_order.append(rev)
         for child in children.get(rev, []):
             in_degree[child] -= 1
             if in_degree[child] == 0:
-                queue.append(child)
-        queue.sort()  # 稳定排序
+                # 插入排序保持队列有序，确保确定性
+                insert_pos = 0
+                while insert_pos < len(queue) and queue[insert_pos] < child:
+                    insert_pos += 1
+                queue.insert(insert_pos, child)
 
     # 构造结果：(revision, primary_down_revision)
     result: list[tuple[str, str]] = []
@@ -164,12 +186,19 @@ def _slug_for_filename(revision: str) -> str:
     return safe or "migration"
 
 
-def generate(alembic_ini: Path, output_dir: Path) -> dict[str, Path]:
+def generate(
+    alembic_ini: Path,
+    output_dir: Path,
+    *,
+    dialect: str = "mysql",
+) -> dict[str, Path]:
     """Generate all release SQL artifacts.
 
     Args:
         alembic_ini: Path to ``alembic.ini``.
         output_dir: Directory to write SQL files into.
+        dialect: Target SQL dialect (``"mysql"`` or ``"postgresql"``).
+            Defaults to ``"mysql"`` matching the deployment target.
 
     Returns:
         dict mapping artifact kind to the generated file path.
@@ -180,6 +209,10 @@ def generate(alembic_ini: Path, output_dir: Path) -> dict[str, Path]:
         raise FileNotFoundError(msg)
 
     alembic_cfg = Config(str(alembic_ini))
+
+    # 覆盖 sqlalchemy.url 以切换方言。offline 模式不需要真实连接，
+    # 只需要 URL 中的 dialect 部分来决定生成 SQL 的语法。
+    alembic_cfg.set_main_option("sqlalchemy.url", _dialect_url(dialect))
 
     # 确保输出目录存在
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -193,13 +226,18 @@ def generate(alembic_ini: Path, output_dir: Path) -> dict[str, Path]:
     if not revisions:
         msg = "No migrations found; cannot determine head revision."
         raise RuntimeError(msg)
-    head_rev = revisions[-1][0]
+    # 多 head 时 VERSION 每行一个 head（按拓扑排序末尾的若干个）
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(alembic_cfg)
+    heads = sorted(script.get_heads())
     version_file = output_dir / "VERSION"
-    version_file.write_text(f"{head_rev}\n", encoding="utf-8")
+    version_file.write_text("\n".join(heads) + "\n", encoding="utf-8")
     generated["version"] = version_file
 
     # --- 2. 全量 schema-full.sql ---
-    full_sql = _capture_offline_sql(alembic_cfg, "head")
+    # 用 "heads" 而非 "head"，支持多 head（分支未合并时也能生成全量 SQL）
+    full_sql = _capture_offline_sql(alembic_cfg, "heads")
     full_file = output_dir / "schema-full.sql"
     full_file.write_text(full_sql, encoding="utf-8")
     generated["schema_full"] = full_file
@@ -232,12 +270,18 @@ def main() -> None:
         default="sql",
         help="Output directory (default: ./sql)",
     )
+    parser.add_argument(
+        "--dialect",
+        default="mysql",
+        choices=["mysql", "postgresql"],
+        help="Target SQL dialect (default: mysql)",
+    )
     args = parser.parse_args()
 
     alembic_ini = Path(args.alembic_ini).resolve()
     output_dir = Path(args.output_dir).resolve()
 
-    generated = generate(alembic_ini, output_dir)
+    generated = generate(alembic_ini, output_dir, dialect=args.dialect)
 
     print(f"Generated {len(generated)} SQL artifacts in {output_dir}")
     for key, path in sorted(generated.items()):
