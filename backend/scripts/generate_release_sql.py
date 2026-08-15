@@ -64,22 +64,48 @@ def _capture_offline_sql(alembic_cfg: Config, revision_range: str) -> str:
     buffer = StringIO()
     original_stdout = sys.stdout
     sys.stdout = buffer
+
+    # Alembic env.py 会调用 fileConfig() 重置全局 logging 配置：
+    # - 清掉 root logger 上的所有 handler，换上配置文件中的 handler
+    # - disable_existing_loggers=True 会把所有已存在的 logger 设为 disabled
+    # 这会污染调用方的 logging 状态，导致测试中 caplog 等 fixture 失效。
+    # 这里在调用前后保存/恢复关键状态。
+    import logging
+
+    root = logging.getLogger()
+    root_handlers = list(root.handlers)
+    root_level = root.level
+
+    manager = root.manager
+    disabled_snapshot: dict[str, bool] = {
+        name: logging.getLogger(name).disabled
+        for name in manager.loggerDict
+    }
+
     try:
         command.upgrade(alembic_cfg, revision_range, sql=True)
     finally:
         sys.stdout = original_stdout
+        # 恢复 root logger 的 handlers 和 level
+        root.handlers = root_handlers
+        root.level = root_level
+        # 恢复所有 logger 的 disabled 状态
+        for name, was_disabled in disabled_snapshot.items():
+            logging.getLogger(name).disabled = was_disabled
+
     return buffer.getvalue()
 
 
 def _get_revision_order(alembic_cfg: Config) -> list[tuple[str, str]]:
     """Return the ordered list of (revision, down_revision) tuples.
 
-    Uses topological sort (Kahn's algorithm) over the migration DAG so it
-    correctly handles multiple heads and merge revisions.  Revisions with
-    the same down_revision are ordered by revision id for determinism.
+    Walks the full migration DAG using topological sort so merge revisions
+    (multiple ``down_revision``) and multi-head histories are handled correctly.
+    Returns the list from oldest to newest (base → head).
 
-    Returns the list from oldest to newest.  Each ``down_revision`` is
-    either a parent revision string or ``"base"`` for the first migration.
+    For each entry, ``down_revision`` is the primary parent used for
+    incremental SQL generation: for regular linear migrations it is the
+    single parent; for merge revisions it is the first parent in the tuple.
     """
 
     from collections import deque
@@ -87,60 +113,66 @@ def _get_revision_order(alembic_cfg: Config) -> list[tuple[str, str]]:
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(alembic_cfg)
+    heads = script.get_heads()
 
-    # 收集所有 revision 及其 down_revision（可能是单个或 tuple）
-    all_revs: dict[str, list[str]] = {}  # rev -> list of down_revisions
-    for scr in script.walk_revisions():
+    # 收集所有 revision: DFS 从所有 head 倒推到 base
+    all_revs: dict[str, list[str]] = {}  # revision -> list of down revisions
+    stack: list[str] = list(heads)
+    visited: set[str] = set()
+
+    while stack:
+        rev = stack.pop()
+        if rev in visited:
+            continue
+        visited.add(rev)
+        scr = script.get_revision(rev)
         down = scr.down_revision
         if down is None:
-            all_revs[str(scr.revision)] = []
+            parents: list[str] = []
         elif isinstance(down, (tuple, list)):
-            all_revs[str(scr.revision)] = [str(d) for d in down]
+            parents = [str(d) for d in down]
         else:
-            all_revs[str(scr.revision)] = [str(down)]
+            parents = [str(down)]
+        all_revs[rev] = parents
+        for p in parents:
+            if p not in visited:
+                stack.append(p)
 
-    # 计算入度（每个 revision 有多少个 children 依赖它）
-    out_degree: dict[str, int] = {rev: 0 for rev in all_revs}
+    # 拓扑排序（Kahn 算法）：base → head
+    in_degree = {rev: len(parents) for rev, parents in all_revs.items()}
+    # children 映射：parent -> [children]
     children: dict[str, list[str]] = {rev: [] for rev in all_revs}
-    for rev, downs in all_revs.items():
-        for d in downs:
-            if d in children:
-                children[d].append(rev)
-                out_degree[rev] = out_degree.get(rev, 0)
-    # 实际上入度 = 该 rev 的 down_revision 数量
-    in_degree: dict[str, int] = {rev: len(downs) for rev, downs in all_revs.items()}
+    for rev, parents in all_revs.items():
+        for p in parents:
+            if p not in children:
+                children[p] = []
+            children[p].append(rev)
 
-    # Kahn 算法：从入度为 0 的节点开始（即没有 down_revision 的初始 migration）
+    # 起点：in_degree 为 0 的节点（base revision，即 down_revision 为 None 的）
     queue: deque[str] = deque(
         sorted(rev for rev, deg in in_degree.items() if deg == 0)
     )
-    result: list[str] = []
+    topo_order: list[str] = []
     while queue:
         rev = queue.popleft()
-        result.append(rev)
-        # 找到所有以 rev 为父节点的子 migration
-        for child, downs in all_revs.items():
-            if rev in downs:
-                in_degree[child] -= 1
-                if in_degree[child] == 0:
-                    # 插入时保持排序，确保确定性
-                    insert_pos = 0
-                    while insert_pos < len(queue) and queue[insert_pos] < child:
-                        insert_pos += 1
-                    queue.insert(insert_pos, child)
+        topo_order.append(rev)
+        for child in children.get(rev, []):
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                # 插入排序保持队列有序，确保确定性
+                insert_pos = 0
+                while insert_pos < len(queue) and queue[insert_pos] < child:
+                    insert_pos += 1
+                queue.insert(insert_pos, child)
 
-    if len(result) != len(all_revs):
-        missing = set(all_revs) - set(result)
-        msg = f"Migration DAG has cycles or unreachable revisions: {missing}"
-        raise RuntimeError(msg)
+    # 构造结果：(revision, primary_down_revision)
+    result: list[tuple[str, str]] = []
+    for rev in topo_order:
+        parents = all_revs[rev]
+        primary_down = parents[0] if parents else "base"
+        result.append((rev, primary_down))
 
-    # 构造 (revision, down_rev) 对，down_rev 用第一个父节点（base 用 "base"）
-    ordered: list[tuple[str, str]] = []
-    for rev in result:
-        downs = all_revs[rev]
-        down_repr = downs[0] if downs else "base"
-        ordered.append((rev, down_repr))
-    return ordered
+    return result
 
 
 def _slug_for_filename(revision: str) -> str:
