@@ -56,8 +56,13 @@ def _capture_offline_sql(alembic_cfg: Config, revision_range: str) -> str:
 def _get_revision_order(alembic_cfg: Config) -> list[tuple[str, str]]:
     """Return the ordered list of (revision, down_revision) tuples.
 
-    Walks from head down to base using Alembic's script directory.
-    Returns the list from oldest to newest.
+    Walks the full migration DAG using topological sort so merge revisions
+    (multiple ``down_revision``) and multi-head histories are handled correctly.
+    Returns the list from oldest to newest (base → head).
+
+    For each entry, ``down_revision`` is the primary parent used for
+    incremental SQL generation: for regular linear migrations it is the
+    single parent; for merge revisions it is the first parent in the tuple.
     """
 
     from alembic.script import ScriptDirectory
@@ -67,20 +72,60 @@ def _get_revision_order(alembic_cfg: Config) -> list[tuple[str, str]]:
     if not heads:
         return []
 
-    # 从 head 倒推到 base，再反转得到正序。
-    revisions_reverse: list[tuple[str, str | None]] = []
-    current: str | None = heads[0] if isinstance(heads[0], str) else heads[0][0]
-    while current:
-        scr = script.get_revision(current)
-        down = scr.down_revision
-        if isinstance(down, (tuple, list)):
-            down = down[0] if down else None
-        revisions_reverse.append((str(scr.revision), str(down) if down else None))
-        current = down  # type: ignore[assignment]
+    # 收集所有 revision: DFS 从所有 head 倒推到 base
+    all_revs: dict[str, list[str]] = {}  # revision -> list of down revisions
+    stack: list[str] = list(heads)
+    visited: set[str] = set()
 
-    revisions_reverse.reverse()
-    # 过滤掉 base 之前的空节点（第一个元素 down_revision 为 None）。
-    return [(rev, down or "base") for rev, down in revisions_reverse]
+    while stack:
+        rev = stack.pop()
+        if rev in visited:
+            continue
+        visited.add(rev)
+        scr = script.get_revision(rev)
+        down = scr.down_revision
+        if down is None:
+            parents: list[str] = []
+        elif isinstance(down, (tuple, list)):
+            parents = [str(d) for d in down]
+        else:
+            parents = [str(down)]
+        all_revs[rev] = parents
+        for p in parents:
+            if p not in visited:
+                stack.append(p)
+
+    # 拓扑排序（Kahn 算法）：base → head
+    in_degree = {rev: len(parents) for rev, parents in all_revs.items()}
+    # children 映射：parent -> [children]
+    children: dict[str, list[str]] = {rev: [] for rev in all_revs}
+    for rev, parents in all_revs.items():
+        for p in parents:
+            if p not in children:
+                children[p] = []
+            children[p].append(rev)
+
+    # 起点：in_degree 为 0 的节点（base revision，即 down_revision 为 None 的）
+    queue = [rev for rev, deg in in_degree.items() if deg == 0]
+    queue.sort()  # 稳定排序
+    topo_order: list[str] = []
+    while queue:
+        rev = queue.pop(0)
+        topo_order.append(rev)
+        for child in children.get(rev, []):
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                queue.append(child)
+        queue.sort()  # 稳定排序
+
+    # 构造结果：(revision, primary_down_revision)
+    result: list[tuple[str, str]] = []
+    for rev in topo_order:
+        parents = all_revs[rev]
+        primary_down = parents[0] if parents else "base"
+        result.append((rev, primary_down))
+
+    return result
 
 
 def _slug_for_filename(revision: str) -> str:
