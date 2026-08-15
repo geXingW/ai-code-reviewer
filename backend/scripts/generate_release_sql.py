@@ -46,10 +46,35 @@ def _capture_offline_sql(alembic_cfg: Config, revision_range: str) -> str:
     buffer = StringIO()
     original_stdout = sys.stdout
     sys.stdout = buffer
+
+    # Alembic env.py 会调用 fileConfig() 重置全局 logging 配置：
+    # - 清掉 root logger 上的所有 handler，换上配置文件中的 handler
+    # - disable_existing_loggers=True 会把所有已存在的 logger 设为 disabled
+    # 这会污染调用方的 logging 状态，导致测试中 caplog 等 fixture 失效。
+    # 这里在调用前后保存/恢复关键状态。
+    import logging
+
+    root = logging.getLogger()
+    root_handlers = list(root.handlers)
+    root_level = root.level
+
+    manager = root.manager
+    disabled_snapshot: dict[str, bool] = {
+        name: logging.getLogger(name).disabled
+        for name in manager.loggerDict
+    }
+
     try:
         command.upgrade(alembic_cfg, revision_range, sql=True)
     finally:
         sys.stdout = original_stdout
+        # 恢复 root logger 的 handlers 和 level
+        root.handlers = root_handlers
+        root.level = root_level
+        # 恢复所有 logger 的 disabled 状态
+        for name, was_disabled in disabled_snapshot.items():
+            logging.getLogger(name).disabled = was_disabled
+
     return buffer.getvalue()
 
 
