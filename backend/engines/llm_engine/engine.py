@@ -132,6 +132,60 @@ def _reset_global_prompt_cache() -> None:
     _global_prompt_expires_at = 0.0
 
 
+# ---- 负样本提示词（带 TTL 缓存）----
+
+_NEGATIVE_PROMPT_KEY = "negative_prompt"
+_negative_prompt_value: str = ""
+_negative_prompt_expires_at: float = 0.0
+_NEGATIVE_PROMPT_TTL_SECONDS = 60
+
+
+async def _load_negative_prompt() -> str:
+    """从数据库读取全局负样本提示词，带 60s 内存缓存。
+
+    与 ``_load_global_prompt`` 同策略：数据库未就绪或读取失败时返回缓存值
+    （可能为空），保证引擎可用性不受影响。空字符串表示未配置，调用方回退
+    到旧的结构化 ``_format_history`` 注入，保持向后兼容。
+    """
+
+    global _negative_prompt_value, _negative_prompt_expires_at
+
+    now = time.monotonic()
+    if now < _negative_prompt_expires_at:
+        return _negative_prompt_value
+
+    value = _negative_prompt_value
+    try:
+        from sqlalchemy import select
+
+        from core.db import AsyncSessionLocal
+        from models.global_setting import GlobalSetting
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(GlobalSetting).where(GlobalSetting.key == _NEGATIVE_PROMPT_KEY),
+            )
+            setting = result.scalar_one_or_none()
+            value = setting.value if setting is not None else ""
+    except Exception:  # noqa: BLE001 - DB 故障不应该阻塞审查
+        logger.warning("failed to load negative prompt from DB, using cached/empty value")
+        # 失败时保持旧缓存值（如果有），但缩短 TTL 到 10 秒后重试
+        _negative_prompt_expires_at = now + 10
+        return _negative_prompt_value
+
+    _negative_prompt_value = value
+    _negative_prompt_expires_at = now + _NEGATIVE_PROMPT_TTL_SECONDS
+    return value
+
+
+def _reset_negative_prompt_cache() -> None:
+    """Reset the negative prompt cache (used by tests)."""
+
+    global _negative_prompt_value, _negative_prompt_expires_at
+    _negative_prompt_value = ""
+    _negative_prompt_expires_at = 0.0
+
+
 class LLMCompletionClient(Protocol):
     """Minimal async completion protocol used by ``LLMDirectEngine``."""
 
@@ -422,7 +476,7 @@ class LLMDirectEngine(ReviewEngine):
             )
 
         try:
-            prompt = self._build_batch_prompt(
+            prompt = await self._build_batch_prompt(
                 ctx=ctx,
                 batch_hunks=[hunk],
                 batch_index=1,
@@ -494,7 +548,7 @@ class LLMDirectEngine(ReviewEngine):
             ),
         )
 
-    def _build_batches(self, ctx: ReviewContext) -> list[list[DiffHunk]]:
+    async def _build_batches(self, ctx: ReviewContext) -> list[list[DiffHunk]]:
         """把 diff_hunks 按文件贪心装箱，分成若干批次。
 
         .. deprecated:: feat/per-file-concurrent-review
@@ -514,7 +568,7 @@ class LLMDirectEngine(ReviewEngine):
 
         max_chars = self._settings.llm_prompt_max_chars
         template = _load_prompt("user.md")
-        base_fixed = self._base_fixed_values(ctx)
+        base_fixed = await self._base_fixed_values(ctx)
         # 加上批次信息的额外开销（保守估算 200 字符）
         batch_info_overhead = 200
         effective_max = max_chars - batch_info_overhead
@@ -556,7 +610,7 @@ class LLMDirectEngine(ReviewEngine):
 
         return batches
 
-    def _build_batch_prompt(
+    async def _build_batch_prompt(
         self,
         *,
         ctx: ReviewContext,
@@ -592,7 +646,7 @@ class LLMDirectEngine(ReviewEngine):
             f"{'...' if len(batch_hunks) > 5 else ''}\n"
         )
 
-        base_fixed = self._base_fixed_values(ctx)
+        base_fixed = await self._base_fixed_values(ctx)
         # 用过滤后的规则替换
         fixed_values = {**base_fixed, "rules_block": self._format_rules(batch_rules)}
 
@@ -652,12 +706,14 @@ class LLMDirectEngine(ReviewEngine):
                 relevant.append(rule)
         return relevant
 
-    def _base_fixed_values(
+    async def _base_fixed_values(
         self, ctx: ReviewContext
     ) -> dict[str, str]:
         """构建 prompt 固定段的 values 字典（不含 diff_block）。
 
-        供分批逻辑复用，避免每批重复计算。
+        供分批逻辑复用，避免每批重复计算。``history_block`` 优先使用全局
+        负样本提示词（用户编辑过的生成结果）；为空时回退到旧的结构化
+        ``_format_history`` 输出，保证向后兼容。
         """
 
         return {
@@ -669,8 +725,23 @@ class LLMDirectEngine(ReviewEngine):
             "source_commit_sha": ctx.source_commit_sha,
             "target_commit_sha": ctx.target_commit_sha,
             "rules_block": self._format_rules(ctx.rules),
-            "history_block": self._format_history(ctx.history),
+            "history_block": await self._resolve_negative_prompt_text(ctx.history),
         }
+
+    @staticmethod
+    async def _resolve_negative_prompt_text(history: list[ReviewHistoryItem]) -> str:
+        """解析 history_block 的实际取值。
+
+        全局负样本提示词（``global_settings.key='negative_prompt'``）有值时
+        直接使用；为空时回退到旧的结构化 history 格式化输出。注意硬过滤
+        ``_matches_false_positive_history`` 仍用结构化 ``ctx.history`` 兜底，
+        不受本方法影响。
+        """
+
+        negative_prompt = await _load_negative_prompt()
+        if negative_prompt:
+            return negative_prompt
+        return LLMDirectEngine._format_history(history)
 
     @staticmethod
     def _prompt_fixed_len(template: str, fixed_values: dict[str, str]) -> int:
@@ -679,14 +750,14 @@ class LLMDirectEngine(ReviewEngine):
         values_without_diff = {**fixed_values, "diff_block": ""}
         return len(_render_template(template, values_without_diff))
 
-    def _build_prompt(self, ctx: ReviewContext) -> str:
+    async def _build_prompt(self, ctx: ReviewContext) -> str:
         """构建单批 user prompt（向后兼容，内部委托给 _build_batch_prompt）。
 
         保留此方法是为了不破坏现有测试和外部调用。
         实际逻辑已迁移到分批版本。
         """
 
-        return self._build_batch_prompt(
+        return await self._build_batch_prompt(
             ctx=ctx,
             batch_hunks=ctx.diff_hunks,
             batch_index=1,

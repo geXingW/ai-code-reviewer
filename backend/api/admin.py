@@ -39,6 +39,7 @@ from models.user_mapping import UserMapping
 from repositories import (
     BaseRepository,
     FindingRepository,
+    NegativeExampleRepository,
     ProjectNotificationChannelRepository,
     ProjectRepository,
     ReviewRepository,
@@ -47,7 +48,14 @@ from repositories import (
 )
 from schemas.engine import EngineCreate, EngineRead, EngineUpdate
 from schemas.finding import FindingCreate, FindingRead, FindingUpdate
-from schemas.global_setting import GlobalPromptResponse, GlobalPromptUpdate
+from schemas.global_setting import (
+    GlobalPromptResponse,
+    GlobalPromptUpdate,
+    NegativePromptGenerateRequest,
+    NegativePromptGenerateResponse,
+    NegativePromptResponse,
+    NegativePromptUpdate,
+)
 from schemas.negative_example import NegativeExampleRead
 from schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
 from schemas.project_block_policy import ProjectBlockPolicyCreate
@@ -1208,6 +1216,165 @@ async def update_global_prompt(
     await repo.set_value(_GLOBAL_PROMPT_KEY, payload.content)
     await _commit_or_400(db, detail="Failed to save global prompt")
     return GlobalPromptResponse(content=payload.content)
+
+
+_NEGATIVE_PROMPT_KEY = "negative_prompt"
+
+
+@router.get("/settings/negative-prompt", response_model=NegativePromptResponse)
+async def get_negative_prompt(db: DbSession) -> NegativePromptResponse:
+    """Return the current negative prompt content.
+
+    未设置时返回空字符串（引擎层回退到旧的结构化负样本注入）。
+    """
+
+    from repositories.global_setting import GlobalSettingRepository
+
+    repo = GlobalSettingRepository(db)
+    content = await repo.get_value(_NEGATIVE_PROMPT_KEY, default="")
+    return NegativePromptResponse(content=content)
+
+
+@router.put("/settings/negative-prompt", response_model=NegativePromptResponse)
+async def update_negative_prompt(
+    payload: NegativePromptUpdate,
+    db: DbSession,
+) -> NegativePromptResponse:
+    """Update the negative prompt and return the saved value."""
+
+    from repositories.global_setting import GlobalSettingRepository
+
+    repo = GlobalSettingRepository(db)
+    await repo.set_value(_NEGATIVE_PROMPT_KEY, payload.content)
+    await _commit_or_400(db, detail="Failed to save negative prompt")
+    return NegativePromptResponse(content=payload.content)
+
+
+_NEGATIVE_PROMPT_GENERATE_SYSTEM_PROMPT = """\
+你是专业的代码审查提示词工程师。你的任务是根据已确认的误报样本，生成一段精准、专业的"负样本提示词"。
+
+这段提示词将被注入到代码审查 LLM 的 system prompt 中，用于告诉审查模型
+"哪些模式是已经确认的误报，不要再报"。
+
+要求：
+1. 按规则（rule_id）分组归纳，每组提炼出该规则下的误报模式特征
+2. 语言专业、精准，描述"什么场景/什么形态的代码属于误报"而非"某条具体代码是误报"
+3. 结构清晰，使用"规则名 + 误报模式描述"的条目化格式
+4. 直接输出提示词正文，不要包含解释、开场白、结束语等多余内容
+5. 输出中文
+"""
+
+
+def _format_negative_examples_by_rule(examples: Sequence[NegativeExample]) -> str:
+    """把负样本按 rule_id 分组渲染成 LLM 输入文本。
+
+    分组保持首次出现顺序（样本本身已按 approved_at DESC 排序），每组内
+    逐条输出 code_snippet 与误报说明。
+    """
+
+    grouped: dict[str, list[NegativeExample]] = {}
+    for example in examples:
+        grouped.setdefault(example.rule_id, []).append(example)
+
+    blocks: list[str] = []
+    for rule_id, items in grouped.items():
+        lines = [f"## 规则：{rule_id}"]
+        for index, item in enumerate(items, start=1):
+            lines.extend(
+                [
+                    "",
+                    f"### 样本 {index}",
+                    "代码片段：",
+                    "```",
+                    item.code_snippet,
+                    "```",
+                    f"误报说明：{item.explanation or '无'}",
+                ]
+            )
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+async def _pick_generate_provider(
+    db: AsyncSession,
+    provider_id: UUID | None,
+) -> Provider:
+    """选择用于生成负样本提示词的 provider。
+
+    - 指定 ``provider_id``：取该 provider，不存在则 404；
+    - 未指定：按 ``created_at ASC`` 取第一个 enabled 的 provider，没有则 400。
+    """
+
+    if provider_id is not None:
+        return await _get_or_404(db, Provider, provider_id, "Provider")
+    stmt = (
+        select(Provider)
+        .where(Provider.enabled.is_(True))
+        .order_by(Provider.created_at.asc())
+        .limit(1)
+    )
+    provider = (await db.execute(stmt)).scalar_one_or_none()
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="无可用的 LLM Provider",
+        )
+    return provider
+
+
+@router.post("/settings/negative-prompt/generate", response_model=NegativePromptGenerateResponse)
+async def generate_negative_prompt(
+    db: DbSession,
+    payload: NegativePromptGenerateRequest | None = None,
+) -> NegativePromptGenerateResponse:
+    """根据已批准的负样本库调用 LLM 生成负样本提示词。
+
+    只返回生成结果，不自动保存（用户在前端预览、编辑后再手动保存）。
+    """
+
+    from llm import ChatMessage, LLMError, build_provider
+
+    examples = await NegativeExampleRepository(db).list_all_approved(limit=100)
+    if not examples:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="负样本库为空，无法生成",
+        )
+    provider = await _pick_generate_provider(db, payload.provider_id if payload else None)
+
+    user_prompt = (
+        "以下是已确认的误报样本列表（按规则分组）：\n\n"
+        f"{_format_negative_examples_by_rule(examples)}\n\n"
+        "请根据以上样本生成负样本提示词。"
+    )
+    try:
+        llm_provider = build_provider(provider)
+        response = await llm_provider.chat(
+            [
+                ChatMessage(role="system", content=_NEGATIVE_PROMPT_GENERATE_SYSTEM_PROMPT),
+                ChatMessage(role="user", content=user_prompt),
+            ]
+        )
+    except LLMError as exc:
+        logger.warning("negative prompt generation failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"负样本提示词生成失败：{exc}",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - 其它未预期异常同样映射为 500
+        logger.warning("negative prompt generation failed (unexpected)", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="负样本提示词生成失败",
+        ) from exc
+
+    content = response.content.strip()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="负样本提示词生成失败：模型返回空内容",
+        )
+    return NegativePromptGenerateResponse(content=content, source_count=len(examples))
 
 
 async def _paginate(

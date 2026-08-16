@@ -21,3 +21,15 @@ class NegativeExampleRepository(BaseRepository[NegativeExample]):
         stmt = select(NegativeExample).where(NegativeExample.project_id == project_id)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_all_approved(self, limit: int = 100) -> list[NegativeExample]:
+        """列出所有已批准的负样本，按 approved_at DESC 排序。"""
+
+        stmt = (
+            select(NegativeExample)
+            .where(NegativeExample.approved_at.is_not(None))
+            .order_by(NegativeExample.approved_at.desc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
