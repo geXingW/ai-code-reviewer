@@ -944,3 +944,37 @@ export async function updateGlobalPrompt(content: string): Promise<GlobalPrompt>
   });
   return parseJsonResponse<GlobalPrompt>(response, true);
 }
+
+// ---------------- 全局设置 API（负样本提示词）----------------
+
+export type NegativePrompt = {
+  content: string;
+};
+
+export type NegativePromptGenerateResult = {
+  content: string;
+  source_count: number;
+};
+
+export async function fetchNegativePrompt(): Promise<NegativePrompt> {
+  const response = await adminFetch('/api/settings/negative-prompt');
+  return parseJsonResponse<NegativePrompt>(response, true);
+}
+
+export async function updateNegativePrompt(content: string): Promise<NegativePrompt> {
+  const response = await adminFetch('/api/settings/negative-prompt', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  return parseJsonResponse<NegativePrompt>(response, true);
+}
+
+export async function generateNegativePrompt(providerId?: string): Promise<NegativePromptGenerateResult> {
+  const response = await adminFetch('/api/settings/negative-prompt/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(providerId ? { provider_id: providerId } : {}),
+  });
+  return parseJsonResponse<NegativePromptGenerateResult>(response, true);
+}
