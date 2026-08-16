@@ -5,8 +5,6 @@ import {
   BlockPolicy,
   BlockPolicyPayload,
   BlockPolicySeverity,
-  CreateReviewPayload,
-  CreateReviewResponse,
   EngineConfig,
   EngineSummary,
   FindingRecord,
@@ -27,7 +25,6 @@ import {
   confirmFalsePositive,
   createProject,
   createProvider,
-  createReview,
   createRule,
   deleteProject,
   deleteRule,
@@ -86,6 +83,7 @@ import { ReviewFalsePositiveDialog } from './components/dialogs/ReviewFalsePosit
 import { ProviderDialog } from './components/dialogs/ProviderDialog';
 import { RuleDialog } from './components/dialogs/RuleDialog';
 import { ProjectDialog } from './components/dialogs/ProjectDialog';
+import { UserMappingsPage } from './components/UserMappingsPage';
 import { LoginPage } from './pages/LoginPage';
 import { categoryDisplay, severityDisplay, SEVERITY_ORDER, Severity, isKnownSeverity } from './lib/findingTaxonomy';
 
@@ -96,35 +94,12 @@ type PageKey =
   | 'global-prompt'
   | 'rules'
   | 'projects'
+  | 'user-mappings'
   | 'reviews'
   | 'findings'
   | 'falsePositives'
   | 'negativeExamples'
   | 'engines';
-
-type FormState = {
-  internalToken: string;
-  projectId: string;
-  mrIid: string;
-  targetBranch: string;
-  sourceBranch: string;
-  commitSha: string;
-  projectPath: string;
-  title: string;
-  webUrl: string;
-};
-
-const initialForm: FormState = {
-  internalToken: '',
-  projectId: '',
-  mrIid: '',
-  targetBranch: '',
-  sourceBranch: '',
-  commitSha: '',
-  projectPath: '',
-  title: '',
-  webUrl: '',
-};
 
 type LoginFormState = {
   username: string;
@@ -185,6 +160,7 @@ const navItems: Array<{ key: PageKey; label: string }> = [
   { key: 'global-prompt', label: '全局提示词' },
   { key: 'rules', label: '审查规则' },
   { key: 'projects', label: 'GitLab 项目' },
+  { key: 'user-mappings', label: '用户映射' },
   { key: 'reviews', label: '审查记录' },
   { key: 'findings', label: '问题与误报' },
   { key: 'falsePositives', label: '误报队列' },
@@ -251,7 +227,6 @@ function App() {
   const [engineConfigsPage, setEngineConfigsPage] = useState<Page<EngineConfig> | null>(null);
   const [globalPrompt, setGlobalPrompt] = useState<string>('');
   const [globalPromptSaving, setGlobalPromptSaving] = useState(false);
-  const [form, setForm] = useState<FormState>(initialForm);
   const [providerForm, setProviderForm] = useState<ProviderFormPayload>(initialProviderForm);
   const [projectForm, setProjectForm] = useState<ProjectFormPayload>(initialProjectForm);
   const [ruleForm, setRuleForm] = useState<RuleFormPayload>(initialRuleForm);
@@ -284,10 +259,10 @@ function App() {
   const [negRuleFilter, setNegRuleFilter] = useState<string>('');
   const [negSearch, setNegSearch] = useState('');
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
+  // 登录页专用的提交中状态（首页手动触发 MR 审查模块已移除，submitting 不再复用）。
+  const [loginSubmitting, setLoginSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [submitResult, setSubmitResult] = useState<CreateReviewResponse | null>(null);
   const [statsDays, setStatsDays] = useState<number>(30);
   const [statsBundle, setStatsBundle] = useState<StatsBundle>(EMPTY_STATS_BUNDLE);
 
@@ -367,6 +342,11 @@ function App() {
             .then((nextProviders) => setProvidersPage(nextProviders))
             .catch(() => {});
         }
+      } else if (page === 'user-mappings') {
+        // 用户映射页复用项目列表；直接访问 #/user-mappings 时也保证已加载。
+        if (!projectsPage) {
+          setProjectsPage(await fetchProjects());
+        }
       } else if (page === 'reviews') {
         setReviewRecordsPage(await fetchReviewRecords());
       } else if (page === 'findings') {
@@ -405,7 +385,7 @@ function App() {
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSubmitting(true);
+    setLoginSubmitting(true);
     setError(null);
     setMessage(null);
     try {
@@ -421,7 +401,7 @@ function App() {
     } catch (caught) {
       handleCaughtError(caught);
     } finally {
-      setSubmitting(false);
+      setLoginSubmitting(false);
     }
   }
 
@@ -439,55 +419,6 @@ function App() {
       setAdminToken('');
     }
     setError(toErrorMessage(caught));
-  }
-
-  async function handleRefreshReviews() {
-    setError(null);
-    try {
-      setReviews(await fetchRecentReviews());
-    } catch (caught) {
-      handleCaughtError(caught);
-    }
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitting(true);
-    setSubmitResult(null);
-    setError(null);
-
-    try {
-      const payload: CreateReviewPayload = {
-        project_id: parsePositiveInteger(form.projectId, 'GitLab 项目 ID'),
-        mr_iid: parsePositiveInteger(form.mrIid, 'MR IID'),
-        target_branch: form.targetBranch.trim(),
-        source_branch: form.sourceBranch.trim(),
-        commit_sha: form.commitSha.trim(),
-      };
-      if (form.projectPath.trim()) {
-        payload.project_path = form.projectPath.trim();
-      }
-      if (form.title.trim()) {
-        payload.title = form.title.trim();
-      }
-      if (form.webUrl.trim()) {
-        payload.web_url = form.webUrl.trim();
-      }
-      if (!form.internalToken.trim()) {
-        throw new Error('内部调用 Token 不能为空。');
-      }
-      if (!payload.target_branch || !payload.source_branch || !payload.commit_sha) {
-        throw new Error('目标分支、源分支和 Commit SHA 不能为空。');
-      }
-
-      const result = await createReview(payload, form.internalToken.trim());
-      setSubmitResult(result);
-      setReviews(await fetchRecentReviews());
-    } catch (caught) {
-      handleCaughtError(caught);
-    } finally {
-      setSubmitting(false);
-    }
   }
 
   async function handleCreateProvider(event: FormEvent<HTMLFormElement>) {
@@ -846,7 +777,7 @@ function App() {
         form={loginForm}
         onChange={(patch) => setLoginForm({ ...loginForm, ...patch })}
         onSubmit={handleLogin}
-        submitting={submitting}
+        submitting={loginSubmitting}
         error={error}
         message={message}
       />
@@ -864,6 +795,7 @@ function App() {
       {activePage === 'providers' ? renderProviders() : null}
       {activePage === 'rules' ? renderRules() : null}
       {activePage === 'projects' ? renderProjects() : null}
+      {activePage === 'user-mappings' ? renderUserMappings() : null}
       {activePage === 'reviews' ? renderReviewRecords() : null}
       {activePage === 'findings' ? renderFindings() : null}
       {activePage === 'falsePositives' ? renderFalsePositives() : null}
@@ -1175,49 +1107,6 @@ function App() {
             </CardContent>
           </Card>
         </section>
-
-        {/* 手动触发 MR 审查 */}
-        <section>
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>手动触发 MR 审查</CardTitle>
-                <CardDescription>填写 GitLab MR 参数触发一次审查</CardDescription>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <form className="grid grid-cols-2 gap-3" onSubmit={handleSubmit}>
-                <TextInput label="内部调用 Token" type="password" value={form.internalToken} onChange={(value) => setForm({ ...form, internalToken: value })} />
-                <TextInput label="GitLab 项目 ID" value={form.projectId} onChange={(value) => setForm({ ...form, projectId: value })} />
-                <TextInput label="MR IID" value={form.mrIid} onChange={(value) => setForm({ ...form, mrIid: value })} />
-                <TextInput label="目标分支" value={form.targetBranch} onChange={(value) => setForm({ ...form, targetBranch: value })} />
-                <TextInput label="源分支" value={form.sourceBranch} onChange={(value) => setForm({ ...form, sourceBranch: value })} />
-                <TextInput label="Commit SHA" value={form.commitSha} onChange={(value) => setForm({ ...form, commitSha: value })} />
-                <TextInput label="项目路径（可选）" value={form.projectPath} onChange={(value) => setForm({ ...form, projectPath: value })} />
-                <TextInput label="MR 标题（可选）" value={form.title} onChange={(value) => setForm({ ...form, title: value })} />
-                <TextInput label="MR URL（可选）" value={form.webUrl} onChange={(value) => setForm({ ...form, webUrl: value })} />
-                <div className="col-span-2 mt-4 flex items-center justify-between border-t border-zinc-100 pt-4">
-                  <span className="text-[12px] text-zinc-500">Token 只在本次请求中使用，不会保存到前端状态之外</span>
-                  <div className="flex items-center gap-2">
-                    <Button variant="secondary" type="button" disabled={submitting} onClick={handleRefreshReviews}>刷新最近审查</Button>
-                    <Button type="submit" disabled={submitting}>{submitting ? '审查中…' : '触发审查'}</Button>
-                  </div>
-                </div>
-              </form>
-              {submitResult ? (
-                <div className="flex items-center gap-2">
-                  <UiBadge variant={submitResult.has_blocker ? 'destructive' : 'success'}>
-                    {submitResult.has_blocker ? '审查完成，发现阻断问题。' : '审查完成，未发现阻断问题。'}
-                  </UiBadge>
-                  {submitResult.review_url ? (
-                    <a href={submitResult.review_url} className="text-[12px] font-medium text-brand hover:underline">查看结果 →</a>
-                  ) : null}
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
-        </section>
-
       </div>
     );
   }
@@ -1352,6 +1241,12 @@ function App() {
         </Card>
       </div>
     );
+  }
+
+  // 用户映射页：列表、弹窗、CRUD 全部封装在 UserMappingsPage 组件内，
+  // 这里只透传已加载的项目列表。
+  function renderUserMappings() {
+    return <UserMappingsPage projects={projectsPage?.items ?? []} />;
   }
 
   function renderReviewRecords() {
@@ -1821,32 +1716,6 @@ function App() {
       </div>
     );
   }
-}
-
-type TextInputProps = {
-  label: string;
-  value: string;
-  type?: string;
-  hint?: string;
-  placeholder?: string;
-  onChange: (value: string) => void;
-};
-
-function TextInput({ label, value, type = 'text', hint, placeholder, onChange }: TextInputProps) {
-  const id = useId();
-  return (
-    <div className="space-y-1.5">
-      <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
-      />
-      {hint ? <span className="block text-[11px] text-zinc-500">{hint}</span> : null}
-    </div>
-  );
 }
 
 type SelectOption = string | { value: string; label: string };
@@ -2915,14 +2784,6 @@ export function relativeTime(iso?: string): string {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
-}
-
-function parsePositiveInteger(value: string, label: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${label} 必须是正整数。`);
-  }
-  return parsed;
 }
 
 function toErrorMessage(error: unknown): string {

@@ -86,7 +86,7 @@ describe('MVP 管理台', () => {
     expect(providerCall?.init?.headers).toMatchObject({ Authorization: 'Bearer admin-token' });
   });
 
-  it('展示健康状态、引擎状态，并通过内部 Token 拉取最近审查记录', async () => {
+  it('展示健康状态、引擎状态，并自动拉取最近审查记录', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     mockFetch(async (url, init) => {
       calls.push({ url, init });
@@ -112,9 +112,10 @@ describe('MVP 管理台', () => {
         ]);
       }
       if (url === '/api/reviews/recent') {
+        // 最近审查改走 adminFetch（手动触发表单已移除），校验 Authorization。
         const headers = init?.headers as Record<string, string> | undefined;
-        if (headers?.['X-Internal-Token'] !== 'test-internal-token') {
-          return jsonResponse({ detail: 'Invalid internal token' }, false, 401);
+        if (headers?.Authorization !== 'Bearer admin-token') {
+          return jsonResponse({ detail: 'Invalid admin token' }, false, 401);
         }
         return jsonResponse([
           {
@@ -169,6 +170,14 @@ describe('MVP 管理台', () => {
           },
         ]);
       }
+      // 首页 dashboard 会并发拉审查记录 / 待处理误报 / 统计接口，全给空数据，
+      // 否则 Promise.all 整体失败会导致最近审查面板不渲染。
+      if (url === '/api/reviews/records' || url === '/api/false-positives/pending') {
+        return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
+      }
+      if (url.startsWith('/api/stats/')) {
+        return jsonResponse(url.includes('overview') ? {} : []);
+      }
       return jsonResponse({ detail: 'not found' }, false, 404);
     });
 
@@ -177,12 +186,10 @@ describe('MVP 管理台', () => {
     expect(await screen.findByText('AI Code Reviewer')).toBeInTheDocument();
     await loginAsAdmin();
     expect(await screen.findByText('服务正常')).toBeInTheDocument();
-    expect(screen.getByText('llm-direct')).toBeInTheDocument();
-    expect(screen.getByText('暂无审查记录')).toBeInTheDocument();
+    // 引擎名同时出现在系统状态卡和最近审查面板，数量 >= 1 即可。
+    expect(screen.getAllByText('llm-direct').length).toBeGreaterThan(0);
 
-    await userEvent.type(screen.getByLabelText('内部调用 Token'), 'test-internal-token');
-    await userEvent.click(screen.getByRole('button', { name: '刷新最近审查' }));
-
+    // 首页最近审查面板：登录后自动经 adminFetch 拉取（不再有手动触发表单）。
     expect(await screen.findByText('修复支付回调')).toBeInTheDocument();
     expect(screen.getByText('阻断')).toBeInTheDocument();
     // engine_error + policy 允许合并 → "引擎异常"，不能被渲染为 "通过"。
@@ -193,65 +200,9 @@ describe('MVP 管理台', () => {
     expect(screen.queryByText('通过')).not.toBeInTheDocument();
     // Issue #76：最近审查面板应展示引擎徽章。
     expect(await screen.findAllByText('llm-direct')).not.toHaveLength(0);
+    // 最近审查走 adminFetch，应带 Authorization 头。
     const recentCall = calls.find((call) => call.url === '/api/reviews/recent');
-    expect(recentCall?.init?.headers).toEqual({ 'X-Internal-Token': 'test-internal-token' });
-  });
-
-  it('可通过表单手动触发一次 MR 审查', async () => {
-    const calls: Array<{ url: string; init?: RequestInit }> = [];
-    mockFetch(async (url, init) => {
-      calls.push({ url, init });
-      if (url === '/health') {
-        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok' });
-      }
-      if (url === '/api/auth/login') {
-        return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
-      }
-      if (url === '/api/engines') {
-        const headers = init?.headers as Record<string, string> | undefined;
-        if (headers?.Authorization !== 'Bearer admin-token') {
-          return jsonResponse({ detail: 'Invalid admin token' }, false, 401);
-        }
-        return jsonResponse([]);
-      }
-      if (url === '/api/reviews/recent') {
-        return jsonResponse([]);
-      }
-      if (url === '/api/reviews') {
-        return jsonResponse({
-          review_id: '00000000-0000-0000-0000-000000000999',
-          status: 'done',
-          has_blocker: false,
-          finding_count: 0,
-          blocker_count: 0,
-          policy_applied: 'master -> BLOCKER',
-          review_url: '/api/reviews/00000000-0000-0000-0000-000000000999',
-        });
-      }
-      return jsonResponse({ detail: 'not found' }, false, 404);
-    });
-
-    render(<MemoryRouter><App /></MemoryRouter>);
-
-    await loginAsAdmin();
-    await userEvent.type(await screen.findByLabelText('内部调用 Token'), 'test-internal-token');
-    await userEvent.type(screen.getByLabelText('GitLab 项目 ID'), '123');
-    await userEvent.type(screen.getByLabelText('MR IID'), '7');
-    await userEvent.type(screen.getByLabelText('目标分支'), 'master');
-    await userEvent.type(screen.getByLabelText('源分支'), 'feature/demo');
-    await userEvent.type(screen.getByLabelText('Commit SHA'), 'abc123');
-    await userEvent.click(screen.getByRole('button', { name: '触发审查' }));
-
-    await waitFor(() => expect(screen.getByText('审查完成，未发现阻断问题。')).toBeInTheDocument());
-    const reviewCall = calls.find((call) => call.url === '/api/reviews');
-    expect(reviewCall?.init?.headers).toEqual({ 'Content-Type': 'application/json', 'X-Internal-Token': 'test-internal-token' });
-    expect(JSON.parse(String(reviewCall?.init?.body))).toMatchObject({
-      project_id: 123,
-      mr_iid: 7,
-      target_branch: 'master',
-      source_branch: 'feature/demo',
-      commit_sha: 'abc123',
-    });
+    expect(recentCall?.init?.headers).toMatchObject({ Authorization: 'Bearer admin-token' });
   });
 
   it('可展开项目卡片、拖拽排序阻断策略并保存', async () => {
@@ -375,7 +326,89 @@ describe('MVP 管理台', () => {
       expect.objectContaining({ branch_pattern: 'master', block_severity: 'BLOCKER', priority: 2 }),
     ]);
   });
-});
+
+  // 用户映射页：导航可达 + 列表渲染 + 弹窗新增（钉钉 @MR 创建人配置入口）。
+  it('用户映射页可查看列表并通过弹窗新增映射', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const projectId = '00000000-0000-0000-0000-0000000000aa';
+    const project = {
+      id: projectId,
+      name: 'demo-project',
+      gitlab_project_id: '123',
+      gitlab_base_url: 'https://gitlab.example.com',
+      gitlab_access_token: '****',
+      webhook_secret: '****',
+      engine_id: null,
+      provider_id: null,
+      enabled: true,
+      default_block_severity: 'BLOCKER',
+      timeout_seconds: 300,
+      max_files: 50,
+      ignore_paths: null,
+      rules: [],
+      block_policies: [],
+      notification_channels: [],
+      created_at: '2026-07-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+    };
+    const mapping = {
+      id: '00000000-0000-0000-0000-0000000000bb',
+      project_id: projectId,
+      gitlab_username: 'alice',
+      dingtalk_mobile: '13800000000',
+      dingtalk_userid: null,
+      display_name: 'Alice',
+      created_at: '2026-07-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+    };
+    mockFetch(async (url, init) => {
+      calls.push({ url, init });
+      if (url === '/health') {
+        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok' });
+      }
+      if (url === '/api/auth/login') {
+        return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
+      }
+      if (url === '/api/engines') {
+        return jsonResponse([]);
+      }
+      if (url === '/api/projects') {
+        return jsonResponse({ items: [project], total: 1, limit: 50, offset: 0 });
+      }
+      if (url === `/api/projects/${projectId}/user-mappings` && (!init || init.method === undefined || init.method === 'GET')) {
+        return jsonResponse([mapping]);
+      }
+      if (url === `/api/projects/${projectId}/user-mappings` && init?.method === 'POST') {
+        return jsonResponse({ ...mapping, id: '00000000-0000-0000-0000-0000000000cc' }, true, 201);
+      }
+      return jsonResponse({ detail: 'not found' }, false, 404);
+    });
+
+    render(<MemoryRouter><App /></MemoryRouter>);
+    await loginAsAdmin();
+    await userEvent.click(screen.getByRole('button', { name: '用户映射' }));
+
+    // 列表渲染已有映射。
+    expect(await screen.findByText('alice')).toBeInTheDocument();
+    expect(screen.getByText('13800000000')).toBeInTheDocument();
+
+    // 打开新增弹窗并提交。
+    await userEvent.click(screen.getByRole('button', { name: '+ 添加映射' }));
+    await userEvent.type(await screen.findByLabelText('GitLab 用户名'), 'bob');
+    await userEvent.type(screen.getByLabelText('钉钉手机号'), '13900000000');
+    await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    const createCall = await waitFor(() => {
+      const found = calls.find((call) => call.url.endsWith('/user-mappings') && call.init?.method === 'POST');
+      expect(found).toBeTruthy();
+      return found;
+    });
+    expect(JSON.parse(String(createCall?.init?.body))).toMatchObject({
+      gitlab_username: 'bob',
+      dingtalk_mobile: '13900000000',
+    });
+  });
+})
 
 // PR #89 增量审查串链：helper 层单元测试。
 // 只测 pure function 输出，不做组件级渲染——保证徽章颜色 / label / title 与设计
