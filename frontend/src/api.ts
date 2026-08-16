@@ -858,6 +858,73 @@ export async function deleteNotificationChannel(
   }
 }
 
+// ---------------- 用户映射 API（钉钉通知 @MR 创建人）----------------
+//
+// 后端按项目维度管理 GitLab 用户名 -> 钉钉手机号 / UserID 的映射。
+// 钉钉通知在 Review 完成后按 MR 创建人的 GitLab 用户名查映射，
+// 命中则在群里 @ 对应的人（手机号或 UserID）。
+
+export type UserMapping = {
+  id: string;
+  project_id: string;
+  gitlab_username: string;
+  dingtalk_mobile: string;
+  dingtalk_userid: string | null;
+  display_name: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type UserMappingCreatePayload = {
+  gitlab_username: string;
+  dingtalk_mobile: string;
+  dingtalk_userid?: string | null;
+  display_name?: string | null;
+};
+
+export type UserMappingUpdatePayload = {
+  gitlab_username?: string;
+  dingtalk_mobile?: string;
+  dingtalk_userid?: string | null;
+  display_name?: string | null;
+};
+
+export async function fetchUserMappings(projectId: string): Promise<UserMapping[]> {
+  const response = await adminFetch(`/api/projects/${projectId}/user-mappings`);
+  return parseJsonResponse<UserMapping[]>(response, true);
+}
+
+export async function createUserMapping(
+  projectId: string,
+  payload: UserMappingCreatePayload,
+): Promise<UserMapping> {
+  const response = await adminFetch(`/api/projects/${projectId}/user-mappings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<UserMapping>(response, true);
+}
+
+export async function updateUserMapping(
+  mappingId: string,
+  payload: UserMappingUpdatePayload,
+): Promise<UserMapping> {
+  const response = await adminFetch(`/api/user-mappings/${mappingId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<UserMapping>(response, true);
+}
+
+export async function deleteUserMapping(mappingId: string): Promise<void> {
+  const response = await adminFetch(`/api/user-mappings/${mappingId}`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`删除用户映射失败：HTTP ${response.status}`);
+  }
+}
+
 // ---------------- 全局设置 API（全局提示词）----------------
 
 export type GlobalPrompt = {

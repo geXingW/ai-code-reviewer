@@ -10,6 +10,7 @@ import {
   ScrollText,
   ShieldCheck,
   Sparkles,
+  Users,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -21,6 +22,7 @@ export type PageKey =
   | 'global-prompt'
   | 'rules'
   | 'projects'
+  | 'user-mappings'
   | 'reviews'
   | 'findings'
   | 'falsePositives'
@@ -69,6 +71,7 @@ const NAV_SECTIONS: NavSection[] = [
       { key: 'global-prompt', label: '全局提示词', icon: ScrollText },
       { key: 'rules', label: '审查规则', icon: ListChecks },
       { key: 'projects', label: 'GitLab 项目', icon: FolderGit2 },
+      { key: 'user-mappings', label: '用户映射', icon: Users },
       { key: 'engines', label: '引擎配置', icon: Cpu },
     ],
   },
