@@ -247,6 +247,7 @@ def _parse_merge_request_event(payload: dict[str, Any]) -> GitLabMergeRequestEve
         web_url=str(attrs.get("url") or "") or None,
         description=str(attrs.get("description") or ""),
         last_commit_message=str(last_commit.get("message") or ""),
+        created_at=str(attrs.get("created_at") or ""),
         author_username=str(user.get("username") or "") or None,
         author_name=str(user.get("name") or "") or None,
     )

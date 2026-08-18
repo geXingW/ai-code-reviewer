@@ -213,17 +213,25 @@ class NotificationService:
     def _build_review_message(self, review_data: dict[str, Any]) -> tuple[str, str]:
         """构造消息标题与 markdown 正文。
 
+        正文分两层：``MR信息`` 区块（MR 维度信息，任一字段缺失时
+        逐行降级，全缺失时整个区块跳过）+ ``AI Review 结果`` 区块（审查摘要、
+        按严重级别分组的问题列表、详情页链接）。
+
         ``review_data`` 约定字段：``review_id`` / ``mr_iid`` / ``mr_title`` /
         ``finding_count`` / ``has_blocker`` / ``blocker_count`` / ``detail_url`` /
-        ``status``（``"done"`` / ``"engine_error"``），以及本次扩展的可选字段：
+        ``status``（``"done"`` / ``"engine_error"``），以及可选字段：
 
-        - ``mr_web_url: str | None``：MR 跳转链接，正文「链接」行。
-        - ``mr_author_username`` / ``mr_author_name``：MR 创建人信息（@ 人由
-          :meth:`_resolve_at_mobiles` 单独处理，这里不使用）。
+        - ``mr_web_url: str | None``：MR 跳转链接，「MR信息」区块用。
+        - ``mr_author_username`` / ``mr_author_name``：MR 创建人信息
+          （@ 人由 :meth:`_resolve_at_mobiles` 处理，这里用于显示创建人）。
+        - ``mr_created_at: str``：MR 创建时间。
         - ``findings_summary: list[dict] | None``：按严重级别分组的精简 finding
           列表，形如 ``[{"severity": "BLOCKER", "items": [{"title", "file_path",
           "line_number"}, ...]}, ...]``。BLOCKER 全部展示，WARNING / INFO 各
           最多 5 条，超出显示「还有 N 条，详见详情页」。
+        - ``mr_created_at: str``：MR 创建时间（ISO 字符串），可能为空。
+        - ``changed_files_count: int``：变更文件数；为 0（缺失 / 非 incremental
+          模式）时跳过「变更规模」行。
 
         Returns:
             ``(title, text)``：标题用于钉钉通知列表展示，text 为 markdown 正文。
@@ -236,37 +244,52 @@ class NotificationService:
         finding_count = int(review_data.get("finding_count") or 0)
         blocker_count = int(review_data.get("blocker_count") or 0)
         has_blocker = bool(review_data.get("has_blocker"))
-        review_id = review_data.get("review_id")
         detail_url = review_data.get("detail_url")
         findings_summary = review_data.get("findings_summary")
+        changed_files_count = int(review_data.get("changed_files_count") or 0)
+        mr_author_name = str(review_data.get("mr_author_name") or "")
+        mr_author_username = str(review_data.get("mr_author_username") or "")
+        mr_created_at = str(review_data.get("mr_created_at") or "")
 
         mr_label = f"!{mr_iid}" if mr_iid is not None else "未知"
         if status_value == "engine_error":
             title = f"【AI Code Review】MR {mr_label} 审查异常"
-            result_line = "引擎执行失败，未产出审查结果"
         elif has_blocker:
             title = f"【AI Code Review】MR {mr_label} 审查完成 - 存在阻断"
-            result_line = self._build_result_line(findings_summary, finding_count, blocker_count)
         else:
             title = f"【AI Code Review】MR {mr_label} 审查完成 - 无阻断"
-            result_line = self._build_result_line(findings_summary, finding_count, blocker_count)
 
         lines = [f"### {title}", ""]
-        if mr_title:
-            lines.append(f"**MR 标题**：{mr_title}")
-        if mr_web_url:
-            lines.append(f"**链接**：[点击查看]({mr_web_url})")
-        lines.append(f"**Review ID**：{review_id}")
-        lines.append(f"**结果**：{result_line}")
 
-        if findings_summary:
+        mr_section = self._build_mr_section(
+            mr_title=mr_title,
+            author=mr_author_name or mr_author_username,
+            created_at=mr_created_at,
+            web_url=mr_web_url,
+        )
+        if mr_section:
+            lines.extend(mr_section)
             lines.append("")
-            lines.append("---")
-            lines.extend(self._build_findings_section(findings_summary))
+
+        lines.append("AI Review 结果:")
+        if status_value == "engine_error":
+            lines.append("引擎执行失败，未产出审查结果")
+        else:
+            lines.append("")
+            lines.extend(
+                self._build_summary_section(
+                    changed_files_count=changed_files_count,
+                    findings_summary=findings_summary,
+                    finding_count=finding_count,
+                    blocker_count=blocker_count,
+                ),
+            )
+            if findings_summary:
+                lines.extend(self._build_findings_section(findings_summary))
 
         if detail_url:
             lines.append("")
-            lines.append(f"**详情**：[点击查看详情]({detail_url})")
+            lines.append(f"[查看完整审查详情]({detail_url})")
 
         text = "\n".join(lines)
         if len(text) > _MAX_MESSAGE_LENGTH:
@@ -278,12 +301,56 @@ class NotificationService:
         return title, text
 
     @staticmethod
+    def _build_mr_section(
+        *,
+        mr_title: str,
+        author: str,
+        created_at: str,
+        web_url: str | None,
+    ) -> list[str]:
+        """构造「MR信息」区块；四个字段全为空时返回空列表（跳过整个区块）。"""
+
+        if not (mr_title or author or created_at or web_url):
+            return []
+        lines = ["MR信息:"]
+        if mr_title:
+            lines.append(f"- MR标题: {mr_title}")
+        if author:
+            lines.append(f"- 创建人: {author}")
+        if created_at:
+            lines.append(f"- 创建时间: {created_at}")
+        if web_url:
+            lines.append(f"- [查看MR详情]({web_url})")
+        return lines
+
+    @staticmethod
+    def _build_summary_section(
+        *,
+        changed_files_count: int,
+        findings_summary: list[dict[str, Any]] | None,
+        finding_count: int,
+        blocker_count: int,
+    ) -> list[str]:
+        """构造「📋 审查摘要」区块；各字段缺失时逐行降级跳过。"""
+
+        lines = ["📋 审查摘要"]
+        if changed_files_count > 0:
+            lines.append(f"- 变更规模：涉及 {changed_files_count} 个文件")
+        result_line = NotificationService._build_result_line(
+            findings_summary,
+            finding_count,
+            blocker_count,
+        )
+        lines.append(f"- 总体评价：{result_line}")
+        return lines
+
+    @staticmethod
     def _build_result_line(
         findings_summary: list[dict[str, Any]] | None,
         finding_count: int,
         blocker_count: int,
     ) -> str:
-        """构造「结果」行；有分组摘要时按级别计数，否则退回旧的总量文案。"""
+        """构造「总体评价」行；有分组摘要时按级别计数，否则退回旧的总量文案。"""
 
         if not findings_summary:
             if blocker_count:
@@ -294,14 +361,17 @@ class NotificationService:
             severity = str(group.get("severity") or "")
             if severity in counts:
                 counts[severity] = len(group.get("items") or [])
-        return "  ·  ".join(
+        return " · ".join(
             f"{badge} {label} {counts[severity]} 个"
             for severity, (badge, label) in _SEVERITY_META.items()
         )
 
     @staticmethod
     def _build_findings_section(findings_summary: list[dict[str, Any]]) -> list[str]:
-        """按严重级别渲染分组 finding 列表（BLOCKER 全展示，其余各最多 5 条）。"""
+        """按严重级别渲染分组 finding 列表（BLOCKER 全展示，其余各最多 5 条）。
+
+        空分组（0 条问题）跳过不渲染，避免正文出现无意义的「0 个问题」标题。
+        """
 
         lines: list[str] = []
         for group in findings_summary:
@@ -310,10 +380,12 @@ class NotificationService:
                 continue
             badge, label = _SEVERITY_META[severity]
             items = list(group.get("items") or [])
+            if not items:
+                continue
             max_items = _MAX_ITEMS_PER_SEVERITY[severity]
             shown = items if max_items is None else items[:max_items]
             lines.append("")
-            lines.append(f"#### {badge} {label}问题 ({len(items)})")
+            lines.append(f"**{badge} {label}问题 ({len(items)})**")
             lines.append("")
             for index, item in enumerate(shown, start=1):
                 title_text = str(item.get("title") or "")

@@ -68,12 +68,10 @@ class GitLabMergeRequestEvent:
         target_branch: Target branch name.
         source_commit_sha: MR head commit SHA.
         target_commit_sha: Best-known base/default branch commit SHA.
-        action: GitLab MR action, e.g. ``open`` or ``update``.
-        title: Merge request title.
-        web_url: Browser URL of the merge request.
-        description: MR 描述正文；来自 ``object_attributes.description``，可能为空。
         last_commit_message: MR head 分支最近一次 commit 的 message；来自
-            ``object_attributes.last_commit.message``，可能为空。
+            ``object_attributes.last_commit.message``，可能为空（供 LLM 上下文使用）。
+        created_at: MR 创建时间（ISO 字符串）；来自 ``object_attributes.created_at``，
+            可能为空。
         author_username: MR 创建人（open 事件）/ 触发者的 GitLab 用户名；来自
             webhook 顶层 ``user.username``，缺失时为 ``None``（通知侧不 @ 人）。
         author_name: 同上，取 ``user.name`` 显示名。
@@ -91,6 +89,7 @@ class GitLabMergeRequestEvent:
     web_url: str | None = None
     description: str = ""
     last_commit_message: str = ""
+    created_at: str = ""
     author_username: str | None = None
     author_name: str | None = None
 
@@ -292,7 +291,6 @@ class ReviewOrchestrator:
             history=history,
             mr_title=event.title,
             mr_description=event.description,
-            last_commit_message=event.last_commit_message,
             extra={
                 "gitlab_project_id": event.project_id,
                 "gitlab_project_path": event.project_path,
@@ -395,6 +393,7 @@ class ReviewOrchestrator:
             blocker_count=blocker_count,
             status_value="done",
             findings=combined_findings,
+            plan=plan,
         )
         return OrchestratorResult(
             review_id=review_id,
@@ -578,6 +577,7 @@ class ReviewOrchestrator:
             blocker_count=blocker_count,
             status_value="engine_error",
             findings=[],
+            plan=effective_plan,
         )
         return OrchestratorResult(
             review_id=review_id,
@@ -1617,18 +1617,26 @@ class ReviewOrchestrator:
         blocker_count: int,
         status_value: str,
         findings: Sequence[Finding] | None = None,
+        plan: _ReviewPlan | None = None,
     ) -> None:
         """推送 Review 完成通知（best-effort，失败不影响主流程）。
 
         成功 / 引擎异常两条路径共用：把评审摘要交给 :class:`NotificationService`，
         由其按项目配置的渠道分发。除旧有的计数字段外，还带上 MR 链接、作者信息
-        （供 @ 创建人）与按严重级别分组的 ``findings_summary``（供正文列表）。
+        （供 @ 创建人）、按严重级别分组的 ``findings_summary``（供正文列表）、
+        MR 维度信息（标题 / 创建人 / 创建时间 / 链接）与变更文件数（供
+        「MR信息 / 审查摘要」区块渲染）。
         未注入 ``notification_service`` 时直接跳过；任何异常（含推送失败）都被
         吞成 warning 日志，绝不阻断 Review 主流程。
         """
 
         if self._notification_service is None:
             return
+        # incremental 模式下 plan.changed_files 才有值；full / None 时按 0 降级，
+        # 通知侧对 0 会跳过「变更规模」行。
+        changed_files_count = (
+            len(plan.changed_files) if plan is not None and plan.changed_files else 0
+        )
         try:
             await self._notification_service.send_review_completed(
                 gitlab_project_id=event.project_id,
@@ -1645,6 +1653,8 @@ class ReviewOrchestrator:
                     "mr_author_name": event.author_name,
                     "mr_web_url": event.web_url,
                     "findings_summary": _build_findings_summary(findings or []),
+                    "mr_created_at": event.created_at,
+                    "changed_files_count": changed_files_count,
                 },
             )
         except Exception as exc:

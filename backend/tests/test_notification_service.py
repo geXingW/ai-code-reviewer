@@ -123,7 +123,7 @@ def _summary_item(title: str, file_path: str, line_number: int | None) -> dict[s
 
 
 def test_build_message_contains_mr_link_and_grouped_findings() -> None:
-    """新模板：正文含 MR 链接、按级别分组的 finding 列表与正确计数。"""
+    """新模板：正文含 MR信息 区块链接、按级别分组的 finding 列表与正确计数。"""
 
     svc = NotificationService(session_factory=None)
     title, text = svc._build_review_message(
@@ -154,20 +154,139 @@ def test_build_message_contains_mr_link_and_grouped_findings() -> None:
         },
     )
     assert "存在阻断" in title
-    # MR 链接
+    # MR 链接（MR信息区块）
     assert (
-        "[点击查看](https://gitlab.example.com/group/project/-/merge_requests/42)" in text
+        "- [查看MR详情](https://gitlab.example.com/group/project/-/merge_requests/42)" in text
     )
-    # 结果行按级别计数
+    # 总体评价行按级别计数
     assert "🔴 阻断 2 个" in text
     assert "🟡 警告 1 个" in text
     assert "🔵 提示 0 个" in text
-    # 分组列表：标题 + 带行号的条目
+    # 分组列表：标题 + 带行号的条目（数字编号，BLOCKER 组在前 WARNING 组在后）
     assert "🔴 阻断问题 (2)" in text
     assert "🟡 警告问题 (1)" in text
-    assert "**SQL 注入风险** - `auth/login.py:45`" in text
+    assert "1. **SQL 注入风险** - `auth/login.py:45`" in text
+    assert "2. **硬编码密钥** - `config/database.py:12`" in text
+    assert text.index("🔴 阻断问题 (2)") < text.index("🟡 警告问题 (1)")
     # 详情链接仍在
-    assert "http://x/reviews/r-1" in text
+    assert "[查看完整审查详情](http://x/reviews/r-1)" in text
+
+
+def test_build_message_renders_mr_section() -> None:
+    """带 MR 信息时渲染「MR信息」区块：标题 / 创建人 / 创建时间 / MR 链接。"""
+
+    svc = NotificationService(session_factory=None)
+    _, text = svc._build_review_message(
+        {
+            "review_id": "r-1",
+            "mr_iid": 42,
+            "finding_count": 0,
+            "has_blocker": False,
+            "status": "done",
+            "mr_title": "运单完结时自动结束星标功能",
+            "mr_author_name": "wangyl",
+            "mr_created_at": "2026-08-18 16:59:45",
+            "mr_web_url": "http://gitlab.example.com/project/-/merge_requests/42",
+        },
+    )
+    assert "MR信息:" in text
+    assert "- MR标题: 运单完结时自动结束星标功能" in text
+    assert "- 创建人: wangyl" in text
+    assert "- 创建时间: 2026-08-18 16:59:45" in text
+    assert (
+        "- [查看MR详情](http://gitlab.example.com/project/-/merge_requests/42)" in text
+    )
+    # MR信息区块在 AI Review 结果区块之前
+    assert text.index("MR信息:") < text.index("AI Review 结果:")
+
+
+def test_build_message_omits_mr_section_when_no_mr_info() -> None:
+    """无任何 MR 字段时跳过「MR信息」区块，仍渲染 AI Review 结果。"""
+
+    svc = NotificationService(session_factory=None)
+    _, text = svc._build_review_message(
+        {
+            "review_id": "r-1",
+            "mr_iid": 42,
+            "finding_count": 0,
+            "has_blocker": False,
+            "status": "done",
+        },
+    )
+    assert "MR信息" not in text
+    assert "AI Review 结果:" in text
+
+
+def test_build_message_mr_section_degrades_on_partial_fields() -> None:
+    """MR 字段部分缺失时只渲染存在的行（这里仅有标题）。"""
+
+    svc = NotificationService(session_factory=None)
+    _, text = svc._build_review_message(
+        {
+            "review_id": "r-1",
+            "mr_iid": 42,
+            "finding_count": 0,
+            "has_blocker": False,
+            "status": "done",
+            "mr_title": "fix: 修复空指针",
+        },
+    )
+    assert "- MR标题: fix: 修复空指针" in text
+    assert "创建人" not in text
+    assert "创建时间" not in text
+    assert "查看MR详情" not in text
+
+
+def test_build_message_renders_summary_section() -> None:
+    """「📋 审查摘要」区块：变更规模（>0 时）与总体评价。"""
+
+    svc = NotificationService(session_factory=None)
+    _, text = svc._build_review_message(
+        {
+            "review_id": "r-1",
+            "mr_iid": 42,
+            "mr_title": "feat: add login",
+            "finding_count": 2,
+            "has_blocker": True,
+            "blocker_count": 1,
+            "status": "done",
+            "changed_files_count": 3,
+            "findings_summary": [
+                {
+                    "severity": "BLOCKER",
+                    "items": [_summary_item("SQL 注入风险", "auth/login.py", 45)],
+                },
+                {
+                    "severity": "WARNING",
+                    "items": [_summary_item("未处理异常", "services/user.py", 88)],
+                },
+            ],
+        },
+    )
+    assert "📋 审查摘要" in text
+    # PR概述已移除（MR 标题放在「MR信息」区块，避免重复）
+    assert "PR概述" not in text
+    assert "- 变更规模：涉及 3 个文件" in text
+    assert "- 总体评价：🔴 阻断 1 个" in text
+
+
+def test_build_message_summary_omits_scale_when_zero_files() -> None:
+    """changed_files_count 缺失 / 为 0 时跳过「变更规模」行（向后兼容降级）。"""
+
+    svc = NotificationService(session_factory=None)
+    _, text = svc._build_review_message(
+        {
+            "review_id": "r-1",
+            "mr_iid": 42,
+            "mr_title": "feat: add login",
+            "finding_count": 0,
+            "has_blocker": False,
+            "status": "done",
+        },
+    )
+    assert "📋 审查摘要" in text
+    assert "变更规模" not in text
+    assert "- 总体评价：" in text
 
 
 def test_build_message_truncates_warning_and_info_to_five_items() -> None:
