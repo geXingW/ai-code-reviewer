@@ -1,0 +1,26 @@
+修复 GitLab MR 评论行号偏差 Bug
+
+## 背景
+GitLab 中的评论代码行显示有偏差。根因是：当一个文件有多个 diff hunk 时，行号计算函数全部出错。
+
+详细分析文档：docs/fix-gitlab-line-offset.md（从项目根目录读取）
+
+## 修复任务
+按 docs/fix-gitlab-line-offset.md 中的方案 B 实现修复。核心改动：
+
+1. backend/engines/llm_engine/engine.py
+   - 修复 _iter_added_lines()：遇到 @@ 行时解析 new_start 并重置行号计数器
+   - 修复 _format_diff()：每个真实 hunk 单独输出，带正确的 new_start 标注
+   - _line_in_diff / _resolve_line_number / _added_line_numbers 依赖 _iter_added_lines，自动修复
+
+2. 测试补充
+   - backend/tests/test_diff_utils.py 增加多 hunk 场景测试
+   - 增加多 hunk 行号计算测试（放入 test_llm_direct_engine.py 或新建文件）
+   - 确保所有现有测试通过，无回归
+
+## 要求
+- 保持单 hunk 场景行为完全不变
+- 改动最小化，只修 bug 不重构
+- 修复完跑 pytest 验证
+
+工作目录：backend/
