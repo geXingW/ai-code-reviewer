@@ -22,14 +22,20 @@ class NegativeExampleRepository(BaseRepository[NegativeExample]):
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def list_all_approved(self, limit: int = 100) -> list[NegativeExample]:
-        """列出所有已批准的负样本，按 approved_at DESC 排序。"""
+    async def list_all_approved(
+        self,
+        limit: int = 100,
+        project_id: UUID | None = None,
+    ) -> list[NegativeExample]:
+        """列出已批准的负样本，按 approved_at DESC 排序。
 
-        stmt = (
-            select(NegativeExample)
-            .where(NegativeExample.approved_at.is_not(None))
-            .order_by(NegativeExample.approved_at.desc())
-            .limit(limit)
-        )
+        ``project_id`` 非 None 时只取该项目的负样本（不含 project_id 为
+        NULL 的全局负例）。
+        """
+
+        stmt = select(NegativeExample).where(NegativeExample.approved_at.is_not(None))
+        if project_id is not None:
+            stmt = stmt.where(NegativeExample.project_id == project_id)
+        stmt = stmt.order_by(NegativeExample.approved_at.desc()).limit(limit)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())

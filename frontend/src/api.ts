@@ -945,36 +945,42 @@ export async function updateGlobalPrompt(content: string): Promise<GlobalPrompt>
   return parseJsonResponse<GlobalPrompt>(response, true);
 }
 
-// ---------------- 全局设置 API（负样本提示词）----------------
+// ---------------- 项目级负样本提示词 API ----------------
 
-export type NegativePrompt = {
+export type ProjectNegativePrompt = {
   content: string;
+  example_count: number;
 };
 
-export type NegativePromptGenerateResult = {
+export type ProjectNegativePromptGenerateResult = {
   content: string;
   source_count: number;
 };
 
-export async function fetchNegativePrompt(): Promise<NegativePrompt> {
-  const response = await adminFetch('/api/settings/negative-prompt');
-  return parseJsonResponse<NegativePrompt>(response, true);
+export async function fetchProjectNegativePrompt(projectId: string): Promise<ProjectNegativePrompt> {
+  const response = await adminFetch(`/api/projects/${projectId}/negative-prompt`);
+  return parseJsonResponse<ProjectNegativePrompt>(response, true);
 }
 
-export async function updateNegativePrompt(content: string): Promise<NegativePrompt> {
-  const response = await adminFetch('/api/settings/negative-prompt', {
+export async function updateProjectNegativePrompt(
+  projectId: string,
+  content: string,
+): Promise<ProjectNegativePrompt> {
+  const response = await adminFetch(`/api/projects/${projectId}/negative-prompt`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
   });
-  return parseJsonResponse<NegativePrompt>(response, true);
+  return parseJsonResponse<ProjectNegativePrompt>(response, true);
 }
 
-export async function generateNegativePrompt(providerId?: string): Promise<NegativePromptGenerateResult> {
-  const response = await adminFetch('/api/settings/negative-prompt/generate', {
+export async function generateProjectNegativePrompt(
+  projectId: string,
+): Promise<ProjectNegativePromptGenerateResult> {
+  const response = await adminFetch(`/api/projects/${projectId}/negative-prompt/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(providerId ? { provider_id: providerId } : {}),
+    body: JSON.stringify({}),
   });
-  return parseJsonResponse<NegativePromptGenerateResult>(response, true);
+  return parseJsonResponse<ProjectNegativePromptGenerateResult>(response, true);
 }

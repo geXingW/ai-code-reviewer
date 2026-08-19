@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
 from typing import Any, Protocol, cast
+from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -132,58 +133,58 @@ def _reset_global_prompt_cache() -> None:
     _global_prompt_expires_at = 0.0
 
 
-# ---- 负样本提示词（带 TTL 缓存）----
+# ---- 负样本提示词（per-project TTL 缓存）----
 
-_NEGATIVE_PROMPT_KEY = "negative_prompt"
-_negative_prompt_value: str = ""
-_negative_prompt_expires_at: float = 0.0
+_negative_prompt_cache: dict[UUID, tuple[str, float]] = {}
 _NEGATIVE_PROMPT_TTL_SECONDS = 60
 
 
-async def _load_negative_prompt() -> str:
-    """从数据库读取全局负样本提示词，带 60s 内存缓存。
+async def _load_negative_prompt(project_id: UUID) -> str:
+    """从数据库读取项目级负样本提示词，带 60s 内存缓存（per-project）。
 
     与 ``_load_global_prompt`` 同策略：数据库未就绪或读取失败时返回缓存值
-    （可能为空），保证引擎可用性不受影响。空字符串表示未配置，调用方回退
-    到旧的结构化 ``_format_history`` 注入，保持向后兼容。
+    （可能为空），保证引擎可用性不受影响。项目未配置（无记录 / 空串）时
+    同样缓存空值，避免每个审查批次都查库；空字符串表示未配置，调用方
+    回退到旧的结构化 ``_format_history`` 注入，保持向后兼容。
     """
 
-    global _negative_prompt_value, _negative_prompt_expires_at
-
     now = time.monotonic()
-    if now < _negative_prompt_expires_at:
-        return _negative_prompt_value
+    cached = _negative_prompt_cache.get(project_id)
+    if cached is not None and now < cached[1]:
+        return cached[0]
 
-    value = _negative_prompt_value
+    value = cached[0] if cached is not None else ""
     try:
         from sqlalchemy import select
 
         from core.db import AsyncSessionLocal
-        from models.global_setting import GlobalSetting
+        from models.project_negative_prompt import ProjectNegativePrompt
 
         async with AsyncSessionLocal() as session:
             result = await session.execute(
-                select(GlobalSetting).where(GlobalSetting.key == _NEGATIVE_PROMPT_KEY),
+                select(ProjectNegativePrompt).where(
+                    ProjectNegativePrompt.project_id == project_id,
+                ),
             )
-            setting = result.scalar_one_or_none()
-            value = setting.value if setting is not None else ""
+            prompt = result.scalar_one_or_none()
+            value = prompt.content if prompt is not None else ""
     except Exception:  # noqa: BLE001 - DB 故障不应该阻塞审查
-        logger.warning("failed to load negative prompt from DB, using cached/empty value")
+        logger.warning(
+            "failed to load negative prompt from DB, using cached/empty value (project=%s)",
+            project_id,
+        )
         # 失败时保持旧缓存值（如果有），但缩短 TTL 到 10 秒后重试
-        _negative_prompt_expires_at = now + 10
-        return _negative_prompt_value
+        _negative_prompt_cache[project_id] = (value, now + 10)
+        return value
 
-    _negative_prompt_value = value
-    _negative_prompt_expires_at = now + _NEGATIVE_PROMPT_TTL_SECONDS
+    _negative_prompt_cache[project_id] = (value, now + _NEGATIVE_PROMPT_TTL_SECONDS)
     return value
 
 
 def _reset_negative_prompt_cache() -> None:
     """Reset the negative prompt cache (used by tests)."""
 
-    global _negative_prompt_value, _negative_prompt_expires_at
-    _negative_prompt_value = ""
-    _negative_prompt_expires_at = 0.0
+    _negative_prompt_cache.clear()
 
 
 class LLMCompletionClient(Protocol):
@@ -711,8 +712,8 @@ class LLMDirectEngine(ReviewEngine):
     ) -> dict[str, str]:
         """构建 prompt 固定段的 values 字典（不含 diff_block）。
 
-        供分批逻辑复用，避免每批重复计算。``history_block`` 优先使用全局
-        负样本提示词（用户编辑过的生成结果）；为空时回退到旧的结构化
+        供分批逻辑复用，避免每批重复计算。``history_block`` 优先使用该项目
+        的项目级负样本提示词（用户编辑过的生成结果）；为空时回退到旧的结构化
         ``_format_history`` 输出，保证向后兼容。
         """
 
@@ -725,20 +726,26 @@ class LLMDirectEngine(ReviewEngine):
             "source_commit_sha": ctx.source_commit_sha,
             "target_commit_sha": ctx.target_commit_sha,
             "rules_block": self._format_rules(ctx.rules),
-            "history_block": await self._resolve_negative_prompt_text(ctx.history),
+            "history_block": await self._resolve_negative_prompt_text(
+                ctx.history,
+                ctx.project_id,
+            ),
         }
 
     @staticmethod
-    async def _resolve_negative_prompt_text(history: list[ReviewHistoryItem]) -> str:
+    async def _resolve_negative_prompt_text(
+        history: list[ReviewHistoryItem],
+        project_id: UUID,
+    ) -> str:
         """解析 history_block 的实际取值。
 
-        全局负样本提示词（``global_settings.key='negative_prompt'``）有值时
-        直接使用；为空时回退到旧的结构化 history 格式化输出。注意硬过滤
+        项目级负样本提示词（``project_negative_prompts`` 表）有值时直接
+        使用；为空时回退到旧的结构化 history 格式化输出。注意硬过滤
         ``_matches_false_positive_history`` 仍用结构化 ``ctx.history`` 兜底，
         不受本方法影响。
         """
 
-        negative_prompt = await _load_negative_prompt()
+        negative_prompt = await _load_negative_prompt(project_id)
         if negative_prompt:
             return negative_prompt
         return LLMDirectEngine._format_history(history)

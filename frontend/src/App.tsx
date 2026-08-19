@@ -50,9 +50,6 @@ import {
   fetchStatsTimeseries,
   fetchGlobalPrompt,
   updateGlobalPrompt,
-  fetchNegativePrompt,
-  updateNegativePrompt,
-  generateNegativePrompt,
   clearStoredAdminAccessToken,
   getStoredAdminAccessToken,
   getStoredAdminUsername,
@@ -86,6 +83,7 @@ import { ReviewFalsePositiveDialog } from './components/dialogs/ReviewFalsePosit
 import { ProviderDialog } from './components/dialogs/ProviderDialog';
 import { RuleDialog } from './components/dialogs/RuleDialog';
 import { ProjectDialog } from './components/dialogs/ProjectDialog';
+import { NegativePromptDialog } from './components/dialogs/NegativePromptDialog';
 import { UserMappingsPage } from './components/UserMappingsPage';
 import { LoginPage } from './pages/LoginPage';
 import { categoryDisplay, severityDisplay, SEVERITY_ORDER, Severity, isKnownSeverity } from './lib/findingTaxonomy';
@@ -230,10 +228,6 @@ function App() {
   const [engineConfigsPage, setEngineConfigsPage] = useState<Page<EngineConfig> | null>(null);
   const [globalPrompt, setGlobalPrompt] = useState<string>('');
   const [globalPromptSaving, setGlobalPromptSaving] = useState(false);
-  const [negativePrompt, setNegativePrompt] = useState<string>('');
-  const [negativePromptSaving, setNegativePromptSaving] = useState(false);
-  const [negativePromptGenerating, setNegativePromptGenerating] = useState(false);
-  const [negativePromptSourceCount, setNegativePromptSourceCount] = useState<number>(0);
   const [providerForm, setProviderForm] = useState<ProviderFormPayload>(initialProviderForm);
   const [projectForm, setProjectForm] = useState<ProjectFormPayload>(initialProjectForm);
   const [ruleForm, setRuleForm] = useState<RuleFormPayload>(initialRuleForm);
@@ -382,12 +376,7 @@ function App() {
       } else if (page === 'engines') {
         setEngineConfigsPage(await fetchEngineConfigs());
       } else if (page === 'global-prompt') {
-        const [globalResult, negativeResult] = await Promise.all([
-          fetchGlobalPrompt(),
-          fetchNegativePrompt(),
-        ]);
-        setGlobalPrompt(globalResult.content);
-        setNegativePrompt(negativeResult.content);
+        setGlobalPrompt((await fetchGlobalPrompt()).content);
       }
     } catch (caught) {
       handleCaughtError(caught);
@@ -1691,35 +1680,6 @@ function App() {
     }
   }
 
-  async function handleGenerateNegativePrompt() {
-    setNegativePromptGenerating(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const result = await generateNegativePrompt();
-      setNegativePrompt(result.content);
-      setNegativePromptSourceCount(result.source_count);
-    } catch (caught) {
-      handleCaughtError(caught);
-    } finally {
-      setNegativePromptGenerating(false);
-    }
-  }
-
-  async function handleSaveNegativePrompt() {
-    setNegativePromptSaving(true);
-    setError(null);
-    setMessage(null);
-    try {
-      await updateNegativePrompt(negativePrompt);
-      setMessage('负样本提示词已保存。');
-    } catch (caught) {
-      handleCaughtError(caught);
-    } finally {
-      setNegativePromptSaving(false);
-    }
-  }
-
   function renderGlobalPrompt() {
     return (
       <div className="space-y-4">
@@ -1750,46 +1710,6 @@ function App() {
               <Button onClick={handleSaveGlobalPrompt} disabled={globalPromptSaving}>
                 {globalPromptSaving ? '保存中...' : '保存'}
               </Button>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <div>
-              <CardTitle>负样本提示词</CardTitle>
-              <CardDescription>
-                这段提示词根据已批准的误报样本生成，用于告诉 LLM "哪些模式是误报，不要再报"。审查时会注入到 prompt 中。为空时使用旧的结构化负样本注入。
-              </CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="negative-prompt-textarea">提示词内容</Label>
-              <Textarea
-                id="negative-prompt-textarea"
-                value={negativePrompt}
-                onChange={(event) => setNegativePrompt(event.target.value)}
-                placeholder="点击「生成」根据负样本库自动生成，也可以手动编辑..."
-                className="min-h-[200px] font-mono text-sm leading-relaxed"
-              />
-              <span className="block text-[11px] text-zinc-500">
-                最长 50000 字符。修改后约 60 秒内生效（带缓存）。
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                onClick={handleGenerateNegativePrompt}
-                disabled={negativePromptGenerating}
-              >
-                {negativePromptGenerating ? '生成中...' : '生成'}
-              </Button>
-              <Button onClick={handleSaveNegativePrompt} disabled={negativePromptSaving}>
-                {negativePromptSaving ? '保存中...' : '保存'}
-              </Button>
-              {negativePromptSourceCount > 0 ? (
-                <span className="text-[11px] text-zinc-500">基于 {negativePromptSourceCount} 条负样本生成</span>
-              ) : null}
             </div>
           </CardContent>
         </Card>
@@ -2234,6 +2154,8 @@ type ProjectCardProps = {
 function ProjectCard({ project, providerOptions, rules, onSavePolicies, onSaveProject, onDeleteProject, onEditProject }: ProjectCardProps) {
     const [expanded, setExpanded] = useState(false);
     const [deleting, setDeleting] = useState(false);
+    // 负样本提示词弹窗：仅在打开时渲染，关闭即销毁。
+    const [negativePromptOpen, setNegativePromptOpen] = useState(false);
     const letter = project.name.charAt(0).toUpperCase();
 
     async function handleDelete() {
@@ -2272,6 +2194,7 @@ function ProjectCard({ project, providerOptions, rules, onSavePolicies, onSavePr
             </UiBadge>
             <Button variant="ghost" size="sm" type="button" onClick={onEditProject}>编辑</Button>
             <Button variant="destructive" size="sm" type="button" disabled={deleting} onClick={() => void handleDelete()}>{deleting ? '删除中…' : '删除'}</Button>
+            <Button variant="ghost" size="sm" type="button" onClick={() => setNegativePromptOpen(true)}>负样本提示词</Button>
             <Button variant="secondary" size="sm" type="button" onClick={() => setExpanded((prev) => !prev)}>
               {expanded ? '收起策略' : '展开策略'}
             </Button>
@@ -2281,6 +2204,14 @@ function ProjectCard({ project, providerOptions, rules, onSavePolicies, onSavePr
           <div className="px-4 pb-4 bg-zinc-50 border-t border-zinc-100">
             <BlockPolicyTable projectId={project.id} policies={project.block_policies} onSave={onSavePolicies} />
           </div>
+        ) : null}
+        {negativePromptOpen ? (
+          <NegativePromptDialog
+            open={negativePromptOpen}
+            onClose={() => setNegativePromptOpen(false)}
+            projectId={project.id}
+            projectName={project.name}
+          />
         ) : null}
       </div>
     );

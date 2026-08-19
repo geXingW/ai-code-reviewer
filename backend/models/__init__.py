@@ -7,6 +7,7 @@ from models.global_setting import GlobalSetting
 from models.negative_example import NegativeExample
 from models.project import Project
 from models.project_block_policy import ProjectBlockPolicy
+from models.project_negative_prompt import ProjectNegativePrompt
 from models.project_notification_channel import ProjectNotificationChannel
 from models.project_rule import ProjectRule
 from models.provider import Provider
@@ -22,6 +23,7 @@ __all__ = [
     "NegativeExample",
     "Project",
     "ProjectBlockPolicy",
+    "ProjectNegativePrompt",
     "ProjectNotificationChannel",
     "ProjectRule",
     "Provider",

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from models.engine import Engine
     from models.negative_example import NegativeExample
     from models.project_block_policy import ProjectBlockPolicy
+    from models.project_negative_prompt import ProjectNegativePrompt
     from models.project_notification_channel import ProjectNotificationChannel
     from models.project_rule import ProjectRule
     from models.provider import Provider
@@ -102,4 +103,10 @@ class Project(Base, TimestampMixin):
     negative_examples: Mapped[list["NegativeExample"]] = relationship(
         back_populates="project",
         lazy="selectin",
+    )
+    negative_prompt: Mapped["ProjectNegativePrompt | None"] = relationship(
+        back_populates="project",
+        uselist=False,
+        lazy="selectin",
+        cascade="all, delete-orphan",
     )

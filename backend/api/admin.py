@@ -40,6 +40,7 @@ from repositories import (
     BaseRepository,
     FindingRepository,
     NegativeExampleRepository,
+    ProjectNegativePromptRepository,
     ProjectNotificationChannelRepository,
     ProjectRepository,
     ReviewRepository,
@@ -51,14 +52,16 @@ from schemas.finding import FindingCreate, FindingRead, FindingUpdate
 from schemas.global_setting import (
     GlobalPromptResponse,
     GlobalPromptUpdate,
-    NegativePromptGenerateRequest,
-    NegativePromptGenerateResponse,
-    NegativePromptResponse,
-    NegativePromptUpdate,
 )
 from schemas.negative_example import NegativeExampleRead
 from schemas.project import ProjectCreate, ProjectRead, ProjectUpdate
 from schemas.project_block_policy import ProjectBlockPolicyCreate
+from schemas.project_negative_prompt import (
+    ProjectNegativePromptGenerateRequest,
+    ProjectNegativePromptGenerateResponse,
+    ProjectNegativePromptResponse,
+    ProjectNegativePromptUpdate,
+)
 from schemas.project_notification_channel import (
     ProjectNotificationChannelCreate,
     ProjectNotificationChannelRead,
@@ -1218,36 +1221,40 @@ async def update_global_prompt(
     return GlobalPromptResponse(content=payload.content)
 
 
-_NEGATIVE_PROMPT_KEY = "negative_prompt"
+# ---- 项目级负样本提示词 ----
 
 
-@router.get("/settings/negative-prompt", response_model=NegativePromptResponse)
-async def get_negative_prompt(db: DbSession) -> NegativePromptResponse:
-    """Return the current negative prompt content.
+@router.get("/projects/{project_id}/negative-prompt", response_model=ProjectNegativePromptResponse)
+async def get_project_negative_prompt(
+    project_id: UUID,
+    db: DbSession,
+) -> ProjectNegativePromptResponse:
+    """返回项目级负样本提示词。
 
-    未设置时返回空字符串（引擎层回退到旧的结构化负样本注入）。
+    未配置时返回空字符串（引擎层回退到旧的结构化负样本注入）。
     """
 
-    from repositories.global_setting import GlobalSettingRepository
+    await _get_or_404(db, Project, project_id, "Project")
+    repo = ProjectNegativePromptRepository(db)
+    content = await repo.get_content(project_id)
+    example_count = await repo.count_approved_examples(project_id)
+    return ProjectNegativePromptResponse(content=content, example_count=example_count)
 
-    repo = GlobalSettingRepository(db)
-    content = await repo.get_value(_NEGATIVE_PROMPT_KEY, default="")
-    return NegativePromptResponse(content=content)
 
-
-@router.put("/settings/negative-prompt", response_model=NegativePromptResponse)
-async def update_negative_prompt(
-    payload: NegativePromptUpdate,
+@router.put("/projects/{project_id}/negative-prompt", response_model=ProjectNegativePromptResponse)
+async def update_project_negative_prompt(
+    project_id: UUID,
+    payload: ProjectNegativePromptUpdate,
     db: DbSession,
-) -> NegativePromptResponse:
-    """Update the negative prompt and return the saved value."""
+) -> ProjectNegativePromptResponse:
+    """更新项目级负样本提示词（有则 UPDATE 无则 INSERT）。"""
 
-    from repositories.global_setting import GlobalSettingRepository
-
-    repo = GlobalSettingRepository(db)
-    await repo.set_value(_NEGATIVE_PROMPT_KEY, payload.content)
-    await _commit_or_400(db, detail="Failed to save negative prompt")
-    return NegativePromptResponse(content=payload.content)
+    await _get_or_404(db, Project, project_id, "Project")
+    repo = ProjectNegativePromptRepository(db)
+    await repo.upsert(project_id, payload.content)
+    await _commit_or_400(db, detail="Failed to save project negative prompt")
+    example_count = await repo.count_approved_examples(project_id)
+    return ProjectNegativePromptResponse(content=payload.content, example_count=example_count)
 
 
 _NEGATIVE_PROMPT_GENERATE_SYSTEM_PROMPT = """\
@@ -1322,23 +1329,34 @@ async def _pick_generate_provider(
     return provider
 
 
-@router.post("/settings/negative-prompt/generate", response_model=NegativePromptGenerateResponse)
-async def generate_negative_prompt(
+@router.post(
+    "/projects/{project_id}/negative-prompt/generate",
+    response_model=ProjectNegativePromptGenerateResponse,
+)
+async def generate_project_negative_prompt(
+    project_id: UUID,
     db: DbSession,
-    payload: NegativePromptGenerateRequest | None = None,
-) -> NegativePromptGenerateResponse:
-    """根据已批准的负样本库调用 LLM 生成负样本提示词。
+    payload: ProjectNegativePromptGenerateRequest | None = None,
+) -> ProjectNegativePromptGenerateResponse:
+    """根据该项目的已批准负样本调用 LLM 生成项目级负样本提示词。
 
-    只返回生成结果，不自动保存（用户在前端预览、编辑后再手动保存）。
+    只取 ``NegativeExample.project_id == project_id`` 且已批准的样本
+    （不含 project_id 为 NULL 的全局负例）。只返回生成结果，不自动保存
+    （用户在前端预览、编辑后再手动保存）。
     """
 
     from llm import ChatMessage, LLMError, build_provider
 
-    examples = await NegativeExampleRepository(db).list_all_approved(limit=100)
+    await _get_or_404(db, Project, project_id, "Project")
+
+    examples = await NegativeExampleRepository(db).list_all_approved(
+        limit=100,
+        project_id=project_id,
+    )
     if not examples:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="负样本库为空，无法生成",
+            detail="该项目负样本库为空，无法生成",
         )
     provider = await _pick_generate_provider(db, payload.provider_id if payload else None)
 
@@ -1374,7 +1392,7 @@ async def generate_negative_prompt(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="负样本提示词生成失败：模型返回空内容",
         )
-    return NegativePromptGenerateResponse(content=content, source_count=len(examples))
+    return ProjectNegativePromptGenerateResponse(content=content, source_count=len(examples))
 
 
 async def _paginate(
