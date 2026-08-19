@@ -12,9 +12,10 @@ from __future__ import annotations
 import hmac
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 
 from core import db
@@ -25,6 +26,7 @@ from repositories.project import ProjectRepository
 from services.gitlab_client_factory import build_gitlab_client_for_project
 from services.notification_service import NotificationService
 from services.review_orchestrator import (
+    GitLabCommitEvent,
     GitLabMergeRequestEvent,
     OrchestratorResult,
     ReviewOrchestrator,
@@ -49,9 +51,32 @@ class GitLabWebhookResponse(BaseModel):
     note_id: int | None = None
 
 
+@dataclass(frozen=True)
+class _PushEventInfo:
+    """Push Hook 归一化结果（只保留逐 commit 审查需要的字段）。
+
+    Attributes:
+        project_id: 数值型 GitLab 项目 ID。
+        project_path: 带命名空间的项目路径。
+        branch: push 目标分支名（``ref`` 去掉 ``refs/heads/`` 前缀）。
+        commits: ``[{"id": sha, "title": ..., "message": ...}, ...]``，
+            保持 payload 的时间序（旧 -> 新）。
+        pusher_username: 触发 push 的用户名；缺失时 ``None``。
+        pusher_name: 同上，显示名。
+    """
+
+    project_id: int
+    project_path: str
+    branch: str
+    commits: list[dict[str, Any]]
+    pusher_username: str | None
+    pusher_name: str | None
+
+
 @router.post("/gitlab", status_code=status.HTTP_202_ACCEPTED, response_model=GitLabWebhookResponse)
 async def handle_gitlab_webhook(
     payload: dict[str, Any],
+    background_tasks: BackgroundTasks,
     x_gitlab_event: str | None = Header(default=None, alias="X-Gitlab-Event"),
     x_gitlab_token: str | None = Header(default=None, alias="X-Gitlab-Token"),
 ) -> GitLabWebhookResponse:
@@ -82,23 +107,187 @@ async def handle_gitlab_webhook(
     # 3. 用项目级 webhook_secret 校验 X-Gitlab-Token。
     _validate_webhook_secret(x_gitlab_token, project)
 
-    if x_gitlab_event != "Merge Request Hook" or payload.get("object_kind") != "merge_request":
+    if x_gitlab_event == "Merge Request Hook" and payload.get("object_kind") == "merge_request":
+        # 4. 完整解析 MR event。
+        event = _parse_merge_request_event(payload)
+        if event.action not in _SUPPORTED_ACTIONS:
+            return GitLabWebhookResponse(processed=False, reason="ignored_action")
+
+        # 5. 调用 review 流程，传入 project 以便构造项目级 GitLabClient。
+        result = await review_merge_request_event(event, project=project)
+        return GitLabWebhookResponse(
+            processed=True,
+            status=result.status,
+            finding_count=result.finding_count,
+            has_blocker=result.has_blocker,
+            note_id=result.note_id,
+        )
+
+    if x_gitlab_event == "Push Hook" and payload.get("object_kind") == "push":
+        return _handle_push_hook(payload, project=project, background_tasks=background_tasks)
+
+    return GitLabWebhookResponse(processed=False, reason="ignored_event")
+
+
+def _handle_push_hook(
+    payload: dict[str, Any],
+    *,
+    project: Project,
+    background_tasks: BackgroundTasks,
+) -> GitLabWebhookResponse:
+    """Push Hook 过滤链 + 后台调度（逐 commit 审查）。
+
+    过滤链顺序：
+      1. ``settings.commit_review_enabled=False`` -> processed=False
+         reason=commit_review_disabled（全局止血开关）；
+      2. ref 非 ``refs/heads/*``（tag push 等）-> ignored_event；
+      3. after 为 40 个 0（删分支）-> ignored_event；
+      4. commits 空 -> ignored_event。
+
+    通过后按 ``commit_review_max_per_push`` 截断只审最近 N 个（超出 log
+    warning），调度后台任务并**立即返回 202** -- 一次 push N 个 commit 就是
+    N 次 LLM 调用，同步等待必然超时。
+    """
+
+    from core.config import get_settings
+
+    settings = get_settings()
+    if not settings.commit_review_enabled:
+        return GitLabWebhookResponse(processed=False, reason="commit_review_disabled")
+
+    push_info = _parse_push_event(payload)
+    if push_info is None:
         return GitLabWebhookResponse(processed=False, reason="ignored_event")
 
-    # 4. 完整解析 MR event。
-    event = _parse_merge_request_event(payload)
-    if event.action not in _SUPPORTED_ACTIONS:
-        return GitLabWebhookResponse(processed=False, reason="ignored_action")
+    max_per_push = settings.commit_review_max_per_push
+    commits = push_info.commits
+    if len(commits) > max_per_push:
+        dropped = len(commits) - max_per_push
+        logger.warning(
+            "push carries %d commits; only reviewing the latest %d (dropped %d)",
+            len(commits),
+            max_per_push,
+            dropped,
+            extra={
+                "gitlab_project_id": push_info.project_id,
+                "branch": push_info.branch,
+            },
+        )
+        commits = commits[-max_per_push:]
 
-    # 5. 调用 review 流程，传入 project 以便构造项目级 GitLabClient。
-    result = await review_merge_request_event(event, project=project)
+    scheduled_info = _PushEventInfo(
+        project_id=push_info.project_id,
+        project_path=push_info.project_path,
+        branch=push_info.branch,
+        commits=commits,
+        pusher_username=push_info.pusher_username,
+        pusher_name=push_info.pusher_name,
+    )
+    background_tasks.add_task(_process_push_commits, scheduled_info, project)
     return GitLabWebhookResponse(
         processed=True,
-        status=result.status,
-        finding_count=result.finding_count,
-        has_blocker=result.has_blocker,
-        note_id=result.note_id,
+        status="scheduled",
+        reason="push_review_scheduled",
     )
+
+
+def _parse_push_event(payload: dict[str, Any]) -> _PushEventInfo | None:
+    """归一化 Push Hook payload。
+
+    Returns:
+        归一化结果；ref 非 ``refs/heads/*``、after 为 40 个 0（删分支）或
+        commits 为空时返回 ``None``（调用方按 ignored_event 处理）。
+    """
+
+    try:
+        project = _expect_dict(payload["project"], "project")
+        project_id = int(project["id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid GitLab push payload: {exc}",
+        ) from exc
+
+    ref = str(payload.get("ref") or "")
+    if not ref.startswith("refs/heads/"):
+        return None
+    after = str(payload.get("after") or "")
+    if after == "0" * 40:
+        # 删分支 push。
+        return None
+    raw_commits = payload.get("commits")
+    if not isinstance(raw_commits, list) or not raw_commits:
+        return None
+    commits: list[dict[str, Any]] = []
+    for item in raw_commits:
+        if not isinstance(item, Mapping):
+            continue
+        commits.append(
+            {
+                "id": str(item.get("id") or ""),
+                "title": str(item.get("title") or ""),
+                "message": str(item.get("message") or ""),
+            }
+        )
+    if not commits:
+        return None
+
+    user = payload.get("user")
+    user_dict = user if isinstance(user, Mapping) else {}
+    return _PushEventInfo(
+        project_id=project_id,
+        project_path=str(project.get("path_with_namespace") or project.get("path") or project_id),
+        branch=ref.removeprefix("refs/heads/"),
+        commits=commits,
+        pusher_username=str(user_dict.get("username") or "") or None,
+        pusher_name=str(user_dict.get("name") or "") or None,
+    )
+
+
+async def _process_push_commits(push_info: _PushEventInfo, project: Project) -> None:
+    """后台逐 commit 串行审查（单个失败 except + log 后继续下一个）。
+
+    本期不做钉钉推送（每 commit 一条会刷屏），notification_service 传 None。
+    """
+
+    load_builtin_engines()
+    client = build_gitlab_client_for_project(project)
+
+    from core.config import get_settings
+
+    settings = get_settings()
+    orchestrator = ReviewOrchestrator(
+        gitlab_client=client,
+        engine_registry=get_engine_registry(),
+        default_engine=settings.default_review_engine,
+        session_factory=db.AsyncSessionLocal,
+        notification_service=None,
+    )
+    for commit in push_info.commits:
+        commit_sha = str(commit.get("id") or "")
+        if not commit_sha:
+            continue
+        event = GitLabCommitEvent(
+            project_id=push_info.project_id,
+            project_path=push_info.project_path,
+            commit_sha=commit_sha,
+            branch=push_info.branch,
+            title=str(commit.get("title") or ""),
+            message=str(commit.get("message") or ""),
+            author_username=push_info.pusher_username,
+            author_name=push_info.pusher_name,
+        )
+        try:
+            await orchestrator.review_commit(event)
+        except Exception:
+            logger.exception(
+                "commit review failed; continuing with next commit",
+                extra={
+                    "gitlab_project_id": push_info.project_id,
+                    "commit_sha": commit_sha,
+                    "branch": push_info.branch,
+                },
+            )
 
 
 async def review_merge_request_event(

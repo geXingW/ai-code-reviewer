@@ -24,7 +24,7 @@ def test_get_revision_order_single_head_linear(tmp_path: Path) -> None:
     # 第一条一定从 base 开始
     assert result[0][1] == "base"
     # 最后一条是 head
-    assert result[-1][0].startswith("0010_")
+    assert result[-1][0].startswith("0011_")
 
     # 每一条的 down_revision 都是前面已经出现过的 revision 或 base
     seen = {"base"}
@@ -70,7 +70,7 @@ def test_generate_produces_expected_artifacts(tmp_path: Path) -> None:
 
     # VERSION 文件内容是 head revision
     version_text = result["version"].read_text().strip()
-    assert version_text == "0010_project_negative_prompts"
+    assert version_text == "0011_commit_reviews"
 
     # schema-full.sql 里必须包含两张 0008 的表与 0010 的项目级负样本提示词表
     schema_sql = result["schema_full"].read_text()

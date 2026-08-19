@@ -238,6 +238,115 @@ class GitLabClient:
             params={"resolved": "true" if resolved else "false"},
         )
 
+    async def get_commit(self, *, project_id: int, sha: str) -> dict[str, Any]:
+        """获取单个 commit 的详情（含 ``parent_ids``）。
+
+        对应 GitLab API：``GET /api/v4/projects/:id/repository/commits/:sha``。
+        commit 级审查用返回的 ``parent_ids`` 判断 merge commit（长度 >1）与
+        根提交（长度为 0）。
+
+        Args:
+            project_id: 数值型 GitLab 项目 ID。
+            sha: commit SHA。
+
+        Returns:
+            GitLab commit payload（``id`` / ``parent_ids`` / ``title`` / ``message`` 等）。
+
+        Raises:
+            ValueError: ``sha`` 为空。
+        """
+
+        if not sha.strip():
+            msg = "GitLab commit sha must not be empty."
+            raise ValueError(msg)
+        return await self._request_json(
+            "GET",
+            f"/api/v4/projects/{project_id}/repository/commits/{sha}",
+        )
+
+    async def get_commit_diff(self, *, project_id: int, sha: str) -> list[dict[str, Any]]:
+        """获取单个 commit 与其第一个 parent 的 diff 数组。
+
+        对应 GitLab API：``GET /api/v4/projects/:id/repository/commits/:sha/diff``。
+        返回的是**数组**（不是 dict），元素结构与 MR changes 的 change 元素一致
+        （old_path/new_path/diff/new_file/deleted_file/renamed_file）。注意
+        :meth:`_request_json` 会把非 dict 响应包成 ``{"data": [...]}``，这里
+        解包还原成原始 list。
+
+        Args:
+            project_id: 数值型 GitLab 项目 ID。
+            sha: commit SHA。
+
+        Returns:
+            GitLab commit diff 数组。
+
+        Raises:
+            ValueError: ``sha`` 为空。
+        """
+
+        if not sha.strip():
+            msg = "GitLab commit sha must not be empty."
+            raise ValueError(msg)
+        payload = await self._request_json(
+            "GET",
+            f"/api/v4/projects/{project_id}/repository/commits/{sha}/diff",
+        )
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        # 理论不会发生（该端点恒返回数组）；发生时保守返回空数组而不是崩。
+        return []
+
+    async def create_commit_comment(
+        self,
+        *,
+        project_id: int,
+        sha: str,
+        note: str,
+        path: str | None = None,
+        line: int | None = None,
+        line_type: str | None = None,
+    ) -> dict[str, Any]:
+        """在 commit 下创建评论（可选行级锚定）。
+
+        对应 GitLab API：``POST /api/v4/projects/:id/repository/commits/:sha/comments``。
+        body 里只放非 ``None`` 的可选字段（不传 path/line/line_type 即普通评论）。
+        commit 评论**没有 discussion / resolve 概念**，不要尝试 resolve。
+
+        Args:
+            project_id: 数值型 GitLab 项目 ID。
+            sha: commit SHA。
+            note: Markdown 评论正文。
+            path: 可选的文件路径（行级锚定用）。
+            line: 可选的行号（配合 ``line_type="new"`` 锚定到新文件行）。
+            line_type: ``"new"`` / ``"old"``；不传则 ``line`` 失效。
+
+        Returns:
+            GitLab comment payload（含 ``id``）。
+
+        Raises:
+            ValueError: ``sha`` 或 ``note`` 为空。
+        """
+
+        if not sha.strip():
+            msg = "GitLab commit sha must not be empty."
+            raise ValueError(msg)
+        if not note.strip():
+            msg = "GitLab commit comment note must not be empty."
+            raise ValueError(msg)
+        payload: dict[str, Any] = {"note": note}
+        if path is not None:
+            payload["path"] = path
+        if line is not None:
+            payload["line"] = line
+        if line_type is not None:
+            payload["line_type"] = line_type
+        return await self._request_json(
+            "POST",
+            f"/api/v4/projects/{project_id}/repository/commits/{sha}/comments",
+            json=payload,
+        )
+
     async def set_commit_status(
         self,
         *,

@@ -26,12 +26,18 @@ ReviewMode = Literal["full", "incremental", "reuse"]
 # 普通审查该字段为 None（走 review_mode 徽章）；前端有值时优先展示专属徽章。
 ReviewLifecycleEvent = Literal["mr_closed", "mr_merged"]
 
+# feat/commit-review：审查来源标记。
+# - ``mr``：MR 事件触发（默认，老数据 server_default 也是它）
+# - ``commit``：GitLab Push Hook 逐 commit 审查（此时 mr_iid 为 NULL）
+ReviewKind = Literal["mr", "commit"]
+
 
 class ReviewCreate(BaseModel):
     """Payload for creating a review record."""
 
     project_id: UUID
-    mr_iid: str
+    # commit 审查（review_kind='commit'）没有 MR 概念，mr_iid 为 None。
+    mr_iid: str | None = None
     source_branch: str
     target_branch: str
     commit_sha: str
@@ -48,6 +54,7 @@ class ReviewCreate(BaseModel):
     base_sha: str | None = None
     parent_review_id: UUID | None = None
     review_mode: ReviewMode = "full"
+    review_kind: ReviewKind = "mr"
 
 
 class ReviewUpdate(BaseModel):
@@ -79,7 +86,8 @@ class ReviewRead(BaseModel):
 
     id: UUID
     project_id: UUID
-    mr_iid: str
+    # commit 审查（review_kind='commit'）没有 MR 概念，mr_iid 为 NULL。
+    mr_iid: str | None
     source_branch: str
     target_branch: str
     commit_sha: str
@@ -103,6 +111,8 @@ class ReviewRead(BaseModel):
     review_mode: ReviewMode = "full"
     # PR #96：MR 生命周期事件记账 Review 的标签。普通审查为 None。
     lifecycle_event: ReviewLifecycleEvent | None = None
+    # feat/commit-review：审查来源（MR 事件 / Push Hook 逐 commit）。
+    review_kind: ReviewKind = "mr"
     created_at: AwareDatetime
     updated_at: AwareDatetime
 

@@ -120,6 +120,39 @@ class ReviewRepository(BaseRepository[Review]):
         return result.scalar_one_or_none()
 
 
+    async def find_completed_commit_review(
+        self,
+        project_id: UUID,
+        commit_sha: str,
+    ) -> Review | None:
+        """按 ``(project_id, commit_sha, review_kind='commit')`` 查找已完成的 commit 审查。
+
+        幂等判断专用：命中说明该 commit 已审过，Push Hook 重放时直接跳过。
+        只认 ``status='done'``；``engine_error`` 不算已审，下次 push 重放会重试补审。
+
+        Args:
+            project_id: DB 中 Project 主键 UUID。
+            commit_sha: commit SHA。
+
+        Returns:
+            匹配的最近一条 Review；若无返回 ``None``。
+        """
+
+        stmt = (
+            select(Review)
+            .where(
+                Review.project_id == project_id,
+                Review.commit_sha == commit_sha,
+                Review.review_kind == "commit",
+                Review.status == "done",
+            )
+            .order_by(Review.created_at.desc())
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
 class FindingRepository(BaseRepository[Finding]):
     """Finding 专用查询。"""
 
