@@ -22,6 +22,7 @@ from repositories.global_setting import GlobalSettingRepository
 from repositories.negative_example import NegativeExampleRepository
 from repositories.project import ProjectRepository
 from repositories.project_block_policy import ProjectBlockPolicyRepository
+from repositories.project_negative_prompt import ProjectNegativePromptRepository
 from repositories.project_notification_channel import (
     ProjectNotificationChannelRepository,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "GlobalSettingRepository",
     "NegativeExampleRepository",
     "ProjectBlockPolicyRepository",
+    "ProjectNegativePromptRepository",
     "ProjectNotificationChannelRepository",
     "ProjectRepository",
     "ProjectRuleRepository",

@@ -24,7 +24,7 @@ def test_get_revision_order_single_head_linear(tmp_path: Path) -> None:
     # 第一条一定从 base 开始
     assert result[0][1] == "base"
     # 最后一条是 head
-    assert result[-1][0].startswith("0009_")
+    assert result[-1][0].startswith("0010_")
 
     # 每一条的 down_revision 都是前面已经出现过的 revision 或 base
     seen = {"base"}
@@ -64,15 +64,16 @@ def test_generate_produces_expected_artifacts(tmp_path: Path) -> None:
 
     assert "version" in result
     assert "schema_full" in result
-    # 至少 9 个迁移（0001-0009）
+    # 至少 10 个迁移（0001-0010）
     migration_keys = [k for k in result if k.startswith("migration_")]
-    assert len(migration_keys) >= 9
+    assert len(migration_keys) >= 10
 
     # VERSION 文件内容是 head revision
     version_text = result["version"].read_text().strip()
-    assert version_text == "0009_merge_0008_heads"
+    assert version_text == "0010_project_negative_prompts"
 
-    # schema-full.sql 里必须包含两张 0008 的表
+    # schema-full.sql 里必须包含两张 0008 的表与 0010 的项目级负样本提示词表
     schema_sql = result["schema_full"].read_text()
     assert "CREATE TABLE global_settings" in schema_sql
     assert "CREATE TABLE user_mappings" in schema_sql
+    assert "CREATE TABLE project_negative_prompts" in schema_sql
