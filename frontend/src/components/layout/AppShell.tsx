@@ -33,7 +33,6 @@ interface NavItem {
   key: PageKey;
   label: string;
   icon: LucideIcon;
-  badge?: string;
 }
 
 interface NavSection {
@@ -59,7 +58,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard },
       { key: 'reviews', label: '审查记录', icon: ScrollText },
-      { key: 'falsePositives', label: '误报队列', icon: Filter, badge: '3' },
+      { key: 'falsePositives', label: '误报队列', icon: Filter },
       { key: 'negativeExamples', label: '负样本库', icon: Sparkles },
       { key: 'findings', label: '问题与误报', icon: AlertTriangle },
     ],
@@ -149,11 +148,6 @@ export function AppShell({ activePage, onNavigate, health, onLogout, children }:
                         className={cn('shrink-0', active ? 'text-[#4F46E5] opacity-100' : 'opacity-70')}
                       />
                       <span>{item.label}</span>
-                      {item.badge ? (
-                        <span className="ml-auto inline-flex h-4 items-center rounded border border-zinc-200 bg-zinc-100 px-1.5 text-[10px] font-medium text-zinc-600">
-                          {item.badge}
-                        </span>
-                      ) : null}
                     </button>
                   );
                 })}
