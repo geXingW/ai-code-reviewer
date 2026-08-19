@@ -160,6 +160,27 @@ class Settings(BaseSettings):
             ),
         ),
     ] = "https://gitlab.com"
+    # feat/commit-review：Push Hook 逐 commit 审查的两项开关。
+    commit_review_enabled: Annotated[
+        bool,
+        Field(
+            description=(
+                "是否启用 commit 级自动审查（GitLab Push Hook 触发）。"
+                "全局开关，紧急止血（LLM 故障 / 配额耗尽）时可置 False。"
+            ),
+        ),
+    ] = True
+    commit_review_max_per_push: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=20,
+            description=(
+                "单次 push 最多审查的 commit 数（GitLab Push Hook 最多携带 20 条）。"
+                "超出时只审最近的 N 个，其余丢弃并记 warning。"
+            ),
+        ),
+    ] = 10
 
 
 @lru_cache

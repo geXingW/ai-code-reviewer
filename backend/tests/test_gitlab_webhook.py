@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from api import gitlab_webhook
+from api.gitlab_webhook import _PushEventInfo
 from models.project import Project
 from services.review_orchestrator import GitLabMergeRequestEvent, OrchestratorResult
 
@@ -301,3 +304,179 @@ def test_parse_merge_request_event_without_user_leaves_author_none() -> None:
 
     assert event.author_username is None
     assert event.author_name is None
+
+
+# ---------------------------------------------------------------------------
+# Push Hook（commit 级审查入口）
+# ---------------------------------------------------------------------------
+
+
+def _push_payload(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    """构造最小可用的 Push Hook payload。"""
+
+    payload: dict[str, Any] = {
+        "object_kind": "push",
+        "before": "old" * 10,
+        "after": "new" * 10,
+        "ref": "refs/heads/feature/x",
+        "project": {"id": 123, "path_with_namespace": "group/demo"},
+        "user": {"username": "alice", "name": "Alice Zhang"},
+        "commits": [{"id": "sha-1", "title": "first", "message": "first"}],
+    }
+    payload.update(overrides or {})
+    return payload
+
+
+def _patch_push_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[_PushEventInfo, Project]]:
+    """把后台任务替换成捕获调用参数的假实现，避免真实 GitLab 调用。"""
+
+    captured: list[tuple[_PushEventInfo, Project]] = []
+
+    async def fake_processor(push_info: _PushEventInfo, project: Project) -> None:
+        captured.append((push_info, project))
+
+    monkeypatch.setattr(gitlab_webhook, "_process_push_commits", fake_processor)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_push_hook_returns_202_and_schedules_background_task(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Push Hook -> 立即 202 + processed=True + 后台任务已调度并执行。"""
+
+    project = await _create_test_project(db_session_factory)
+    captured = _patch_push_processor(monkeypatch)
+
+    response = await db_client.post(
+        "/api/webhooks/gitlab",
+        headers={"X-Gitlab-Event": "Push Hook", "X-Gitlab-Token": "test-webhook-secret"},
+        json=_push_payload(),
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["processed"] is True
+    assert body["status"] == "scheduled"
+    assert body["reason"] == "push_review_scheduled"
+    # ASGITransport 在响应后执行 background tasks -> 捕获到 (push_info, project)。
+    assert len(captured) == 1
+    push_info, captured_project = captured[0]
+    assert push_info.project_id == 123
+    assert push_info.branch == "feature/x"
+    assert [c["id"] for c in push_info.commits] == ["sha-1"]
+    assert captured_project.id == project.id
+
+
+@pytest.mark.asyncio
+async def test_push_hook_truncates_to_latest_k_commits(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """21 个 commit 的 push -> 只调度最近 10 个（默认 max_per_push）。"""
+
+    await _create_test_project(db_session_factory)
+    captured = _patch_push_processor(monkeypatch)
+
+    commits = [
+        {"id": f"sha-{i:02d}", "title": f"c{i}", "message": f"c{i}"}
+        for i in range(1, 22)
+    ]
+    response = await db_client.post(
+        "/api/webhooks/gitlab",
+        headers={"X-Gitlab-Event": "Push Hook", "X-Gitlab-Token": "test-webhook-secret"},
+        json=_push_payload({"commits": commits}),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["processed"] is True
+    assert len(captured) == 1
+    scheduled_ids = [c["id"] for c in captured[0][0].commits]
+    # 保留最新的 10 条（sha-12..sha-21），时间序保持旧 -> 新。
+    assert scheduled_ids == [f"sha-{i:02d}" for i in range(12, 22)]
+
+
+@pytest.mark.asyncio
+async def test_push_hook_disabled_returns_commit_review_disabled(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """commit_review_enabled=False -> processed=False reason=commit_review_disabled。"""
+
+    from core import config
+
+    await _create_test_project(db_session_factory)
+    _patch_push_processor(monkeypatch)
+    # 走真实 Settings（env 驱动）而不是替身：conftest teardown 会调
+    # get_settings.cache_clear，替身 lambda 没有该属性会把 teardown 炸掉。
+    monkeypatch.setenv("COMMIT_REVIEW_ENABLED", "false")
+    config.get_settings.cache_clear()
+
+    response = await db_client.post(
+        "/api/webhooks/gitlab",
+        headers={"X-Gitlab-Event": "Push Hook", "X-Gitlab-Token": "test-webhook-secret"},
+        json=_push_payload(),
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["processed"] is False
+    assert body["reason"] == "commit_review_disabled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "label"),
+    [
+        ({"after": "0" * 40}, "branch deletion"),
+        ({"ref": "refs/tags/v1.0.0"}, "non-heads ref"),
+        ({"commits": []}, "empty commits"),
+    ],
+)
+async def test_push_hook_ignores_invalid_pushes(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, Any],
+    label: str,
+) -> None:
+    """删分支 / 非 heads ref / commits 空 -> ignored_event，不调度后台任务。"""
+
+    await _create_test_project(db_session_factory)
+    captured = _patch_push_processor(monkeypatch)
+
+    response = await db_client.post(
+        "/api/webhooks/gitlab",
+        headers={"X-Gitlab-Event": "Push Hook", "X-Gitlab-Token": "test-webhook-secret"},
+        json=_push_payload(overrides),
+    )
+
+    assert response.status_code == 202, label
+    body = response.json()
+    assert body["processed"] is False, label
+    assert body["reason"] == "ignored_event", label
+    assert captured == [], label
+
+
+@pytest.mark.asyncio
+async def test_push_hook_still_validates_project_secret(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+) -> None:
+    """Push Hook 同样走项目解析 + secret 校验（分发之前，不重复实现）。"""
+
+    await _create_test_project(db_session_factory)
+
+    response = await db_client.post(
+        "/api/webhooks/gitlab",
+        headers={"X-Gitlab-Event": "Push Hook", "X-Gitlab-Token": "wrong"},
+        json=_push_payload(),
+    )
+
+    assert response.status_code == 401

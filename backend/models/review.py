@@ -30,7 +30,10 @@ class Review(Base, TimestampMixin):
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
     )
-    mr_iid: Mapped[str] = mapped_column(String(255), nullable=False)
+    # commit 级审查（Push Hook）没有 MR 概念，mr_iid 落 NULL。现有按 mr_iid
+    # 等值查询（find_last_review_in_mr / list_open_by_mr）天然不匹配 NULL 行，
+    # 无需改动。
+    mr_iid: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_branch: Mapped[str] = mapped_column(String(255), nullable=False)
     target_branch: Mapped[str] = mapped_column(String(255), nullable=False)
     commit_sha: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -86,6 +89,14 @@ class Review(Base, TimestampMixin):
     lifecycle_event: Mapped[str | None] = mapped_column(
         String(20),
         nullable=True,
+    )
+    # commit 级审查来源标记：'mr'=MR 事件触发（老数据无需刷），'commit'=Push Hook
+    # 逐 commit 审查。server_default='mr' 保证老数据迁移后有值。
+    review_kind: Mapped[str] = mapped_column(
+        String(10),
+        default="mr",
+        server_default=text("'mr'"),
+        nullable=False,
     )
 
     project: Mapped["Project"] = relationship(back_populates="reviews", lazy="selectin")

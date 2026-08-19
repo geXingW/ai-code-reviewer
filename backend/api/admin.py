@@ -879,7 +879,7 @@ async def _resolve_finding_discussion(finding: Finding, db: AsyncSession) -> Non
     try:
         await client.resolve_discussion(
             project_id=int(project.gitlab_project_id),
-            mr_iid=int(review.mr_iid),
+            mr_iid=int(review.mr_iid or 0),
             discussion_id=finding.gitlab_discussion_id,
             resolved=True,
         )
@@ -923,9 +923,12 @@ async def _recompute_mr_block_status(finding: Finding, db: AsyncSession) -> None
             return
 
         review_repo = ReviewRepository(db)
+        # commit 审查行 mr_iid 为 NULL，等值查询天然不命中 -> 传空串走同样的
+        # no-op 路径（latest_review 为 None 时直接 return）。
+        mr_iid_key = review.mr_iid or ""
         latest_review = await review_repo.find_last_review_in_mr(
             review.project_id,
-            review.mr_iid,
+            mr_iid_key,
             exclude_status=("pending",),
         )
         if not latest_review:
@@ -934,7 +937,7 @@ async def _recompute_mr_block_status(finding: Finding, db: AsyncSession) -> None
         finding_repo = FindingRepository(db)
         open_findings = await finding_repo.list_open_by_mr(
             review.project_id,
-            review.mr_iid,
+            mr_iid_key,
         )
 
         policies = project.block_policies or []
@@ -968,7 +971,7 @@ async def _recompute_mr_block_status(finding: Finding, db: AsyncSession) -> None
         if not has_blocker:
             await client.create_merge_request_note(
                 project_id=int(project.gitlab_project_id),
-                mr_iid=int(latest_review.mr_iid),
+                mr_iid=int(latest_review.mr_iid or 0),
                 body=(
                     "✅ **误报已确认并解决**\n\n"
                     f"Finding `{finding.rule_id}` 已标记为误报，"
