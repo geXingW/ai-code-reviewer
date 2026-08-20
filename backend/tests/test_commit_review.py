@@ -3,9 +3,12 @@
 覆盖：
 1. ``_parse_push_event`` payload 解析（正常 / 删分支 / 非 heads ref / commits 空）；
 2. ``ReviewOrchestrator.review_commit`` 编排（mock GitLabClient + fake engine）：
-   正常路径 / 幂等 / merge commit / 根提交 / 行号失效 / engine 异常 /
-   空 diff；
-3. schema：review_kind 写入值被 ReviewCreate / ReviewRead 接受。
+   正常路径 / merge commit / 根提交 / 行号失效 / engine 异常 / 空 diff；
+3. 钉钉通知：正常完成 / 空审 / engine 异常三条路径都推送，推送失败被吞，
+   跳过路径不推送；
+4. 不落库：commit 审查不写 ``reviews`` / ``review_findings``，已有历史记录
+   也不阻断重审（无幂等检查）；
+5. schema：review_kind 写入值被 ReviewCreate / ReviewRead 接受。
 """
 
 from __future__ import annotations
@@ -123,6 +126,32 @@ class _StaticEngine(ReviewEngine):
         return list(self._findings)
 
 
+@dataclass
+class _FakeNotificationService:
+    """记录 ``send_review_completed`` 调用的通知服务假实现。
+
+    ``error`` 非空时抛出，用于验证推送失败不影响审查主流程。
+    """
+
+    calls: list[dict[str, Any]] = field(default_factory=list)
+    error: Exception | None = None
+
+    async def send_review_completed(
+        self,
+        *,
+        gitlab_project_id: int,
+        review_data: dict[str, Any],
+    ) -> None:
+        if self.error is not None:
+            raise self.error
+        self.calls.append(
+            {
+                "gitlab_project_id": gitlab_project_id,
+                "review_data": review_data,
+            }
+        )
+
+
 _DIFF_APP_PY = {
     "new_path": "app.py",
     "old_path": "app.py",
@@ -144,7 +173,13 @@ def _client(*, parent_ids: list[str] | None = None, diffs: list[dict[str, Any]] 
     )
 
 
-def _commit_event(*, branch: str = "feature/x", sha: str = "c0ffee0000") -> GitLabCommitEvent:
+def _commit_event(
+    *,
+    branch: str = "feature/x",
+    sha: str = "c0ffee0000",
+    author_username: str | None = None,
+    author_name: str | None = None,
+) -> GitLabCommitEvent:
     return GitLabCommitEvent(
         project_id=123,
         project_path="group/demo",
@@ -152,6 +187,8 @@ def _commit_event(*, branch: str = "feature/x", sha: str = "c0ffee0000") -> GitL
         branch=branch,
         title="feat: demo",
         message="feat: demo\n\nbody",
+        author_username=author_username,
+        author_name=author_name,
     )
 
 
@@ -173,6 +210,7 @@ def _orchestrator(
     gitlab: _FakeCommitGitLabClient,
     engine: _StaticEngine,
     session_factory: object | None = None,
+    notification_service: _FakeNotificationService | None = None,
 ) -> ReviewOrchestrator:
     registry = EngineRegistry()
     registry.register(engine)
@@ -181,6 +219,7 @@ def _orchestrator(
         engine_registry=registry,
         default_engine="static-engine",
         session_factory=session_factory,  # type: ignore[arg-type]
+        notification_service=notification_service,  # type: ignore[arg-type]
     )
 
 
@@ -303,15 +342,17 @@ async def test_review_commit_marks_failed_status_for_blocker_on_master() -> None
 
 @pytest.mark.asyncio
 async def test_review_commit_skips_merge_commit() -> None:
-    """merge commit（2 个 parent）-> skipped_merge_commit，无评论无 status。"""
+    """merge commit（2 个 parent）-> skipped_merge_commit，无评论无 status 无通知。"""
 
     gitlab = _client(parent_ids=["p1", "p2"])
     engine = _StaticEngine([])
-    orchestrator = _orchestrator(gitlab, engine)
+    notifier = _FakeNotificationService()
+    orchestrator = _orchestrator(gitlab, engine, notification_service=notifier)
 
     result = await orchestrator.review_commit(_commit_event())
 
     assert _assert_skipped(result, "skipped_merge_commit", gitlab, engine)
+    assert notifier.calls == []
 
 
 @pytest.mark.asyncio
@@ -422,7 +463,116 @@ async def test_review_commit_empty_diff_completes_with_zero_findings() -> None:
 
 
 # ---------------------------------------------------------------------------
-# review_commit 幂等 / 落库（真实测试 DB）
+# 通知推送（fake NotificationService）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_review_commit_pushes_notification_on_completion() -> None:
+    """正常完成 -> 推送一条通知，commit 语义字段（短 SHA / 标题 / 作者）到位。"""
+
+    gitlab = _client()
+    engine = _StaticEngine([_finding(line_number=2)])
+    notifier = _FakeNotificationService()
+    orchestrator = _orchestrator(gitlab, engine, notification_service=notifier)
+
+    result = await orchestrator.review_commit(
+        _commit_event(author_username="alice", author_name="Alice Zhang"),
+    )
+
+    assert result.status == "done"
+    assert len(notifier.calls) == 1
+    call = notifier.calls[0]
+    assert call["gitlab_project_id"] == 123
+    data = call["review_data"]
+    assert data["status"] == "done"
+    assert data["finding_count"] == 1
+    assert data["has_blocker"] is False
+    assert data["blocker_count"] == 0
+    assert data["mr_iid"] == "c0ffee00"  # commit 短 SHA 替代 MR iid
+    assert data["mr_title"] == "feat: demo"
+    assert data["mr_author_username"] == "alice"
+    assert data["mr_author_name"] == "Alice Zhang"
+    assert data["mr_web_url"] is None
+    # 1 条 WARNING finding 进了摘要。
+    assert len(data["findings_summary"]) == 1
+    assert data["findings_summary"][0]["severity"] == "WARNING"
+
+
+@pytest.mark.asyncio
+async def test_review_commit_notification_carries_blocker_stats() -> None:
+    """BLOCKER 命中阻断策略 -> 通知带 has_blocker / blocker_count。"""
+
+    gitlab = _client()
+    engine = _StaticEngine([_finding(severity="BLOCKER")])
+    notifier = _FakeNotificationService()
+    orchestrator = _orchestrator(gitlab, engine, notification_service=notifier)
+
+    await orchestrator.review_commit(_commit_event(branch="master"))
+
+    assert len(notifier.calls) == 1
+    data = notifier.calls[0]["review_data"]
+    assert data["has_blocker"] is True
+    assert data["blocker_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_review_commit_pushes_notification_on_empty_diff() -> None:
+    """空 diff -> done + 0 findings 的通知照推。"""
+
+    gitlab = _client(diffs=[])
+    engine = _StaticEngine([])
+    notifier = _FakeNotificationService()
+    orchestrator = _orchestrator(gitlab, engine, notification_service=notifier)
+
+    result = await orchestrator.review_commit(_commit_event())
+
+    assert result.status == "done"
+    assert len(notifier.calls) == 1
+    data = notifier.calls[0]["review_data"]
+    assert data["status"] == "done"
+    assert data["finding_count"] == 0
+    assert data["findings_summary"] == []
+
+
+@pytest.mark.asyncio
+async def test_review_commit_pushes_notification_on_engine_error() -> None:
+    """engine 异常 -> engine_error 通知照推（绝不静默失败）。"""
+
+    gitlab = _client()
+    engine = _StaticEngine(RuntimeError("llm timeout"))
+    notifier = _FakeNotificationService()
+    orchestrator = _orchestrator(gitlab, engine, notification_service=notifier)
+
+    result = await orchestrator.review_commit(_commit_event())
+
+    assert result.status == "engine_error"
+    assert len(notifier.calls) == 1
+    data = notifier.calls[0]["review_data"]
+    assert data["status"] == "engine_error"
+    assert data["finding_count"] == 0
+    assert data["findings_summary"] == []
+
+
+@pytest.mark.asyncio
+async def test_review_commit_notification_failure_does_not_break_flow() -> None:
+    """通知推送抛异常 -> 吞掉，审查结果与 GitLab 写回不受影响。"""
+
+    gitlab = _client()
+    engine = _StaticEngine([_finding(line_number=2)])
+    notifier = _FakeNotificationService(error=RuntimeError("dingtalk down"))
+    orchestrator = _orchestrator(gitlab, engine, notification_service=notifier)
+
+    result = await orchestrator.review_commit(_commit_event())
+
+    assert result.status == "done"
+    assert result.finding_count == 1
+    assert len(gitlab.comments) == 2  # 1 锚定 + 1 汇总
+    assert gitlab.statuses[0]["state"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# 不落库（真实测试 DB）
 # ---------------------------------------------------------------------------
 
 
@@ -445,10 +595,10 @@ async def _create_project(session_factory: async_sessionmaker) -> Project:
 
 
 @pytest.mark.asyncio
-async def test_review_commit_idempotent_skips_existing_done_record(
+async def test_review_commit_reruns_despite_existing_done_record(
     db_session_factory: async_sessionmaker,
 ) -> None:
-    """同 (project, sha) 已有 done 的 commit 审查记录 -> GitLab client 零调用。"""
+    """commit 审查无幂等检查：已有 done 的历史记录也照样重新审查。"""
 
     project = await _create_project(db_session_factory)
     async with db_session_factory() as session:
@@ -475,50 +625,15 @@ async def test_review_commit_idempotent_skips_existing_done_record(
 
     result = await orchestrator.review_commit(_commit_event())
 
-    assert result.status == "skipped_already_reviewed"
-    assert gitlab.api_calls == []
-
-
-@pytest.mark.asyncio
-async def test_review_commit_engine_error_record_does_not_count_as_reviewed(
-    db_session_factory: async_sessionmaker,
-) -> None:
-    """status='engine_error' 的记录不算已审 -> 下次重试补审。"""
-
-    project = await _create_project(db_session_factory)
-    async with db_session_factory() as session:
-        session.add(
-            ReviewRow(
-                id=uuid4(),
-                project_id=project.id,
-                mr_iid=None,
-                source_branch="feature/x",
-                target_branch="feature/x",
-                commit_sha="c0ffee0000",
-                status="engine_error",
-                has_blocker=False,
-                finding_count=0,
-                review_mode="full",
-                review_kind="commit",
-            )
-        )
-        await session.commit()
-
-    gitlab = _client()
-    engine = _StaticEngine([])
-    orchestrator = _orchestrator(gitlab, engine, session_factory=db_session_factory)
-
-    result = await orchestrator.review_commit(_commit_event())
-
     assert result.status == "done"
     assert "get_commit" in gitlab.api_calls
 
 
 @pytest.mark.asyncio
-async def test_review_commit_persists_review_and_finding_rows(
+async def test_review_commit_does_not_persist_review_or_finding_rows(
     db_session_factory: async_sessionmaker,
 ) -> None:
-    """落库：review_kind='commit' / mr_iid=None / finding 行带 commit 评论 id。"""
+    """审查完成后不落库：reviews / review_findings 都查不到本次审查。"""
 
     await _create_project(db_session_factory)
     gitlab = _client()
@@ -535,22 +650,13 @@ async def test_review_commit_persists_review_and_finding_rows(
 
     async with db_session_factory() as session:
         review = await session.get(ReviewRow, result.review_id)
-        assert review is not None
-        assert review.review_kind == "commit"
-        assert review.mr_iid is None
-        assert review.base_sha == "parent000"
-        assert review.review_mode == "full"
-        assert review.status == "done"
-        assert review.source_branch == "feature/x"
-        assert review.target_branch == "feature/x"
+        assert review is None
         findings = (
-            (await session.execute(select(FindingRow).where(FindingRow.review_id == review.id)))
+            (await session.execute(select(FindingRow).where(FindingRow.review_id == result.review_id)))
             .scalars()
             .all()
         )
-        assert len(findings) == 1
-        # 第一条锚定评论的 id（fake client 返回 {"id": 1}）。
-        assert findings[0].gitlab_discussion_id == "1"
+        assert findings == []
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +666,7 @@ async def test_review_commit_persists_review_and_finding_rows(
 
 @pytest.mark.parametrize("review_kind", ["mr", "commit"])
 def test_review_kind_literal_accepts_written_values(review_kind: str) -> None:
-    """ReviewCreate 接受 'mr' / 'commit'（commit 审查写入 DB 的两个值）。"""
+    """ReviewCreate 接受 'mr' / 'commit'（schema 允许的两个取值）。"""
 
     payload = ReviewCreate(
         project_id="00000000-0000-0000-0000-000000000001",  # type: ignore[arg-type]
@@ -575,7 +681,7 @@ def test_review_kind_literal_accepts_written_values(review_kind: str) -> None:
 
 @pytest.mark.parametrize("review_kind", ["mr", "commit"])
 def test_review_read_accepts_review_kind(review_kind: str) -> None:
-    """ReviewRead 接受 commit 审查行（mr_iid=None + review_kind）。"""
+    """ReviewRead 接受历史 commit 审查行（mr_iid=None + review_kind）。"""
 
     from datetime import UTC, datetime
 

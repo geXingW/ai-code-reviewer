@@ -166,10 +166,11 @@ class CommitReviewResult:
     """单个 commit 审查的执行结果。
 
     Attributes:
-        review_id: 落库的 review 行 ID；跳过路径下为已存在记录的 ID 或 None。
+        review_id: 本次审查生成的 review ID（仅用于评论 / 通知 / 日志追踪，
+            **不落库**）；跳过路径下为 None。
         project_uuid: 项目内部 UUID 投影。
-        status: ``done`` / ``engine_error`` / ``skipped_already_reviewed`` /
-            ``skipped_merge_commit`` / ``skipped_root_commit`` / ``skipped_disabled``。
+        status: ``done`` / ``engine_error`` / ``skipped_merge_commit`` /
+            ``skipped_root_commit`` / ``skipped_disabled``。
         finding_count: engine 产出（或空审时 0）的 finding 数。
         has_blocker: 是否命中阻断策略。
         note_id: 汇总评论的 GitLab comment id。
@@ -474,18 +475,16 @@ class ReviewOrchestrator:
 
         审查 diff 语义：该 commit vs 其第一个 parent（``parent_ids[0]..commit``）。
         结果写回 GitLab：每个 finding 一条行级锚定 commit 评论 + 一条汇总评论 +
-        commit status（有 blocker=failed，否则 success）。
+        commit status（有 blocker=failed，否则 success）。审查结果**不落库**
+        （只持久化 MR 审查），完成后 best-effort 推送钉钉通知。
 
         行为规则：
           - ``settings.commit_review_enabled=False`` -> skipped_disabled；
-          - 幂等：同 ``(project, sha)`` 已有 status='done' 的 review_kind='commit'
-            记录 -> skipped_already_reviewed，**不调任何 GitLab API**；engine_error
-            记录不算已审（下次重试补审）；
           - merge commit（parent_ids >1）-> skipped_merge_commit；根提交
-            （parent_ids 为空）-> skipped_root_commit，均无评论无落库；
-          - diff 过滤后为空 -> 落库 done + 0 findings + 汇总评论"无可审查变更"；
-          - engine 异常 -> 落库 status='engine_error' + commit status failed +
-            审查失败评论，绝不静默通过。
+            （parent_ids 为空）-> skipped_root_commit，均无评论无通知；
+          - diff 过滤后为空 -> 0 findings + 汇总评论"无可审查变更" + 通知；
+          - engine 异常 -> commit status failed + 审查失败评论 + 通知，
+            绝不静默通过。
 
         Args:
             event: 归一化后的 commit 事件。
@@ -502,25 +501,7 @@ class ReviewOrchestrator:
                 status="skipped_disabled",
             )
 
-        # 幂等：session_factory 缺失时跳过检查（与旧 MVP 行为一致），宁可重审
-        # 也不因为没接 DB 就拒绝审查。
-        if self._session_factory is not None:
-            existing = await self._find_completed_commit_review(event)
-            if existing is not None:
-                logger.info(
-                    "commit review skipped: already reviewed",
-                    extra={
-                        "gitlab_project_id": event.project_id,
-                        "commit_sha": event.commit_sha,
-                        "existing_review_id": str(existing.id),
-                    },
-                )
-                return CommitReviewResult(
-                    review_id=existing.id,
-                    project_uuid=event.project_uuid,
-                    status="skipped_already_reviewed",
-                )
-
+        # commit 审查不落库，也就没有"已审查过"记录可查 -- 每次 push 都重新审查。
         # Push Hook payload 不带 parents 信息，必须逐个调 commit 详情 API 判断。
         commit = await self._gitlab_client.get_commit(
             project_id=event.project_id,
@@ -542,7 +523,6 @@ class ReviewOrchestrator:
             )
         parent_sha = parent_id_list[0]
 
-        started_at = time.perf_counter()
         diffs = await self._gitlab_client.get_commit_diff(
             project_id=event.project_id,
             sha=event.commit_sha,
@@ -557,8 +537,7 @@ class ReviewOrchestrator:
         policy_applied = f"{block_policy.branch_pattern} -> {block_policy.block_severity}"
 
         if not hunks:
-            # 空提交 / 全部被 ignore_paths 过滤 -> 落库 done + 0 findings +
-            # 汇总评论，保证幂等闭环。
+            # 空提交 / 全部被 ignore_paths 过滤 -> 0 findings + 汇总评论 + 通知。
             review_id = uuid4()
             note = await self._gitlab_client.create_commit_comment(
                 project_id=event.project_id,
@@ -582,16 +561,14 @@ class ReviewOrchestrator:
                 description="AI Review completed with 0 finding(s)",
                 target_url=self._build_review_detail_url(review_id),
             )
-            await self._persist_commit_review(
+            await self._push_commit_review_notification(
                 event=event,
                 review_id=review_id,
-                findings=[],
-                comment_ids=[],
+                finding_count=0,
                 has_blocker=False,
+                blocker_count=0,
                 status_value="done",
-                duration_ms=int((time.perf_counter() - started_at) * 1000),
-                engine_used=self._default_engine,
-                parent_sha=parent_sha,
+                findings=[],
             )
             return CommitReviewResult(
                 review_id=review_id,
@@ -644,15 +621,13 @@ class ReviewOrchestrator:
             return await self._handle_commit_engine_error(
                 event=event,
                 review_id=review_id,
-                parent_sha=parent_sha,
                 policy_applied=policy_applied,
                 block_policy=block_policy,
                 error=exc,
-                duration_ms=int((time.perf_counter() - started_at) * 1000),
             )
 
         has_blocker, blocker_count = compute_has_blocker(findings, block_policy)
-        comment_ids = await self._post_commit_finding_comments(event, changes, findings)
+        await self._post_commit_finding_comments(event, changes, findings)
         note = await self._gitlab_client.create_commit_comment(
             project_id=event.project_id,
             sha=event.commit_sha,
@@ -679,16 +654,14 @@ class ReviewOrchestrator:
             ),
             target_url=self._build_review_detail_url(review_id),
         )
-        await self._persist_commit_review(
+        await self._push_commit_review_notification(
             event=event,
             review_id=review_id,
-            findings=findings,
-            comment_ids=comment_ids,
+            finding_count=len(findings),
             has_blocker=has_blocker,
+            blocker_count=blocker_count,
             status_value="done",
-            duration_ms=int((time.perf_counter() - started_at) * 1000),
-            engine_used=self._default_engine,
-            parent_sha=parent_sha,
+            findings=findings,
         )
         return CommitReviewResult(
             review_id=review_id,
@@ -798,38 +771,6 @@ class ReviewOrchestrator:
             discussion_ids.append(str(raw_id) if raw_id is not None else None)
         return discussion_ids
 
-    async def _find_completed_commit_review(
-        self,
-        event: GitLabCommitEvent,
-    ) -> ReviewRow | None:
-        """幂等查询：该 commit 是否已有 status='done' 的 commit 审查记录。
-
-        DB 异常吞掉返回 None（宁可重审也不拒绝审查）。Project 未注册也返回
-        None -- 未注册项目没有历史记录可匹配，照常走审查（落库时同样会跳过）。
-        """
-
-        if self._session_factory is None:
-            return None
-        try:
-            async with self._session_factory() as session:
-                project_repo = ProjectRepository(session)
-                project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
-                if project is None:
-                    return None
-                review_repo = ReviewRepository(session)
-                return await review_repo.find_completed_commit_review(
-                    project.id, event.commit_sha,
-                )
-        except SQLAlchemyError:
-            logger.exception(
-                "commit review idempotency lookup failed",
-                extra={
-                    "gitlab_project_id": event.project_id,
-                    "commit_sha": event.commit_sha,
-                },
-            )
-            return None
-
     async def _post_commit_finding_comments(
         self,
         event: GitLabCommitEvent,
@@ -898,13 +839,11 @@ class ReviewOrchestrator:
         *,
         event: GitLabCommitEvent,
         review_id: UUID,
-        parent_sha: str,
         policy_applied: str,
         block_policy: BlockPolicyLike,
         error: Exception,
-        duration_ms: int = 0,
     ) -> CommitReviewResult:
-        """commit 审查引擎失败的确定性反馈：失败评论 + failed status + 落库。
+        """commit 审查引擎失败的确定性反馈：失败评论 + failed status + 通知。
 
         与 MR 流的 :meth:`_handle_engine_error` 语义对齐，但 commit 审查没有
         "阻断合并"概念，**commit status 恒为 failed**（失败不装成功），错误细节
@@ -935,16 +874,14 @@ class ReviewOrchestrator:
             description="AI Review engine failed",
             target_url=self._build_review_detail_url(review_id),
         )
-        await self._persist_commit_review(
+        await self._push_commit_review_notification(
             event=event,
             review_id=review_id,
-            findings=[],
-            comment_ids=[],
+            finding_count=0,
             has_blocker=has_blocker,
+            blocker_count=blocker_count,
             status_value="engine_error",
-            duration_ms=duration_ms,
-            engine_used=self._default_engine,
-            parent_sha=parent_sha,
+            findings=[],
         )
         return CommitReviewResult(
             review_id=review_id,
@@ -954,102 +891,6 @@ class ReviewOrchestrator:
             has_blocker=has_blocker,
             note_id=_extract_int(note, "id"),
         )
-
-    async def _persist_commit_review(
-        self,
-        *,
-        event: GitLabCommitEvent,
-        review_id: UUID,
-        findings: Sequence[Finding],
-        comment_ids: Sequence[str | None],
-        has_blocker: bool,
-        status_value: str,
-        duration_ms: int,
-        engine_used: str,
-        parent_sha: str,
-    ) -> None:
-        """Best-effort 落库 commit 审查：``reviews`` + ``review_findings``。
-
-        参照 :meth:`_persist_review` 的容错：session_factory 为 None 跳过、
-        Project 未注册跳过并记 warning、事务失败 rollback 不影响返回。
-        ``mr_iid=None``、``review_kind='commit'``、``base_sha=parent_sha``、
-        ``review_mode='full'``；finding 行的 ``gitlab_discussion_id`` 存对应
-        commit 评论的 id 字符串。
-        """
-
-        if self._session_factory is None:
-            return
-        ids_seq: Sequence[str | None] = list(comment_ids)
-        if len(ids_seq) != len(findings):
-            logger.warning(
-                "commit comment_ids length mismatch; discarding ids to avoid misalignment",
-                extra={
-                    "expected": len(findings),
-                    "got": len(ids_seq),
-                },
-            )
-            ids_seq = [None] * len(findings)
-        try:
-            async with self._session_factory() as session:
-                project_repo = ProjectRepository(session)
-                project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
-                if project is None:
-                    logger.warning(
-                        "skip commit review persistence: project not registered",
-                        extra={
-                            "gitlab_project_id": event.project_id,
-                            "review_id": str(review_id),
-                        },
-                    )
-                    return
-                review_row = ReviewRow(
-                    id=review_id,
-                    project_id=project.id,
-                    mr_iid=None,
-                    source_branch=event.branch,
-                    target_branch=event.branch,
-                    commit_sha=event.commit_sha,
-                    status=status_value,
-                    engine_used=engine_used,
-                    has_blocker=has_blocker,
-                    finding_count=len(findings),
-                    duration_ms=duration_ms,
-                    base_sha=parent_sha,
-                    parent_review_id=None,
-                    review_mode="full",
-                    review_kind="commit",
-                )
-                session.add(review_row)
-                await session.flush()
-                for finding, comment_id in zip(findings, ids_seq, strict=True):
-                    session.add(
-                        FindingRow(
-                            review_id=review_id,
-                            file_path=finding.file_path,
-                            line_number=finding.line_number,
-                            rule_id=finding.rule_id or "unknown",
-                            severity=finding.severity,
-                            title=finding.title,
-                            description=finding.description,
-                            suggestion=finding.suggestion,
-                            existing_code=finding.existing_code,
-                            category=finding.category,
-                            confidence=float(finding.confidence or 0.0),
-                            first_seen_review_id=review_id,
-                            status="open",
-                            gitlab_discussion_id=comment_id,
-                        )
-                    )
-                await session.commit()
-        except SQLAlchemyError:
-            logger.exception(
-                "failed to persist commit review",
-                extra={
-                    "gitlab_project_id": event.project_id,
-                    "review_id": str(review_id),
-                    "commit_sha": event.commit_sha,
-                },
-            )
 
     async def _handle_engine_error(
         self,
@@ -2205,6 +2046,50 @@ class ReviewOrchestrator:
             )
         except Exception as exc:
             logger.warning("Failed to send review notification", exc_info=exc)
+
+    async def _push_commit_review_notification(
+        self,
+        *,
+        event: GitLabCommitEvent,
+        review_id: UUID,
+        finding_count: int,
+        has_blocker: bool,
+        blocker_count: int,
+        status_value: str,
+        findings: Sequence[Finding] | None = None,
+    ) -> None:
+        """推送 commit 审查完成通知（best-effort，失败不影响主流程）。
+
+        参照 :meth:`_push_review_notification`，但 commit 审查没有 MR 上下文，
+        ``mr_iid`` / ``mr_title`` 等 MR 语义字段用 commit 信息替代。
+        未注入 ``notification_service`` 时直接跳过；任何异常（含推送失败）都被
+        吞成 warning 日志，绝不阻断 commit 审查主流程。
+        """
+
+        if self._notification_service is None:
+            return
+        try:
+            await self._notification_service.send_review_completed(
+                gitlab_project_id=event.project_id,
+                review_data={
+                    "review_id": str(review_id),
+                    "mr_iid": event.commit_sha[:8],  # commit 短 SHA 作为标识
+                    "mr_title": event.title,          # commit message 首行
+                    "finding_count": finding_count,
+                    "has_blocker": has_blocker,
+                    "blocker_count": blocker_count,
+                    "detail_url": self._build_review_detail_url(review_id),
+                    "status": status_value,
+                    "mr_author_username": event.author_username,
+                    "mr_author_name": event.author_name,
+                    "mr_web_url": None,  # commit 没有 MR 链接
+                    "findings_summary": _build_findings_summary(findings or []),
+                    "mr_created_at": "",  # commit 事件没有创建时间
+                    "changed_files_count": 0,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to send commit review notification", exc_info=exc)
 
 
 def _match_int(match: re.Match[str] | None, group: str, *, default: int) -> int:
