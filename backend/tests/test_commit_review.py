@@ -652,7 +652,11 @@ async def test_review_commit_does_not_persist_review_or_finding_rows(
         review = await session.get(ReviewRow, result.review_id)
         assert review is None
         findings = (
-            (await session.execute(select(FindingRow).where(FindingRow.review_id == result.review_id)))
+            (
+                await session.execute(
+                    select(FindingRow).where(FindingRow.review_id == result.review_id)
+                )
+            )
             .scalars()
             .all()
         )
