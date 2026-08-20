@@ -214,6 +214,12 @@ class OpenAICompatibleProvider(LLMProvider):
         if self.config.default_json_mode:
             payload["response_format"] = {"type": "json_object"}
 
+        # 透传 provider.extra 中约定的 extra_body 字段（如阿里百炼的 enable_thinking），
+        # 未配置时不影响任何 provider。白名单方式避免把整个 extra 字典无差别注入。
+        _extra_body = self.config.extra.get("extra_body")
+        if isinstance(_extra_body, dict):
+            payload.update(_extra_body)
+
         response = await self._post_with_retry(
             self.config.base_url.rstrip("/") + "/chat/completions",
             headers={
