@@ -327,6 +327,102 @@ describe('MVP 管理台', () => {
     ]);
   });
 
+  // 项目级 commit 审查配置：编辑弹窗回填 + 开关联动数字输入 + 提交透传。
+  it('编辑项目弹窗可配置 commit 推送审查并随 PATCH 提交', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const projectId = '00000000-0000-0000-0000-00000000000c';
+    const project = {
+      id: projectId,
+      name: 'commit-review-project',
+      gitlab_project_id: '123',
+      gitlab_base_url: 'https://gitlab.example.com',
+      gitlab_access_token: '****',
+      webhook_secret: '****',
+      engine_id: null,
+      provider_id: null,
+      enabled: true,
+      default_block_severity: 'BLOCKER',
+      timeout_seconds: 300,
+      max_files: 50,
+      commit_review_enabled: true,
+      commit_review_max_per_push: 5,
+      ignore_paths: null,
+      rules: [],
+      block_policies: [],
+      notification_channels: [],
+      created_at: '2026-07-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+    };
+    mockFetch(async (url, init) => {
+      calls.push({ url, init });
+      if (url === '/health') {
+        return jsonResponse({ status: 'ok', version: '0.1.0-dev', db: 'ok' });
+      }
+      if (url === '/api/auth/login') {
+        return jsonResponse({ access_token: 'admin-token', token_type: 'bearer', expires_in: 86400 });
+      }
+      if (url === '/api/engines' || url === '/api/engines/configs') {
+        return jsonResponse(url === '/api/engines' ? [] : { items: [], total: 0, limit: 50, offset: 0 });
+      }
+      if (url === '/api/providers') {
+        return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
+      }
+      // fetchRules 会带 ?limit=100&offset=0，用 startsWith 匹配。
+      if (url.startsWith('/api/rules')) {
+        return jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
+      }
+      if (url === '/api/projects') {
+        return jsonResponse({ items: [project], total: 1, limit: 50, offset: 0 });
+      }
+      if (url === `/api/projects/${projectId}` && init?.method === 'PATCH') {
+        return jsonResponse(project);
+      }
+      if (
+        url === '/api/reviews/records' ||
+        url === '/api/reviews/recent' ||
+        url === '/api/false-positives/pending'
+      ) {
+        return url === '/api/reviews/recent'
+          ? jsonResponse([])
+          : jsonResponse({ items: [], total: 0, limit: 50, offset: 0 });
+      }
+      if (url.startsWith('/api/stats/')) {
+        return jsonResponse(url.includes('overview') ? {} : []);
+      }
+      return jsonResponse({ detail: 'not found' }, false, 404);
+    });
+
+    render(<MemoryRouter><App /></MemoryRouter>);
+    await loginAsAdmin();
+    await userEvent.click(screen.getByRole('button', { name: 'GitLab 项目' }));
+
+    // 打开编辑弹窗：commit 审查字段按项目配置回填。
+    await userEvent.click(await screen.findByRole('button', { name: '编辑' }));
+    const toggle = await screen.findByLabelText('启用 commit 推送审查');
+    expect(toggle).toBeChecked();
+    const maxInput = screen.getByLabelText('单次推送最多审查 commit 数 (1-20)');
+    expect(maxInput).toHaveValue(5);
+    expect(maxInput).toBeEnabled();
+
+    // 关闭开关后，数字输入置灰 disabled。
+    await userEvent.click(toggle);
+    expect(maxInput).toBeDisabled();
+
+    await userEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    const patchCall = await waitFor(() => {
+      const found = calls.find(
+        (call) => call.url === `/api/projects/${projectId}` && call.init?.method === 'PATCH',
+      );
+      expect(found).toBeTruthy();
+      return found;
+    });
+    expect(JSON.parse(String(patchCall?.init?.body))).toMatchObject({
+      commit_review_enabled: false,
+      commit_review_max_per_push: 5,
+    });
+  });
+
   // 用户映射页：导航可达 + 列表渲染 + 弹窗新增（钉钉 @MR 创建人配置入口）。
   it('用户映射页可查看列表并通过弹窗新增映射', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];

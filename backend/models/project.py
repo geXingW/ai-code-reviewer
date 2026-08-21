@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Uuid, text, true
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Uuid, false, text, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.db import Base, TimestampMixin
@@ -62,6 +62,19 @@ class Project(Base, TimestampMixin):
     max_files: Mapped[int] = mapped_column(
         Integer,
         default=50,
+        nullable=False,
+    )
+    # 项目级 commit 审查配置（Push Hook 逐 commit 审查）。
+    # enabled 默认 False（安全第一）；max_per_push 覆盖全局 settings 同名配置。
+    commit_review_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
+    commit_review_max_per_push: Mapped[int] = mapped_column(
+        Integer,
+        default=10,
         nullable=False,
     )
     ignore_paths: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)

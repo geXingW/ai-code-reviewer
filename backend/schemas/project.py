@@ -27,6 +27,8 @@ class ProjectCreate(BaseModel):
     enabled: bool = True
     timeout_seconds: int = 300
     max_files: int = 50
+    commit_review_enabled: bool = False
+    commit_review_max_per_push: int = Field(default=10, ge=1, le=20)
     ignore_paths: list[Any] | None = None
     default_block_severity: BlockSeverity = "BLOCKER"
     deleted_at: datetime | None = None
@@ -62,6 +64,8 @@ class ProjectUpdate(BaseModel):
     enabled: bool | None = None
     timeout_seconds: int | None = None
     max_files: int | None = None
+    commit_review_enabled: bool | None = None
+    commit_review_max_per_push: int | None = Field(default=None, ge=1, le=20)
     ignore_paths: list[Any] | None = None
     default_block_severity: BlockSeverity | None = None
     deleted_at: datetime | None = None
@@ -93,6 +97,8 @@ class ProjectRead(BaseModel):
     enabled: bool
     timeout_seconds: int
     max_files: int
+    commit_review_enabled: bool
+    commit_review_max_per_push: int
     ignore_paths: list[Any] | None
     default_block_severity: BlockSeverity
     deleted_at: AwareDatetime | None

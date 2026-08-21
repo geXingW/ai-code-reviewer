@@ -115,10 +115,13 @@ async def test_migration_0011_upgrade_and_downgrade_roundtrip() -> None:
         assert "review_kind" not in columns
         assert columns["mr_iid"]["nullable"] is False
 
-        # 校正版本行到 0010，保证 upgrade head 确实重放 0011 的 upgrade。
+        # 校正版本行到 0010，保证 upgrade 确实重放 0011 的 upgrade。
+        # 目标显式写 0011 而不是 head：create_all 出来的 schema 是当前
+        # models（已包含 0012 的列），upgrade 到 head 会重放 0012 报
+        # DuplicateColumn；0012 有自己的往返测试（test_migration_0012）。
         await set_version(_PREV_REVISION)
 
-        await asyncio.to_thread(command.upgrade, cfg, "head")
+        await asyncio.to_thread(command.upgrade, cfg, _HEAD_REVISION)
 
         columns = await fetch_review_columns()
         assert "review_kind" in columns
