@@ -576,8 +576,12 @@ async def test_review_commit_notification_failure_does_not_break_flow() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _create_project(session_factory: async_sessionmaker) -> Project:
-    """在测试库里注册 GitLab project_id=123 的项目。"""
+async def _create_project(
+    session_factory: async_sessionmaker,
+    *,
+    commit_review_enabled: bool = True,
+) -> Project:
+    """在测试库里注册 GitLab project_id=123 的项目（commit 审查默认开启）。"""
 
     project = Project(
         name="test-project",
@@ -586,6 +590,7 @@ async def _create_project(session_factory: async_sessionmaker) -> Project:
         gitlab_access_token="glpat-test",
         webhook_secret="test-webhook-secret",
         enabled=True,
+        commit_review_enabled=commit_review_enabled,
     )
     async with session_factory() as session:
         session.add(project)
@@ -661,6 +666,29 @@ async def test_review_commit_does_not_persist_review_or_finding_rows(
             .all()
         )
         assert findings == []
+
+
+@pytest.mark.asyncio
+async def test_review_commit_skips_when_project_disabled(
+    db_session_factory: async_sessionmaker,
+) -> None:
+    """项目级 commit_review_enabled=False -> skipped_disabled，不调任何 GitLab API。
+
+    全局 settings.commit_review_enabled 默认 True（测试环境未设 env），证明
+    拒绝来自项目级开关而非全局配置。
+    """
+
+    await _create_project(db_session_factory, commit_review_enabled=False)
+    gitlab = _client()
+    engine = _StaticEngine([])
+    orchestrator = _orchestrator(gitlab, engine, session_factory=db_session_factory)
+
+    result = await orchestrator.review_commit(_commit_event())
+
+    assert result.status == "skipped_disabled"
+    assert result.review_id is None
+    assert gitlab.api_calls == []
+    assert engine.contexts == []
 
 
 # ---------------------------------------------------------------------------

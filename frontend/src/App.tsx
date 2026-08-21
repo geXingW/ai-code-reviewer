@@ -134,6 +134,8 @@ const initialProjectForm: ProjectFormPayload = {
   enabled: true,
   timeout_seconds: 300,
   max_files: 50,
+  commit_review_enabled: false,
+  commit_review_max_per_push: 10,
   default_block_severity: 'BLOCKER',
   rules: [],
 };

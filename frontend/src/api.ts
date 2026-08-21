@@ -156,6 +156,9 @@ export type ProjectConfig = {
   default_block_severity: string;
   timeout_seconds: number;
   max_files: number;
+  // 项目级 commit 审查开关（GitLab Push Hook 逐 commit 审查）。
+  commit_review_enabled: boolean;
+  commit_review_max_per_push: number;
   ignore_paths: unknown[] | null;
   rules: ProjectRuleConfig[];
   block_policies: BlockPolicy[];
@@ -270,6 +273,8 @@ export type ProjectFormPayload = {
   enabled: boolean;
   timeout_seconds: number;
   max_files: number;
+  commit_review_enabled: boolean;
+  commit_review_max_per_push: number;
   default_block_severity: 'INFO' | 'WARNING' | 'BLOCKER';
   rules: ProjectRuleFormPayload[];
 };
@@ -282,6 +287,8 @@ export type ProjectUpdatePayload = {
   webhook_secret?: string;
   enabled?: boolean;
   default_block_severity?: 'INFO' | 'WARNING' | 'BLOCKER';
+  commit_review_enabled?: boolean;
+  commit_review_max_per_push?: number;
   engine_id?: string | null;
   provider_id?: string | null;
   rules?: ProjectRuleFormPayload[];
@@ -558,6 +565,8 @@ export async function createProject(payload: ProjectFormPayload): Promise<Projec
     enabled: payload.enabled,
     timeout_seconds: payload.timeout_seconds,
     max_files: payload.max_files,
+    commit_review_enabled: payload.commit_review_enabled,
+    commit_review_max_per_push: payload.commit_review_max_per_push,
     default_block_severity: payload.default_block_severity,
   };
   // 仅当用户主动选了规则时才传 rules；为空时不传，让后端走「安全默认」

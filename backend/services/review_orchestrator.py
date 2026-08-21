@@ -470,6 +470,29 @@ class ReviewOrchestrator:
             note_id=_extract_int(note, "id"),
         )
 
+    async def _resolve_commit_review_enabled(self, event: _EventLike) -> bool:
+        """解析 commit 审查的项目级开关。
+
+        优先取 ``project.commit_review_enabled``（项目级隔离）；查不到 Project
+        --无 session_factory（MVP 兼容路径）、项目未注册、DB 异常--时回退
+        全局 ``settings.commit_review_enabled``，保持旧调用方的行为不变。
+        """
+        if self._session_factory is None:
+            return get_settings().commit_review_enabled
+        try:
+            async with self._session_factory() as session:
+                project_repo = ProjectRepository(session)
+                project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
+        except SQLAlchemyError:
+            logger.exception(
+                "commit review project flag resolution failed; falling back to global settings",
+                extra={"gitlab_project_id": event.project_id},
+            )
+            return get_settings().commit_review_enabled
+        if project is None:
+            return get_settings().commit_review_enabled
+        return bool(project.commit_review_enabled)
+
     async def review_commit(self, event: GitLabCommitEvent) -> CommitReviewResult:
         """Push Hook 逐 commit 审查入口。
 
@@ -479,7 +502,8 @@ class ReviewOrchestrator:
         （只持久化 MR 审查），完成后 best-effort 推送钉钉通知。
 
         行为规则：
-          - ``settings.commit_review_enabled=False`` -> skipped_disabled；
+          - 项目级 ``project.commit_review_enabled=False`` -> skipped_disabled
+            （查不到 Project--无 DB / 未注册--时回退全局 settings 开关）；
           - merge commit（parent_ids >1）-> skipped_merge_commit；根提交
             （parent_ids 为空）-> skipped_root_commit，均无评论无通知；
           - diff 过滤后为空 -> 0 findings + 汇总评论"无可审查变更" + 通知；
@@ -493,8 +517,7 @@ class ReviewOrchestrator:
             CommitReviewResult: 执行摘要。
         """
 
-        settings = get_settings()
-        if not settings.commit_review_enabled:
+        if not await self._resolve_commit_review_enabled(event):
             return CommitReviewResult(
                 review_id=None,
                 project_uuid=event.project_uuid,

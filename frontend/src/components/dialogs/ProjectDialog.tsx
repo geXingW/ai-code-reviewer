@@ -44,6 +44,8 @@ const initialEmptyForm: ProjectFormPayload = {
   enabled: true,
   timeout_seconds: 300,
   max_files: 50,
+  commit_review_enabled: false,
+  commit_review_max_per_push: 10,
   default_block_severity: 'BLOCKER',
   rules: [],
 };
@@ -108,6 +110,8 @@ export function ProjectDialog({
           enabled: initialData.enabled,
           timeout_seconds: initialData.timeout_seconds,
           max_files: initialData.max_files,
+          commit_review_enabled: initialData.commit_review_enabled,
+          commit_review_max_per_push: initialData.commit_review_max_per_push,
           default_block_severity: initialData.default_block_severity as ProjectFormPayload['default_block_severity'],
           rules: initialData.rules.map((r) => ({ rule_id: r.rule_id, enabled: r.enabled })),
         });
@@ -297,6 +301,48 @@ export function ProjectDialog({
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </Select>
+            </div>
+          </div>
+
+          {/* Commit 推送审查：复用「启用项目」的卡片风格 */}
+          <div className="flex items-center justify-between rounded-lg border border-zinc-200 bg-zinc-50/50 px-3 py-2.5">
+            <div className="flex items-center gap-2.5">
+              <input
+                type="checkbox"
+                id="project-commit-review-enabled"
+                checked={form.commit_review_enabled}
+                onChange={(event) =>
+                  setForm({ ...form, commit_review_enabled: event.target.checked })
+                }
+                className="size-4 rounded border-zinc-300 accent-indigo-600 focus:ring-indigo-500"
+              />
+              <Label htmlFor="project-commit-review-enabled" className="text-[13px] text-zinc-700">
+                启用 commit 推送审查
+              </Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label
+                htmlFor="project-commit-review-max"
+                className={`text-[11px] ${form.commit_review_enabled ? 'text-zinc-500' : 'text-zinc-300'}`}
+              >
+                单次推送最多审查 commit 数 (1-20)
+              </Label>
+              <Input
+                id="project-commit-review-max"
+                type="number"
+                min={1}
+                max={20}
+                disabled={!form.commit_review_enabled}
+                value={String(form.commit_review_max_per_push)}
+                onChange={(event) => {
+                  const parsed = Number(event.target.value) || 0;
+                  setForm({
+                    ...form,
+                    commit_review_max_per_push: Math.min(20, Math.max(1, parsed)),
+                  });
+                }}
+                className={`w-20 text-right ${form.commit_review_enabled ? '' : 'opacity-50'}`}
+              />
             </div>
           </div>
         </FieldGroup>

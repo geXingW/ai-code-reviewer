@@ -139,14 +139,16 @@ def _handle_push_hook(
 
     过滤链顺序：
       1. ``settings.commit_review_enabled=False`` -> processed=False
-         reason=commit_review_disabled（全局止血开关）；
-      2. ref 非 ``refs/heads/*``（tag push 等）-> ignored_event；
-      3. after 为 40 个 0（删分支）-> ignored_event；
-      4. commits 空 -> ignored_event。
+         reason=commit_review_disabled（全局止血开关，第一道防线）；
+      2. ``project.commit_review_enabled=False`` -> processed=False
+         reason=commit_review_disabled（项目级开关，第二道防线）；
+      3. ref 非 ``refs/heads/*``（tag push 等）-> ignored_event；
+      4. after 为 40 个 0（删分支）-> ignored_event；
+      5. commits 空 -> ignored_event。
 
-    通过后按 ``commit_review_max_per_push`` 截断只审最近 N 个（超出 log
-    warning），调度后台任务并**立即返回 202** -- 一次 push N 个 commit 就是
-    N 次 LLM 调用，同步等待必然超时。
+    通过后按 ``project.commit_review_max_per_push``（兜底全局 settings）截断
+    只审最近 N 个（超出 log warning），调度后台任务并**立即返回 202** --
+    一次 push N 个 commit 就是 N 次 LLM 调用，同步等待必然超时。
     """
 
     from core.config import get_settings
@@ -154,12 +156,15 @@ def _handle_push_hook(
     settings = get_settings()
     if not settings.commit_review_enabled:
         return GitLabWebhookResponse(processed=False, reason="commit_review_disabled")
+    if not project.commit_review_enabled:
+        return GitLabWebhookResponse(processed=False, reason="commit_review_disabled")
 
     push_info = _parse_push_event(payload)
     if push_info is None:
         return GitLabWebhookResponse(processed=False, reason="ignored_event")
 
-    max_per_push = settings.commit_review_max_per_push
+    # 项目级上限优先；未持久化 / 未赋值的内存对象兜底全局 settings。
+    max_per_push = project.commit_review_max_per_push or settings.commit_review_max_per_push
     commits = push_info.commits
     if len(commits) > max_per_push:
         dropped = len(commits) - max_per_push

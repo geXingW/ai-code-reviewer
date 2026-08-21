@@ -22,6 +22,8 @@ async def _create_test_project(
     gitlab_base_url: str = "https://gitlab.example.com",
     gitlab_access_token: str = "glpat-test",
     enabled: bool = True,
+    commit_review_enabled: bool = True,
+    commit_review_max_per_push: int = 10,
 ) -> Project:
     """Create a Project record directly for webhook tests."""
 
@@ -32,6 +34,8 @@ async def _create_test_project(
         gitlab_access_token=gitlab_access_token,
         webhook_secret=webhook_secret,
         enabled=enabled,
+        commit_review_enabled=commit_review_enabled,
+        commit_review_max_per_push=commit_review_max_per_push,
     )
     async with session_factory() as session:
         session.add(project)
@@ -378,7 +382,7 @@ async def test_push_hook_truncates_to_latest_k_commits(
     db_session_factory: async_sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """21 个 commit 的 push -> 只调度最近 10 个（默认 max_per_push）。"""
+    """21 个 commit 的 push -> 只调度最近 10 个（项目默认 max_per_push）。"""
 
     await _create_test_project(db_session_factory)
     captured = _patch_push_processor(monkeypatch)
@@ -402,16 +406,49 @@ async def test_push_hook_truncates_to_latest_k_commits(
 
 
 @pytest.mark.asyncio
-async def test_push_hook_disabled_returns_commit_review_disabled(
+async def test_push_hook_truncates_by_project_max_not_global_settings(
     db_client: AsyncClient,
     db_session_factory: async_sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """commit_review_enabled=False -> processed=False reason=commit_review_disabled。"""
+    """项目级 max_per_push=3 优先于全局 settings（env 设成 5 也不生效）。"""
 
     from core import config
 
-    await _create_test_project(db_session_factory)
+    await _create_test_project(db_session_factory, commit_review_max_per_push=3)
+    captured = _patch_push_processor(monkeypatch)
+    monkeypatch.setenv("COMMIT_REVIEW_MAX_PER_PUSH", "5")
+    config.get_settings.cache_clear()
+
+    commits = [
+        {"id": f"sha-{i:02d}", "title": f"c{i}", "message": f"c{i}"}
+        for i in range(1, 6)
+    ]
+    response = await db_client.post(
+        "/api/webhooks/gitlab",
+        headers={"X-Gitlab-Event": "Push Hook", "X-Gitlab-Token": "test-webhook-secret"},
+        json=_push_payload({"commits": commits}),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["processed"] is True
+    assert len(captured) == 1
+    # 项目级 3 生效（全局 5 被覆盖），保留最新的 3 条。
+    scheduled_ids = [c["id"] for c in captured[0][0].commits]
+    assert scheduled_ids == ["sha-03", "sha-04", "sha-05"]
+
+
+@pytest.mark.asyncio
+async def test_push_hook_disabled_globally_returns_commit_review_disabled(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """全局 settings.commit_review_enabled=False -> commit_review_disabled（第一道防线）。"""
+
+    from core import config
+
+    await _create_test_project(db_session_factory, commit_review_enabled=True)
     _patch_push_processor(monkeypatch)
     # 走真实 Settings（env 驱动）而不是替身：conftest teardown 会调
     # get_settings.cache_clear，替身 lambda 没有该属性会把 teardown 炸掉。
@@ -428,6 +465,38 @@ async def test_push_hook_disabled_returns_commit_review_disabled(
     body = response.json()
     assert body["processed"] is False
     assert body["reason"] == "commit_review_disabled"
+
+
+@pytest.mark.asyncio
+async def test_push_hook_disabled_returns_commit_review_disabled(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """project.commit_review_enabled=False -> processed=False reason=commit_review_disabled。
+
+    全局开关保持开启（env 默认 True），验证项目级第二道防线独立生效。
+    """
+
+    from core import config
+
+    await _create_test_project(db_session_factory, commit_review_enabled=False)
+    captured = _patch_push_processor(monkeypatch)
+    # 显式确认全局开关是开的：能区分「项目级拒绝」与「全局拒绝」。
+    monkeypatch.setenv("COMMIT_REVIEW_ENABLED", "true")
+    config.get_settings.cache_clear()
+
+    response = await db_client.post(
+        "/api/webhooks/gitlab",
+        headers={"X-Gitlab-Event": "Push Hook", "X-Gitlab-Token": "test-webhook-secret"},
+        json=_push_payload(),
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["processed"] is False
+    assert body["reason"] == "commit_review_disabled"
+    assert captured == []
 
 
 @pytest.mark.asyncio
