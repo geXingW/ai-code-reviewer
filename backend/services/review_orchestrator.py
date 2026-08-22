@@ -33,6 +33,7 @@ from core.diff_filter import DiffFilterConfig, filter_gitlab_changes
 from core.summary_builder import (
     build_commit_review_note,
     build_finding_discussion_body,
+    build_push_review_note,
     build_review_summary_note,
 )
 from engines import DiffHunk, Finding, ProviderConfig, ReviewContext, RuleSpec
@@ -137,14 +138,75 @@ class GitLabCommitEvent:
     @property
     def project_uuid(self) -> UUID:
         """与 :class:`GitLabMergeRequestEvent` 相同的 uuid5 派生，保证同一
-        GitLab 项目在 MR / commit 两条审查链路里映射到同一个内部 UUID。"""
+        GitLab 项目在 MR / commit / push 三条审查链路里映射到同一个内部 UUID。"""
 
         return uuid5(NAMESPACE_URL, f"gitlab-project:{self.project_id}")
 
 
+@dataclass(frozen=True)
+class GitLabPushEvent:
+    """Push Hook 合并审查用的归一化 push 事件。
+
+    一次 push 携带的全部 commit 变更合并后做**单次** LLM 审查，行为规则见
+    :meth:`ReviewOrchestrator.review_push`。
+
+    Attributes:
+        project_id: 数值型 GitLab 项目 ID。
+        project_path: 带命名空间的项目路径。
+        branch: push 目标分支名（``ref`` 去掉 ``refs/heads/`` 前缀）。
+        before_sha: push 前 ref 指向的 commit SHA（新建分支时为 40 个 0）。
+        after_sha: push 后 ref 指向的 commit SHA（head commit）。
+        commits: ``[{"id": sha, "title": ..., "message": ...}, ...]``，
+            保持 payload 的时间序（旧 -> 新）。
+        author_username: push 触发者的 GitLab 用户名；缺失时 ``None``。
+        author_name: 同上，显示名。
+    """
+
+    project_id: int
+    project_path: str
+    branch: str
+    before_sha: str
+    after_sha: str
+    commits: list[dict[str, Any]]
+    author_username: str | None = None
+    author_name: str | None = None
+
+    @property
+    def project_uuid(self) -> UUID:
+        """与 :class:`GitLabMergeRequestEvent` 相同的 uuid5 派生，保证同一
+        GitLab 项目在 MR / commit / push 三条审查链路里映射到同一个内部 UUID。"""
+
+        return uuid5(NAMESPACE_URL, f"gitlab-project:{self.project_id}")
+
+    @property
+    def commit_sha(self) -> str:
+        """head commit SHA（即 after_sha），合并审查的行级评论 / status 写回目标。
+
+        与 :class:`GitLabCommitEvent.commit_sha` 对齐，让评论、失败反馈、通知
+        三个复用方法能用同一个 duck-typing 字段。"""
+
+        return self.after_sha
+
+    @property
+    def title(self) -> str:
+        """head commit 标题（commits 列表最后一跳，message 首行）。
+
+        供失败反馈与通知兜底展示；commits 为空时返回空串。"""
+
+        for commit in reversed(self.commits):
+            title = str(commit.get("title") or "").strip()
+            if title:
+                return title
+        return ""
+
+
 # provider / rules / history 三个 resolve helper 只依赖 event.project_id，
-# MR 事件与 commit 事件 duck-typing 共用。
-_EventLike = GitLabMergeRequestEvent | GitLabCommitEvent
+# MR / commit / push 事件 duck-typing 共用。
+_EventLike = GitLabMergeRequestEvent | GitLabCommitEvent | GitLabPushEvent
+
+# commit 级写回（评论 / status / 通知）复用的最小事件形状：都需要
+# ``commit_sha``（写回目标）与 ``title``（展示用）两个字段。
+_CommitLikeEvent = GitLabCommitEvent | GitLabPushEvent
 
 
 @dataclass(frozen=True)
@@ -695,6 +757,262 @@ class ReviewOrchestrator:
             note_id=_extract_int(note, "id"),
         )
 
+    async def review_push(self, event: GitLabPushEvent) -> CommitReviewResult:
+        """Push Hook 合并审查入口：一次 push 的全部 commit 变更合并后单次审查。
+
+        与 :meth:`review_commit`（逐 commit 审查）的区别：
+          - diff 语义：``before..after`` 一次 compare 拉取（新建分支时降级为
+            head commit 的 diff），不再逐个 commit 判断 merge / root；
+          - 一次 push 只做**一次** LLM 调用，全部 commit message 拼接进上下文；
+          - 行级评论 / 汇总评论 / commit status 全部写回 head commit（after SHA）。
+
+        行为规则：
+          - 项目级 ``project.commit_review_enabled=False`` -> skipped_disabled；
+          - compare 失败 / 异常 -> skipped_no_changes（记 warning，不误报失败）；
+          - diff 过滤后为空 -> 0 findings + 汇总评论"无可审查变更" + success status；
+          - engine 异常 -> commit status failed + 审查失败评论，绝不静默通过。
+
+        Args:
+            event: 归一化后的 push 事件。
+
+        Returns:
+            CommitReviewResult: 执行摘要。
+        """
+
+        if not await self._resolve_commit_review_enabled(event):
+            return CommitReviewResult(
+                review_id=None,
+                project_uuid=event.project_uuid,
+                status="skipped_disabled",
+            )
+
+        changes = await self._fetch_push_changes(event)
+        if changes is None:
+            return CommitReviewResult(
+                review_id=None,
+                project_uuid=event.project_uuid,
+                status="skipped_no_changes",
+            )
+        hunks = self._build_diff_hunks(changes)
+
+        block_policy = match_block_policy(
+            self._block_policies or build_default_block_policies(event.project_uuid),
+            event.branch,
+        )
+        policy_applied = f"{block_policy.branch_pattern} -> {block_policy.block_severity}"
+        commit_titles = [str(c.get("title") or "").strip() for c in event.commits]
+
+        if not hunks:
+            # 空 diff / 全部被 ignore_paths 过滤 -> 0 findings + 汇总评论 + success status。
+            review_id = uuid4()
+            note = await self._gitlab_client.create_commit_comment(
+                project_id=event.project_id,
+                sha=event.after_sha,
+                note=build_push_review_note(
+                    review_id=review_id,
+                    head_sha=event.after_sha,
+                    branch=event.branch,
+                    commit_count=len(event.commits),
+                    commit_titles=commit_titles,
+                    findings=[],
+                    has_blocker=False,
+                    blocker_count=0,
+                    policy_applied=policy_applied,
+                    detail_url=self._build_review_detail_url(review_id),
+                ),
+            )
+            await self._gitlab_client.set_commit_status(
+                project_id=event.project_id,
+                commit_sha=event.after_sha,
+                state="success",
+                name="ai-code-reviewer",
+                description="AI Review completed with 0 finding(s)",
+                target_url=self._build_review_detail_url(review_id),
+            )
+            await self._push_commit_review_notification(
+                event=event,
+                review_id=review_id,
+                finding_count=0,
+                has_blocker=False,
+                blocker_count=0,
+                status_value="done",
+                findings=[],
+            )
+            return CommitReviewResult(
+                review_id=review_id,
+                project_uuid=event.project_uuid,
+                status="done",
+                finding_count=0,
+                has_blocker=False,
+                note_id=_extract_int(note, "id"),
+            )
+
+        rules = await self._resolve_rules(event)
+        provider = await self._resolve_provider(event)
+        history = await self._resolve_history(event, rules)
+        review_id = uuid4()
+        context = ReviewContext(
+            review_id=review_id,
+            project_id=event.project_uuid,
+            # engine 层已与 MR 解耦：mr_iid 不进 prompt，push 审查传空串。
+            mr_iid="",
+            source_branch=event.branch,
+            target_branch=event.branch,
+            source_commit_sha=event.after_sha,
+            target_commit_sha=event.before_sha,
+            diff_hunks=hunks,
+            provider=provider,
+            rules=rules,
+            history=history,
+            mr_title=event.branch,
+            mr_description="",
+            last_commit_message="\n".join(str(c.get("message") or "") for c in event.commits),
+            extra={
+                "gitlab_project_id": event.project_id,
+                "gitlab_project_path": event.project_path,
+                "review_kind": "push",
+                "review_base_sha": event.before_sha,
+                "push_commits": [
+                    {"id": str(c.get("id") or ""), "title": str(c.get("title") or "")}
+                    for c in event.commits
+                ],
+            },
+        )
+        engine = self._engine_registry.get(self._default_engine)
+        try:
+            findings = await engine.review(context)
+        except Exception as exc:
+            logger.exception(
+                "push review engine failed",
+                extra={
+                    "gitlab_project_id": event.project_id,
+                    "after_sha": event.after_sha,
+                    "engine": self._default_engine,
+                },
+            )
+            return await self._handle_commit_engine_error(
+                event=event,
+                review_id=review_id,
+                policy_applied=policy_applied,
+                block_policy=block_policy,
+                error=exc,
+            )
+
+        has_blocker, blocker_count = compute_has_blocker(findings, block_policy)
+        await self._post_commit_finding_comments(event, changes, findings)
+        note = await self._gitlab_client.create_commit_comment(
+            project_id=event.project_id,
+            sha=event.after_sha,
+            note=build_push_review_note(
+                review_id=review_id,
+                head_sha=event.after_sha,
+                branch=event.branch,
+                commit_count=len(event.commits),
+                commit_titles=commit_titles,
+                findings=findings,
+                has_blocker=has_blocker,
+                blocker_count=blocker_count,
+                policy_applied=policy_applied,
+                detail_url=self._build_review_detail_url(review_id),
+            ),
+        )
+        await self._gitlab_client.set_commit_status(
+            project_id=event.project_id,
+            commit_sha=event.after_sha,
+            state="failed" if has_blocker else "success",
+            name="ai-code-reviewer",
+            description=(
+                f"{len(findings)} finding(s), {blocker_count} blocking finding(s)"
+                if has_blocker
+                else f"AI Review completed with {len(findings)} finding(s)"
+            ),
+            target_url=self._build_review_detail_url(review_id),
+        )
+        await self._push_commit_review_notification(
+            event=event,
+            review_id=review_id,
+            finding_count=len(findings),
+            has_blocker=has_blocker,
+            blocker_count=blocker_count,
+            status_value="done",
+            findings=findings,
+        )
+        return CommitReviewResult(
+            review_id=review_id,
+            project_uuid=event.project_uuid,
+            status="done",
+            finding_count=len(findings),
+            has_blocker=has_blocker,
+            note_id=_extract_int(note, "id"),
+        )
+
+    async def _fetch_push_changes(self, event: GitLabPushEvent) -> dict[str, Any] | None:
+        """取一次 push 的合并变更（``{"changes": [...]}`` 形态，供 hunk 构建复用）。
+
+        - 新建分支（``before_sha`` 为 40 个 0）：降级用 head commit 的 diff；
+        - 常规 push：``compare_refs(before, after)`` 一次拉取；``diffs`` 数组的
+          元素结构与 MR changes 的 ``changes`` 一致（old_path/new_path/diff/
+          new_file/deleted_file），交给 :meth:`_build_diff_hunks` 复用。
+        - compare 返回 ``error`` / 结构异常 / 任何 API 异常：记 warning 并返回
+          ``None``，上层按 ``skipped_no_changes`` 处理（不误报审查失败）。
+
+        Returns:
+            ``{"changes": [...]}``；获取失败时 ``None``。
+        """
+
+        if event.before_sha == "0" * 40:
+            # 新建分支：before 不存在，无法 compare，用 head commit 的 diff。
+            try:
+                diffs = await self._gitlab_client.get_commit_diff(
+                    project_id=event.project_id,
+                    sha=event.after_sha,
+                )
+            except Exception:
+                logger.exception(
+                    "push review failed to fetch head commit diff; skipping push",
+                    extra={
+                        "gitlab_project_id": event.project_id,
+                        "branch": event.branch,
+                        "after_sha": event.after_sha,
+                    },
+                )
+                return None
+            return {"changes": diffs}
+
+        try:
+            payload = await self._gitlab_client.compare_refs(
+                project_id=event.project_id,
+                from_sha=event.before_sha,
+                to_sha=event.after_sha,
+            )
+        except Exception:
+            logger.exception(
+                "push review compare failed; skipping push",
+                extra={
+                    "gitlab_project_id": event.project_id,
+                    "branch": event.branch,
+                    "before_sha": event.before_sha,
+                    "after_sha": event.after_sha,
+                },
+            )
+            return None
+        if payload.get("error"):
+            logger.warning(
+                "push review compare returned error; skipping push",
+                extra={
+                    "gitlab_project_id": event.project_id,
+                    "branch": event.branch,
+                    "before_sha": event.before_sha,
+                    "after_sha": event.after_sha,
+                    "error": str(payload.get("error")),
+                },
+            )
+            return None
+        diffs = payload.get("diffs")
+        if not isinstance(diffs, list):
+            return None
+        return {"changes": [item for item in diffs if isinstance(item, dict)]}
+
     def _build_diff_hunks(self, changes_payload: dict[str, Any]) -> list[DiffHunk]:
         """Convert GitLab ``changes`` payload into filtered engine diff hunks."""
 
@@ -796,7 +1114,7 @@ class ReviewOrchestrator:
 
     async def _post_commit_finding_comments(
         self,
-        event: GitLabCommitEvent,
+        event: _CommitLikeEvent,
         changes_payload: dict[str, Any],
         findings: Sequence[Finding],
     ) -> list[str | None]:
@@ -860,7 +1178,7 @@ class ReviewOrchestrator:
     async def _handle_commit_engine_error(
         self,
         *,
-        event: GitLabCommitEvent,
+        event: _CommitLikeEvent,
         review_id: UUID,
         policy_applied: str,
         block_policy: BlockPolicyLike,
@@ -2073,7 +2391,7 @@ class ReviewOrchestrator:
     async def _push_commit_review_notification(
         self,
         *,
-        event: GitLabCommitEvent,
+        event: _CommitLikeEvent,
         review_id: UUID,
         finding_count: int,
         has_blocker: bool,
