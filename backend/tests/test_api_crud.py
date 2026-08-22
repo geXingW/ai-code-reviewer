@@ -5,17 +5,18 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import AsyncGenerator
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
 from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from core import config, db
 from core.db import Base, get_db
 from main import create_app
+from models.provider import Provider
 
 TEST_DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -116,17 +117,28 @@ async def seed_review_with_finding(client: AsyncClient) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_provider_crud_masks_secret_and_supports_pagination(
-    admin_client: AsyncClient,
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Provider CRUD must require auth and avoid leaking API keys."""
 
-    unauthenticated_response = await admin_client.get(
+    # db_client 未内置登录，手动认证（登录凭据来自 settings，不查库）。
+    login_response = await db_client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin"},
+    )
+    assert login_response.status_code == 200
+    db_client.headers.update(
+        {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+    )
+
+    unauthenticated_response = await db_client.get(
         "/api/providers",
         headers={"Authorization": ""},
     )
     assert unauthenticated_response.status_code == 401
 
-    create_response = await admin_client.post(
+    create_response = await db_client.post(
         "/api/providers",
         json={
             "name": "ark",
@@ -141,25 +153,24 @@ async def test_provider_crud_masks_secret_and_supports_pagination(
     created = create_response.json()
     assert created["api_key"] == "****"
 
-    list_response = await admin_client.get("/api/providers?limit=10&offset=0&sort=-created_at")
+    list_response = await db_client.get("/api/providers?limit=10&offset=0&sort=-created_at")
     assert list_response.status_code == 200
     assert list_response.json()["total"] == 1
     assert list_response.json()["items"][0]["name"] == "ark"
 
     provider_id = created["id"]
-    detail_response = await admin_client.get(f"/api/providers/{provider_id}")
+    detail_response = await db_client.get(f"/api/providers/{provider_id}")
     assert detail_response.status_code == 200
     assert detail_response.json()["api_key"] == "****"
 
     # 关键回归：PATCH 不带 api_key 时，不应覆盖数据库中的密钥（前端编辑留空=不修改）。
-    select_api_key = text("SELECT api_key FROM providers WHERE id = :pid")
-    engine = create_async_engine(TEST_DATABASE_URL)
-    async with engine.connect() as conn:
-        raw_before = (
-            await conn.execute(select_api_key, {"pid": provider_id})
-        ).scalar_one()
+    # 直查复用 db_session_factory 的 session（与 API 同一 engine/连接池），避免跨连接可见性问题。
+    async with db_session_factory() as session:
+        before = await session.get(Provider, UUID(provider_id))
+        assert before is not None
+        assert before.api_key == "secret-key"
 
-    update_response = await admin_client.patch(
+    update_response = await db_client.patch(
         f"/api/providers/{provider_id}",
         json={"enabled": False, "model": "glm-4"},
     )
@@ -167,16 +178,25 @@ async def test_provider_crud_masks_secret_and_supports_pagination(
     assert update_response.json()["enabled"] is False
     assert update_response.json()["model"] == "glm-4"
 
-    async with engine.connect() as conn:
-        raw_after = (
-            await conn.execute(select_api_key, {"pid": provider_id})
-        ).scalar_one()
-    assert raw_after == raw_before
-    await engine.dispose()
+    async with db_session_factory() as session:
+        after = await session.get(Provider, UUID(provider_id))
+        assert after is not None
+        assert after.api_key == "secret-key"  # 未传 api_key，密钥保持不变
 
-    delete_response = await admin_client.delete(f"/api/providers/{provider_id}")
+    # 自校验：显式传 api_key 时应能读到新值，证明查询链路真实有效（避免断言恒真）。
+    rotate_response = await db_client.patch(
+        f"/api/providers/{provider_id}",
+        json={"api_key": "rotated-key"},
+    )
+    assert rotate_response.status_code == 200
+    async with db_session_factory() as session:
+        rotated = await session.get(Provider, UUID(provider_id))
+        assert rotated is not None
+        assert rotated.api_key == "rotated-key"
+
+    delete_response = await db_client.delete(f"/api/providers/{provider_id}")
     assert delete_response.status_code == 204
-    assert (await admin_client.get(f"/api/providers/{provider_id}")).status_code == 404
+    assert (await db_client.get(f"/api/providers/{provider_id}")).status_code == 404
 
 
 @pytest.mark.asyncio
