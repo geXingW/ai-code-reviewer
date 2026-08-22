@@ -58,7 +58,9 @@ export function ProviderDialog({
           name: initialData.name,
           protocol: initialData.protocol as ProviderFormPayload['protocol'],
           base_url: initialData.base_url,
-          api_key: initialData.api_key,
+          // 编辑模式不反显密钥（后端返回脱敏值 "****"），置空让用户按需重填。
+          // 留空提交时由 handleSubmit 跳过，后端也不会覆盖数据库中的密钥。
+          api_key: '',
           model: initialData.model,
           temperature: initialData.temperature,
           max_tokens: initialData.max_tokens,
@@ -83,7 +85,13 @@ export function ProviderDialog({
     setSubmitting(true);
     setErrorMessage(null);
     try {
-      await onSubmit(form);
+      const payload: Partial<ProviderFormPayload> = { ...form };
+      // 编辑模式下，密钥字段留空表示"不修改"——从 payload 中移除，
+      // JSON.stringify 会自动忽略 deleted 属性，后端 exclude_unset 也不会更新。
+      if (isEditMode && !payload.api_key?.trim()) {
+        delete payload.api_key;
+      }
+      await onSubmit(payload as ProviderFormPayload);
     } catch (caught) {
       setErrorMessage(caught instanceof Error ? caught.message : '提交失败');
     } finally {
@@ -160,7 +168,7 @@ export function ProviderDialog({
             id="provider-api-key"
             value={form.api_key}
             onChange={(event) => setForm({ ...form, api_key: event.target.value })}
-            placeholder="sk-..."
+            placeholder={isEditMode ? '为空则不修改' : 'sk-...'}
             toggleAriaLabel="切换 API Key 显示"
           />
         </div>

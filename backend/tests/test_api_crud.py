@@ -10,6 +10,7 @@ import pytest
 import pytest_asyncio
 from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from core import config, db
@@ -150,6 +151,14 @@ async def test_provider_crud_masks_secret_and_supports_pagination(
     assert detail_response.status_code == 200
     assert detail_response.json()["api_key"] == "****"
 
+    # 关键回归：PATCH 不带 api_key 时，不应覆盖数据库中的密钥（前端编辑留空=不修改）。
+    select_api_key = text("SELECT api_key FROM providers WHERE id = :pid")
+    engine = create_async_engine(TEST_DATABASE_URL)
+    async with engine.connect() as conn:
+        raw_before = (
+            await conn.execute(select_api_key, {"pid": provider_id})
+        ).scalar_one()
+
     update_response = await admin_client.patch(
         f"/api/providers/{provider_id}",
         json={"enabled": False, "model": "glm-4"},
@@ -157,6 +166,13 @@ async def test_provider_crud_masks_secret_and_supports_pagination(
     assert update_response.status_code == 200
     assert update_response.json()["enabled"] is False
     assert update_response.json()["model"] == "glm-4"
+
+    async with engine.connect() as conn:
+        raw_after = (
+            await conn.execute(select_api_key, {"pid": provider_id})
+        ).scalar_one()
+    assert raw_after == raw_before
+    await engine.dispose()
 
     delete_response = await admin_client.delete(f"/api/providers/{provider_id}")
     assert delete_response.status_code == 204
