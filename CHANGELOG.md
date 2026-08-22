@@ -24,6 +24,10 @@
 - 后端启动依赖新增 `aiomysql` / `pymysql`（可选，仅当 `DATABASE_URL` 指向 MySQL 时生效）。
 - 数据访问统一走 Repository 层，未来注入 mock repository / 切换存储后端只需实现同一接口。
 
+### Fixed
+
+- **供应商编辑误覆盖 API Key**：编辑供应商时不再反显脱敏值 `****`，改为留空则不修改，与项目编辑中 GitLab Access Token / Webhook Secret 的行为保持一致；此前保存未编辑的密钥会被脱敏占位符覆盖，导致供应商鉴权失效。
+
 ## [0.1.0] - TBD
 
 MVP 首版本（Phase 1）。面向 GitLab + Jenkins 内网试运行，覆盖 MR 自动评审、行级 Discussion 写回、按分支分级阻断、误报反馈闭环与项目级配置。
