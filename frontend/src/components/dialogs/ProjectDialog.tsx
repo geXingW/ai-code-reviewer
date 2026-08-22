@@ -324,8 +324,9 @@ export function ProjectDialog({
               <Label
                 htmlFor="project-commit-review-max"
                 className={`text-[11px] ${form.commit_review_enabled ? 'text-zinc-500' : 'text-zinc-300'}`}
+                title="合并审查后该字段不再截断 commit，仅作兼容保留"
               >
-                单次推送最多审查 commit 数 (1-20)
+                单次推送最多审查 commit 数 (兼容保留)
               </Label>
               <Input
                 id="project-commit-review-max"

@@ -26,8 +26,8 @@ from repositories.project import ProjectRepository
 from services.gitlab_client_factory import build_gitlab_client_for_project
 from services.notification_service import NotificationService
 from services.review_orchestrator import (
-    GitLabCommitEvent,
     GitLabMergeRequestEvent,
+    GitLabPushEvent,
     OrchestratorResult,
     ReviewOrchestrator,
     SessionFactory,
@@ -53,7 +53,7 @@ class GitLabWebhookResponse(BaseModel):
 
 @dataclass(frozen=True)
 class _PushEventInfo:
-    """Push Hook 归一化结果（只保留逐 commit 审查需要的字段）。
+    """Push Hook 归一化结果（合并审查用）。
 
     Attributes:
         project_id: 数值型 GitLab 项目 ID。
@@ -61,6 +61,8 @@ class _PushEventInfo:
         branch: push 目标分支名（``ref`` 去掉 ``refs/heads/`` 前缀）。
         commits: ``[{"id": sha, "title": ..., "message": ...}, ...]``，
             保持 payload 的时间序（旧 -> 新）。
+        before_sha: push 前 ref 指向的 commit SHA（新建分支时为 40 个 0）。
+        after_sha: push 后 ref 指向的 commit SHA（即 head commit）。
         pusher_username: 触发 push 的用户名；缺失时 ``None``。
         pusher_name: 同上，显示名。
     """
@@ -69,6 +71,8 @@ class _PushEventInfo:
     project_path: str
     branch: str
     commits: list[dict[str, Any]]
+    before_sha: str
+    after_sha: str
     pusher_username: str | None
     pusher_name: str | None
 
@@ -135,7 +139,7 @@ def _handle_push_hook(
     project: Project,
     background_tasks: BackgroundTasks,
 ) -> GitLabWebhookResponse:
-    """Push Hook 过滤链 + 后台调度（逐 commit 审查）。
+    """Push Hook 过滤链 + 后台调度（合并审查：一次 push 一次审查）。
 
     过滤链顺序：
       1. ``settings.commit_review_enabled=False`` -> processed=False
@@ -146,9 +150,9 @@ def _handle_push_hook(
       4. after 为 40 个 0（删分支）-> ignored_event；
       5. commits 空 -> ignored_event。
 
-    通过后按 ``project.commit_review_max_per_push``（兜底全局 settings）截断
-    只审最近 N 个（超出 log warning），调度后台任务并**立即返回 202** --
-    一次 push N 个 commit 就是 N 次 LLM 调用，同步等待必然超时。
+    通过后调度后台任务并**立即返回 202**：后台一次性拉取该 push 全部
+    commit 的合并变更（compare before..after）后做单次 LLM 审查。
+    不再按 ``commit_review_max_per_push`` 截断 commit（字段保留仅作兼容）。
     """
 
     from core.config import get_settings
@@ -163,32 +167,7 @@ def _handle_push_hook(
     if push_info is None:
         return GitLabWebhookResponse(processed=False, reason="ignored_event")
 
-    # 项目级上限优先；未持久化 / 未赋值的内存对象兜底全局 settings。
-    max_per_push = project.commit_review_max_per_push or settings.commit_review_max_per_push
-    commits = push_info.commits
-    if len(commits) > max_per_push:
-        dropped = len(commits) - max_per_push
-        logger.warning(
-            "push carries %d commits; only reviewing the latest %d (dropped %d)",
-            len(commits),
-            max_per_push,
-            dropped,
-            extra={
-                "gitlab_project_id": push_info.project_id,
-                "branch": push_info.branch,
-            },
-        )
-        commits = commits[-max_per_push:]
-
-    scheduled_info = _PushEventInfo(
-        project_id=push_info.project_id,
-        project_path=push_info.project_path,
-        branch=push_info.branch,
-        commits=commits,
-        pusher_username=push_info.pusher_username,
-        pusher_name=push_info.pusher_name,
-    )
-    background_tasks.add_task(_process_push_commits, scheduled_info, project)
+    background_tasks.add_task(_process_push_commits, push_info, project)
     return GitLabWebhookResponse(
         processed=True,
         status="scheduled",
@@ -244,15 +223,18 @@ def _parse_push_event(payload: dict[str, Any]) -> _PushEventInfo | None:
         project_path=str(project.get("path_with_namespace") or project.get("path") or project_id),
         branch=ref.removeprefix("refs/heads/"),
         commits=commits,
+        before_sha=str(payload.get("before") or ""),
+        after_sha=after,
         pusher_username=str(user_dict.get("username") or "") or None,
         pusher_name=str(user_dict.get("name") or "") or None,
     )
 
 
 async def _process_push_commits(push_info: _PushEventInfo, project: Project) -> None:
-    """后台逐 commit 串行审查（单个失败 except + log 后继续下一个）。
+    """后台合并审查：一次 push 拉取所有 commit 变更合并后单次审查。
 
-    本期不做钉钉推送（每 commit 一条会刷屏），notification_service 传 None。
+    失败仅 except + log（不重试、不阻断），与逐 commit 时代的容错语义一致。
+    本期不做钉钉推送（push 审查保持无通知），notification_service 传 None。
     """
 
     load_builtin_engines()
@@ -268,31 +250,28 @@ async def _process_push_commits(push_info: _PushEventInfo, project: Project) -> 
         session_factory=db.AsyncSessionLocal,
         notification_service=None,
     )
-    for commit in push_info.commits:
-        commit_sha = str(commit.get("id") or "")
-        if not commit_sha:
-            continue
-        event = GitLabCommitEvent(
-            project_id=push_info.project_id,
-            project_path=push_info.project_path,
-            commit_sha=commit_sha,
-            branch=push_info.branch,
-            title=str(commit.get("title") or ""),
-            message=str(commit.get("message") or ""),
-            author_username=push_info.pusher_username,
-            author_name=push_info.pusher_name,
+    event = GitLabPushEvent(
+        project_id=push_info.project_id,
+        project_path=push_info.project_path,
+        branch=push_info.branch,
+        before_sha=push_info.before_sha,
+        after_sha=push_info.after_sha,
+        commits=push_info.commits,
+        author_username=push_info.pusher_username,
+        author_name=push_info.pusher_name,
+    )
+    try:
+        await orchestrator.review_push(event)
+    except Exception:
+        logger.exception(
+            "push review failed",
+            extra={
+                "gitlab_project_id": push_info.project_id,
+                "before_sha": push_info.before_sha,
+                "after_sha": push_info.after_sha,
+                "branch": push_info.branch,
+            },
         )
-        try:
-            await orchestrator.review_commit(event)
-        except Exception:
-            logger.exception(
-                "commit review failed; continuing with next commit",
-                extra={
-                    "gitlab_project_id": push_info.project_id,
-                    "commit_sha": commit_sha,
-                    "branch": push_info.branch,
-                },
-            )
 
 
 async def review_merge_request_event(

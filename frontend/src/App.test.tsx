@@ -400,7 +400,7 @@ describe('MVP 管理台', () => {
     await userEvent.click(await screen.findByRole('button', { name: '编辑' }));
     const toggle = await screen.findByLabelText('启用 commit 推送审查');
     expect(toggle).toBeChecked();
-    const maxInput = screen.getByLabelText('单次推送最多审查 commit 数 (1-20)');
+    const maxInput = screen.getByLabelText('单次推送最多审查 commit 数 (兼容保留)');
     expect(maxInput).toHaveValue(5);
     expect(maxInput).toBeEnabled();
 

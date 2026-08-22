@@ -373,16 +373,18 @@ async def test_push_hook_returns_202_and_schedules_background_task(
     assert push_info.project_id == 123
     assert push_info.branch == "feature/x"
     assert [c["id"] for c in push_info.commits] == ["sha-1"]
+    assert push_info.before_sha == "old" * 10
+    assert push_info.after_sha == "new" * 10
     assert captured_project.id == project.id
 
 
 @pytest.mark.asyncio
-async def test_push_hook_truncates_to_latest_k_commits(
+async def test_push_hook_does_not_truncate_commits(
     db_client: AsyncClient,
     db_session_factory: async_sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """21 个 commit 的 push -> 只调度最近 10 个（项目默认 max_per_push）。"""
+    """合并审查：21 个 commit 的 push 全部调度，不再按 max_per_push 截断。"""
 
     await _create_test_project(db_session_factory)
     captured = _patch_push_processor(monkeypatch)
@@ -401,17 +403,17 @@ async def test_push_hook_truncates_to_latest_k_commits(
     assert response.json()["processed"] is True
     assert len(captured) == 1
     scheduled_ids = [c["id"] for c in captured[0][0].commits]
-    # 保留最新的 10 条（sha-12..sha-21），时间序保持旧 -> 新。
-    assert scheduled_ids == [f"sha-{i:02d}" for i in range(12, 22)]
+    # 全部 21 条保留，时间序保持旧 -> 新（合并审查在 orchestrator 层一次完成）。
+    assert scheduled_ids == [f"sha-{i:02d}" for i in range(1, 22)]
 
 
 @pytest.mark.asyncio
-async def test_push_hook_truncates_by_project_max_not_global_settings(
+async def test_push_hook_ignores_project_max_per_push_setting(
     db_client: AsyncClient,
     db_session_factory: async_sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """项目级 max_per_push=3 优先于全局 settings（env 设成 5 也不生效）。"""
+    """项目级 max_per_push=3（及全局配置）不再生效：commit 全部调度。"""
 
     from core import config
 
@@ -433,9 +435,9 @@ async def test_push_hook_truncates_by_project_max_not_global_settings(
     assert response.status_code == 202
     assert response.json()["processed"] is True
     assert len(captured) == 1
-    # 项目级 3 生效（全局 5 被覆盖），保留最新的 3 条。
+    # 项目级 / 全局上限都被忽略，5 条全部保留。
     scheduled_ids = [c["id"] for c in captured[0][0].commits]
-    assert scheduled_ids == ["sha-03", "sha-04", "sha-05"]
+    assert scheduled_ids == ["sha-01", "sha-02", "sha-03", "sha-04", "sha-05"]
 
 
 @pytest.mark.asyncio

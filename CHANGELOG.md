@@ -6,6 +6,7 @@
 
 ### Added
 
+- **Push 合并审查**：Push Hook 改为一次拉取该 push 全部 commit 的合并变更（`compare before..after`）后单次 LLM 审查，行级评论 / 汇总评论 / commit status 统一写回 head commit；新建分支（before 全 0）降级用 head commit diff；`commit_review_max_per_push` 保留字段但不再截断（MR 审查链路零影响）。
 - **前端管理后台（8 个页面 Linear 化）**：Providers / Projects / Rules / ReviewRecords / Findings / FalsePositives / Engines / NegativeExamples 全部按 Linear 风格重构，抽出 DataRow / StatusRow 通用组件（Issue #35 → PR #52）。
 - **Rules `rule_id` 字段可选**：新建 Rule 时留空则从 title 自动生成 slug（英文走 slugify，含中文 fallback 到 `rule-<uuid8>`），冲突自动追加 `-2`/`-3` 保证唯一（Issue #69 → PR #72）。
 - **Providers / Projects 页补编辑入口**：Providers 页每行加编辑，Projects 页基础字段（name / gitlab_access_token / webhook_secret / provider_id）也补上编辑；敏感字段（api_key / gitlab_access_token / webhook_secret）走「留空则不改」策略避免明文回显泄露（Issue #70 → PR #72）。

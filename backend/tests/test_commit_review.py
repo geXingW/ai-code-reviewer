@@ -30,6 +30,7 @@ from schemas.review import ReviewCreate, ReviewRead
 from services.review_orchestrator import (
     CommitReviewResult,
     GitLabCommitEvent,
+    GitLabPushEvent,
     ReviewOrchestrator,
 )
 
@@ -40,13 +41,16 @@ from services.review_orchestrator import (
 
 @dataclass
 class _FakeCommitGitLabClient:
-    """commit 审查链路用的 GitLab client 假实现，记录所有调用。"""
+    """commit / push 审查链路用的 GitLab client 假实现，记录所有调用。"""
 
     commit_payload: dict[str, Any]
     diffs: list[dict[str, Any]]
     comments: list[dict[str, Any]] = field(default_factory=list)
     statuses: list[dict[str, Any]] = field(default_factory=list)
     api_calls: list[str] = field(default_factory=list)
+    # push 合并审查（compare_refs）专属：默认回退到 self.diffs。
+    compare_payload: dict[str, Any] | None = None
+    compare_error: Exception | None = None
 
     async def get_commit(self, *, project_id: int, sha: str) -> dict[str, Any]:
         self.api_calls.append("get_commit")
@@ -55,6 +59,20 @@ class _FakeCommitGitLabClient:
     async def get_commit_diff(self, *, project_id: int, sha: str) -> list[dict[str, Any]]:
         self.api_calls.append("get_commit_diff")
         return self.diffs
+
+    async def compare_refs(
+        self,
+        *,
+        project_id: int,
+        from_sha: str,
+        to_sha: str,
+    ) -> dict[str, Any]:
+        self.api_calls.append("compare_refs")
+        if self.compare_error is not None:
+            raise self.compare_error
+        if self.compare_payload is not None:
+            return self.compare_payload
+        return {"diffs": self.diffs, "commits": []}
 
     async def create_commit_comment(
         self,
@@ -246,7 +264,7 @@ def _push_payload(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def test_parse_push_event_normal_payload() -> None:
-    """正常 push payload：分支、commit 列表与 pusher 全部解析到位。"""
+    """正常 push payload：分支、commit 列表、before/after 与 pusher 全部解析到位。"""
 
     info = _parse_push_event(_push_payload())
 
@@ -257,6 +275,8 @@ def test_parse_push_event_normal_payload() -> None:
     assert [c["id"] for c in info.commits] == ["sha-1", "sha-2"]
     assert info.commits[0]["title"] == "first"
     assert info.commits[0]["message"] == "first\n\nbody"
+    assert info.before_sha == "old" * 10
+    assert info.after_sha == "new" * 10
     assert info.pusher_username == "alice"
     assert info.pusher_name == "Alice Zhang"
 
@@ -569,6 +589,207 @@ async def test_review_commit_notification_failure_does_not_break_flow() -> None:
     assert result.finding_count == 1
     assert len(gitlab.comments) == 2  # 1 锚定 + 1 汇总
     assert gitlab.statuses[0]["state"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# review_push 合并审查编排（无 DB）
+# ---------------------------------------------------------------------------
+
+
+def _push_event(
+    *,
+    branch: str = "feature/x",
+    before_sha: str = "b" * 40,
+    after_sha: str = "a" * 40,
+    commits: list[dict[str, Any]] | None = None,
+) -> GitLabPushEvent:
+    """构造一次 push 的归一化事件（默认 2 个 commit）。"""
+
+    return GitLabPushEvent(
+        project_id=123,
+        project_path="group/demo",
+        branch=branch,
+        before_sha=before_sha,
+        after_sha=after_sha,
+        commits=commits
+        if commits is not None
+        else [
+            {"id": "sha-1", "title": "first", "message": "first"},
+            {"id": "sha-2", "title": "second", "message": "second\n\nbody"},
+        ],
+        author_username="alice",
+        author_name="Alice Zhang",
+    )
+
+
+@pytest.mark.asyncio
+async def test_review_push_posts_anchored_comments_and_summary() -> None:
+    """正常路径：一次 compare 拿合并 diff -> 单次 engine -> N 锚定 + 1 汇总 + 1 status，
+    全部写回 head commit（after_sha）。"""
+
+    gitlab = _client()
+    engine = _StaticEngine([_finding(line_number=2), _finding(line_number=3)])
+    orchestrator = _orchestrator(gitlab, engine)
+
+    result = await orchestrator.review_push(_push_event())
+
+    assert result.status == "done"
+    assert result.finding_count == 2
+    # 合并 diff 一次拉取：compare_refs 命中，不调 get_commit / get_commit_diff。
+    assert "compare_refs" in gitlab.api_calls
+    assert "get_commit" not in gitlab.api_calls
+    assert "get_commit_diff" not in gitlab.api_calls
+    # 2 条锚定 + 1 条汇总，全部发到 head commit（after_sha）。
+    assert len(gitlab.comments) == 3
+    for comment in gitlab.comments:
+        assert comment["sha"] == "a" * 40
+    anchored = gitlab.comments[:2]
+    for comment in anchored:
+        assert comment["path"] == "app.py"
+        assert comment["line_type"] == "new"
+        assert comment["line"] in (2, 3)
+    summary = gitlab.comments[-1]
+    assert summary["path"] is None
+    assert "AI Push Review completed" in summary["note"]
+    assert "Commits: 2" in summary["note"]
+    assert "- first" in summary["note"]
+    assert "- second" in summary["note"]
+    assert len(gitlab.statuses) == 1
+    assert gitlab.statuses[0]["state"] == "success"
+    assert gitlab.statuses[0]["commit_sha"] == "a" * 40
+    # engine 收到的 context：一次调用，diff 语义为 before..after。
+    assert len(engine.contexts) == 1
+    ctx = engine.contexts[0]
+    assert ctx.mr_iid == ""
+    assert ctx.source_commit_sha == "a" * 40
+    assert ctx.target_commit_sha == "b" * 40
+    assert ctx.extra["review_kind"] == "push"
+    assert ctx.extra["review_base_sha"] == "b" * 40
+    assert [c["id"] for c in ctx.extra["push_commits"]] == ["sha-1", "sha-2"]
+
+
+@pytest.mark.asyncio
+async def test_review_push_new_branch_uses_head_commit_diff() -> None:
+    """新建分支（before 全 0）：降级用 head commit 的 diff，正常完成审查。"""
+
+    gitlab = _client()
+    engine = _StaticEngine([_finding(line_number=2)])
+    orchestrator = _orchestrator(gitlab, engine)
+
+    result = await orchestrator.review_push(_push_event(before_sha="0" * 40))
+
+    assert result.status == "done"
+    assert result.finding_count == 1
+    assert "get_commit_diff" in gitlab.api_calls
+    assert "compare_refs" not in gitlab.api_calls
+    assert gitlab.statuses[0]["commit_sha"] == "a" * 40
+
+
+@pytest.mark.asyncio
+async def test_review_push_compare_error_skips_silently() -> None:
+    """compare API 抛异常 -> skipped_no_changes，无 engine / 评论 / status。"""
+
+    gitlab = _client()
+    gitlab.compare_error = RuntimeError("gitlab 500")
+    engine = _StaticEngine([])
+    orchestrator = _orchestrator(gitlab, engine)
+
+    result = await orchestrator.review_push(_push_event())
+
+    assert result.status == "skipped_no_changes"
+    assert result.review_id is None
+    assert engine.contexts == []
+    assert gitlab.comments == []
+    assert gitlab.statuses == []
+
+
+@pytest.mark.asyncio
+async def test_review_push_compare_payload_error_skips() -> None:
+    """compare 返回 error 字段 -> skipped_no_changes（不误报审查失败）。"""
+
+    gitlab = _client()
+    gitlab.compare_payload = {"error": "Something went wrong on our end.", "diffs": []}
+    engine = _StaticEngine([])
+    orchestrator = _orchestrator(gitlab, engine)
+
+    result = await orchestrator.review_push(_push_event())
+
+    assert result.status == "skipped_no_changes"
+    assert engine.contexts == []
+    assert gitlab.comments == []
+    assert gitlab.statuses == []
+
+
+@pytest.mark.asyncio
+async def test_review_push_engine_error_fails_loudly() -> None:
+    """engine 异常 -> engine_error + head commit status failed（绝不装成功）。"""
+
+    gitlab = _client()
+    engine = _StaticEngine(RuntimeError("llm timeout"))
+    orchestrator = _orchestrator(gitlab, engine)
+
+    result = await orchestrator.review_push(_push_event())
+
+    assert result.status == "engine_error"
+    assert gitlab.statuses[0]["state"] == "failed"
+    assert gitlab.statuses[0]["commit_sha"] == "a" * 40
+    summary = gitlab.comments[-1]
+    assert "FAILED" in summary["note"]
+    assert "AI Review engine failed" in summary["note"]
+
+
+@pytest.mark.asyncio
+async def test_review_push_empty_diff_completes_with_zero_findings() -> None:
+    """合并 diff 为空 -> done + 0 findings + "无可审查变更"评论 + success status。"""
+
+    gitlab = _client(diffs=[])
+    engine = _StaticEngine([])
+    orchestrator = _orchestrator(gitlab, engine)
+
+    result = await orchestrator.review_push(_push_event())
+
+    assert result.status == "done"
+    assert result.finding_count == 0
+    assert engine.contexts == []
+    assert len(gitlab.comments) == 1
+    assert "无可审查变更" in gitlab.comments[0]["note"]
+    assert gitlab.statuses[0]["state"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_review_push_blocker_on_master_fails_status() -> None:
+    """BLOCKER finding 命中 master 默认阻断策略 -> head commit status failed。"""
+
+    gitlab = _client()
+    engine = _StaticEngine([_finding(severity="BLOCKER")])
+    orchestrator = _orchestrator(gitlab, engine)
+
+    result = await orchestrator.review_push(_push_event(branch="master"))
+
+    assert result.status == "done"
+    assert result.has_blocker is True
+    assert gitlab.statuses[0]["state"] == "failed"
+    assert gitlab.statuses[0]["commit_sha"] == "a" * 40
+
+
+@pytest.mark.asyncio
+async def test_review_push_skips_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """全局开关关闭 -> skipped_disabled，不调任何 GitLab API。"""
+
+    gitlab = _client()
+    engine = _StaticEngine([])
+    orchestrator = _orchestrator(gitlab, engine)
+
+    settings = Settings(commit_review_enabled=False)
+    monkeypatch.setattr(
+        "services.review_orchestrator.get_settings", lambda: settings,
+    )
+
+    result = await orchestrator.review_push(_push_event())
+
+    assert result.status == "skipped_disabled"
+    assert gitlab.api_calls == []
+    assert engine.contexts == []
 
 
 # ---------------------------------------------------------------------------
