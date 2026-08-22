@@ -1008,10 +1008,10 @@ class ReviewOrchestrator:
                 },
             )
             return None
-        diffs = payload.get("diffs")
-        if not isinstance(diffs, list):
+        raw_diffs = payload.get("diffs")
+        if not isinstance(raw_diffs, list):
             return None
-        return {"changes": [item for item in diffs if isinstance(item, dict)]}
+        return {"changes": [item for item in raw_diffs if isinstance(item, dict)]}
 
     def _build_diff_hunks(self, changes_payload: dict[str, Any]) -> list[DiffHunk]:
         """Convert GitLab ``changes`` payload into filtered engine diff hunks."""
