@@ -105,9 +105,17 @@ class ReviewRepository(BaseRepository[Review]):
 
         Returns:
             最近一条评审；无返回 ``None``。
+
+        始终排除 ``lifecycle_event IS NOT NULL`` 的记账行（mr_closed / mr_merged）
+        —— 它们不是真实审查（has_blocker=False、finding_count=0），不能当增量起点
+        或复用 parent。与 stats.py 聚合查询的排除逻辑保持一致。
         """
 
-        conditions = [Review.project_id == project_id, Review.mr_iid == mr_iid]
+        conditions = [
+            Review.project_id == project_id,
+            Review.mr_iid == mr_iid,
+            Review.lifecycle_event.is_(None),
+        ]
         if exclude_status:
             conditions.append(Review.status.notin_(exclude_status))
         stmt = (

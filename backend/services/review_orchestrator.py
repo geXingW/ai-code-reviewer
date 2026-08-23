@@ -388,6 +388,7 @@ class ReviewOrchestrator:
                 event=event,
                 plan=plan,
                 policy_applied=policy_applied,
+                block_policy=block_policy,
             )
             if reuse_result is not None:
                 return reuse_result
@@ -1831,13 +1832,18 @@ class ReviewOrchestrator:
         event: GitLabMergeRequestEvent,
         plan: _ReviewPlan,
         policy_applied: str,
+        block_policy: BlockPolicyLike,
     ) -> OrchestratorResult | None:
         """head 未变的 CI 重跑：跳过 engine，把 parent review 结果重发 GitLab。
 
         - 不新建 review 行（避免同 head 产生 N 份重复历史）。
         - 重发 note：内容按 parent review 的 findings + 一个"复用上一次"横幅。
-        - 重发 commit status：按 parent 的 has_blocker 决定 state。
+        - 重发 commit status：按 has_blocker 决定 state。
         - parent 找不到 / DB 异常时返回 None，让主流程降级走 full 重审。
+
+        has_blocker / blocker_count 从 parent 的 findings 重算（而非直接读 parent
+        review 行的 has_blocker / finding_count），确保 blocker 数量精确而非将
+        finding 总数误当 blocker 数。
         """
 
         parent_id = plan.parent_review_id
@@ -1858,8 +1864,7 @@ class ReviewOrchestrator:
             return None
 
         engine_findings = [_finding_row_to_engine(row) for row in parent_findings_rows]
-        has_blocker = bool(parent.has_blocker)
-        blocker_count = parent.finding_count if has_blocker else 0
+        has_blocker, blocker_count = compute_has_blocker(engine_findings, block_policy)
         note = await self._gitlab_client.create_merge_request_note(
             project_id=event.project_id,
             mr_iid=event.mr_iid,
@@ -1880,10 +1885,10 @@ class ReviewOrchestrator:
             state="failed" if has_blocker else "success",
             name="ai-code-reviewer",
             description=(
-                f"AI Review reused: {parent.finding_count} finding(s), "
+                f"AI Review reused: {len(engine_findings)} finding(s), "
                 f"{blocker_count} blocking"
                 if has_blocker
-                else f"AI Review reused: {parent.finding_count} finding(s)"
+                else f"AI Review reused: {len(engine_findings)} finding(s)"
             ),
             target_url=self._build_review_detail_url(parent.id),
         )
@@ -1891,7 +1896,7 @@ class ReviewOrchestrator:
             review_id=parent.id,
             project_uuid=event.project_uuid,
             status=parent.status,
-            finding_count=parent.finding_count,
+            finding_count=len(engine_findings),
             has_blocker=has_blocker,
             blocker_count=blocker_count,
             policy_applied=policy_applied,
