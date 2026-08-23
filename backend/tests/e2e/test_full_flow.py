@@ -31,7 +31,6 @@ import os
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any
-from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -45,8 +44,6 @@ from core.db import Base, get_db
 from engines import Finding, HealthStatus, ReviewContext, ReviewEngine
 from engines.registry import get_engine_registry
 from main import create_app
-from models.project_block_policy import ProjectBlockPolicy
-from services import review_orchestrator as orchestrator_module
 
 TEST_DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -201,7 +198,11 @@ def gitlab_mock() -> SimpleNamespace:
         )
 
 
-async def _seed_project(client: AsyncClient) -> dict[str, str]:
+async def _seed_project(
+    client: AsyncClient,
+    *,
+    block_on_engine_error: bool = False,
+) -> dict[str, str]:
     """Create a provider, rule, and project (with block policies) via the admin API.
 
     This mirrors step 1 of the documented review flow. The orchestrator does
@@ -245,7 +246,7 @@ async def _seed_project(client: AsyncClient) -> dict[str, str]:
                 {
                     "branch_pattern": "master",
                     "block_severity": "BLOCKER",
-                    "block_on_engine_error": False,
+                    "block_on_engine_error": block_on_engine_error,
                     "priority": 1,
                 },
                 {
@@ -294,29 +295,6 @@ def _review_payload(target_branch: str) -> dict[str, Any]:
         "title": "Demo MR",
         "web_url": WEB_URL,
     }
-
-
-def _policies_blocking_engine_error(project_id: UUID) -> list[ProjectBlockPolicy]:
-    """Default-policy replacement whose master policy blocks on engine errors."""
-
-    return [
-        ProjectBlockPolicy(
-            project_id=project_id,
-            branch_pattern="master",
-            block_severity="BLOCKER",
-            block_on_engine_error=True,
-            require_all_resolved=False,
-            priority=1,
-        ),
-        ProjectBlockPolicy(
-            project_id=project_id,
-            branch_pattern="*",
-            block_severity="NONE",
-            block_on_engine_error=False,
-            require_all_resolved=False,
-            priority=99,
-        ),
-    ]
 
 
 def _status_payload(mock: SimpleNamespace) -> dict[str, Any]:
@@ -397,25 +375,18 @@ async def test_non_blocker_on_test_branch(
 async def test_engine_timeout_with_block_on_error(
     e2e_client: tuple[AsyncClient, StubReviewEngine],
     gitlab_mock: SimpleNamespace,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Engine timeout + block_on_engine_error=true → has_blocker=true, no discussion.
 
-    The HTTP flow uses default branch policies, whose master template does not
-    block on engine errors. To exercise the real ``_handle_engine_error`` path
-    through ``POST /api/reviews``, the default-policy builder is swapped for one
-    whose master policy sets ``block_on_engine_error=True``.
+    ``review_merge_request_event`` 现在从项目 DB 策略读取阻断配置（webhook 与
+    Jenkins 同步触发共用同一入口），因此通过 ``_seed_project`` 创建带
+    ``block_on_engine_error=True`` 的 master 策略来驱动 ``_handle_engine_error``
+    的完整 HTTP 路径。
     """
 
     client, stub = e2e_client
-    await _seed_project(client)
+    await _seed_project(client, block_on_engine_error=True)
     stub.error = TimeoutError("LLM provider timed out after 30s (token=secret)")
-
-    monkeypatch.setattr(
-        orchestrator_module,
-        "build_default_block_policies",
-        _policies_blocking_engine_error,
-    )
 
     response = await client.post(
         "/api/reviews",

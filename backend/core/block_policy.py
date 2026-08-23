@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Sequence
 from enum import StrEnum
 from fnmatch import fnmatchcase
@@ -10,6 +11,7 @@ from uuid import UUID
 
 from models.project_block_policy import ProjectBlockPolicy
 
+logger = logging.getLogger(__name__)
 
 class Severity(StrEnum):
     """Supported finding severities emitted by review engines."""
@@ -79,6 +81,7 @@ _DEFAULT_POLICY_TEMPLATES: tuple[tuple[int, str, BlockSeverity], ...] = (
     (3, "develop", BlockSeverity.BLOCKER),
     (4, "release/*", BlockSeverity.BLOCKER),
     (5, "hotfix/*", BlockSeverity.BLOCKER),
+    (6, "test", BlockSeverity.BLOCKER),
     (99, "*", BlockSeverity.NONE),
 )
 
@@ -94,15 +97,47 @@ def match_block_policy(
     raises ``ValueError`` so callers can surface a configuration problem instead
     of silently allowing a merge.
     """
+    logger.info(
+        "Matching block policy for target branch",
+        extra={
+            "target_branch": target_branch,
+            "policies": [
+                {
+                    "id": str(getattr(policy, "id", None)),
+                    "branch_pattern": policy.branch_pattern,
+                    "block_severity": policy.block_severity,
+                    "priority": policy.priority,
+                    "block_on_engine_error": policy.block_on_engine_error,
+                }
+                for policy in policies
+            ],
+        },
+    )
 
     branch = target_branch.strip()
     if not branch:
+        logger.info("target_branch must not be empty")
         raise ValueError("target_branch must not be empty")
 
     ordered = sorted(policies, key=lambda policy: policy.priority)
     for policy in ordered:
         if fnmatchcase(branch, policy.branch_pattern):
+            logger.info(
+                "Matched block policy",
+                extra={
+                    "target_branch": target_branch,
+                    "policy": {
+                        "id": str(getattr(policy, "id", None)),
+                        "branch_pattern": policy.branch_pattern,
+                        "block_severity": policy.block_severity,
+                        "priority": policy.priority,
+                        "block_on_engine_error": policy.block_on_engine_error,
+                    },
+                },
+            )
             return policy
+
+    logger.info("No block policy matched target branch", extra={"target_branch": target_branch})
     raise ValueError(f"No block policy matched target branch: {target_branch}")
 
 
@@ -117,12 +152,38 @@ def compute_has_blocker(
         ``blocker_count`` is the number of findings at or above the configured
         threshold.
     """
-
     threshold = _parse_block_severity(policy.block_severity)
+    logger.info(
+        "Computing blocker for %d findings under policy",
+        len(findings),
+        extra={
+            "findings": len(findings),
+            "policy": {
+                "id": str(getattr(policy, "id", None)),
+                "branch_pattern": policy.branch_pattern,
+                "block_severity": policy.block_severity,
+                "priority": policy.priority,
+                "block_on_engine_error": policy.block_on_engine_error,
+            },
+            "threshold": threshold,
+        },
+    )
     if threshold in {BlockSeverity.NONE, BlockSeverity.ENGINE_ERROR_ONLY}:
+        logger.info(
+            "Policy severity threshold allows all findings",
+            extra={
+                "threshold": threshold,
+                "policy": {
+                    "id": str(getattr(policy, "id", None)),
+                    "branch_pattern": policy.branch_pattern,
+                },
+            },
+        )
         return (False, 0)
 
     threshold_rank = _SEVERITY_RANK[Severity(threshold.value)]
+    logger.info("Evaluating %d findings against severity threshold %r: %d",
+                len(findings), threshold, threshold_rank)
     blocker_count = sum(
         1
         for finding in findings

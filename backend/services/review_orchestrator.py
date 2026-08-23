@@ -30,6 +30,7 @@ from core.block_policy import (
 )
 from core.config import get_settings
 from core.diff_filter import DiffFilterConfig, filter_gitlab_changes
+from core.finding_taxonomy import infer_category
 from core.summary_builder import (
     build_commit_review_note,
     build_finding_discussion_body,
@@ -124,6 +125,8 @@ class GitLabCommitEvent:
         message: 完整 commit message。
         author_username: push 触发者的 GitLab 用户名；缺失时 ``None``。
         author_name: 同上，显示名。
+        created_at: commit 时间（ISO 或 Ruby ``to_s`` 字符串，webhook
+            ``commit.timestamp`` 原样透传）；缺失时 ``""``，通知侧不展示。
     """
 
     project_id: int
@@ -134,6 +137,7 @@ class GitLabCommitEvent:
     message: str
     author_username: str | None = None
     author_name: str | None = None
+    created_at: str = ""
 
     @property
     def project_uuid(self) -> UUID:
@@ -160,6 +164,8 @@ class GitLabPushEvent:
             保持 payload 的时间序（旧 -> 新）。
         author_username: push 触发者的 GitLab 用户名；缺失时 ``None``。
         author_name: 同上，显示名。
+        created_at: 本次 push 的代表时间（head commit 的 ``timestamp`` 原样
+            透传）；缺失时 ``""``，通知侧不展示。
     """
 
     project_id: int
@@ -170,6 +176,7 @@ class GitLabPushEvent:
     commits: list[dict[str, Any]]
     author_username: str | None = None
     author_name: str | None = None
+    created_at: str = ""
 
     @property
     def project_uuid(self) -> UUID:
@@ -368,6 +375,7 @@ class ReviewOrchestrator:
             event.target_branch,
         )
         policy_applied = f"{block_policy.branch_pattern} -> {block_policy.block_severity}"
+        logger.info("Applying policy", extra={"policy_applied": policy_applied})
 
         # 按 (project, mr_iid) 决定这次是全量 / 增量 / 复用。
         plan = await self._plan_review(event)
@@ -384,6 +392,7 @@ class ReviewOrchestrator:
         )
 
         if plan.mode == "reuse":
+            logger.info("handle reuse")
             reuse_result = await self._handle_reuse(
                 event=event,
                 plan=plan,
@@ -621,6 +630,7 @@ class ReviewOrchestrator:
             event.branch,
         )
         policy_applied = f"{block_policy.branch_pattern} -> {block_policy.block_severity}"
+        logger.info("Applying policy", extra={"policy_applied": policy_applied})
 
         if not hunks:
             # 空提交 / 全部被 ignore_paths 过滤 -> 0 findings + 汇总评论 + 通知。
@@ -1845,8 +1855,13 @@ class ReviewOrchestrator:
         review 行的 has_blocker / finding_count），确保 blocker 数量精确而非将
         finding 总数误当 blocker 数。
         """
-
         parent_id = plan.parent_review_id
+
+        logger.info(
+            "handle reuse",
+            extra={"parent_review_id": parent_id, "block_policy": block_policy},
+        )
+
         if parent_id is None or self._session_factory is None:
             return None
         try:
@@ -1863,8 +1878,15 @@ class ReviewOrchestrator:
             )
             return None
 
+        logger.info("handle reuse", extra={"parent_findings_rows": parent_findings_rows})
+
         engine_findings = [_finding_row_to_engine(row) for row in parent_findings_rows]
+        logger.info("handle reuse", extra={"findings": engine_findings})
         has_blocker, blocker_count = compute_has_blocker(engine_findings, block_policy)
+        logger.info(
+            "handle reuse",
+            extra={"has_blocker": has_blocker, "blocker_count": blocker_count},
+        )
         note = await self._gitlab_client.create_merge_request_note(
             project_id=event.project_id,
             mr_iid=event.mr_iid,
@@ -2430,7 +2452,7 @@ class ReviewOrchestrator:
                     "mr_author_name": event.author_name,
                     "mr_web_url": None,  # commit 没有 MR 链接
                     "findings_summary": _build_findings_summary(findings or []),
-                    "mr_created_at": "",  # commit 事件没有创建时间
+                    "mr_created_at": event.created_at,
                     "changed_files_count": 0,
                 },
             )
@@ -2468,6 +2490,9 @@ def _build_findings_summary(findings: Sequence[Finding]) -> list[dict[str, Any]]
                 "title": finding.title,
                 "file_path": finding.file_path,
                 "line_number": finding.line_number,
+                "severity": finding.severity,
+                # LLM 未输出分类时按 rule_id 推断，保证通知里「问题类型」始终有值。
+                "category": finding.category or infer_category(finding.rule_id).value,
             }
             for finding in findings
             if finding.severity == severity

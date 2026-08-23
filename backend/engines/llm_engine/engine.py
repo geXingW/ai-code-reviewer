@@ -273,7 +273,7 @@ class OpenAICompatibleLLMClient:
                 "provider_type": provider.provider_type,
                 "model": provider.model,
                 "prompt_len": len(prompt),
-                "prompt_head": prompt[:500],
+                "prompt": prompt,
             },
         )
         logger.debug("llm request full prompt", extra={"prompt": prompt})
@@ -305,7 +305,7 @@ class OpenAICompatibleLLMClient:
                 "provider_type": provider.provider_type,
                 "model": provider.model,
                 "response_len": len(raw),
-                "response_head": raw[:500],
+                "response": raw,
             },
         )
         logger.debug("llm response full", extra={"response": raw})
@@ -388,6 +388,7 @@ class LLMDirectEngine(ReviewEngine):
         Provider 缺失 / diff 为空仍安静降级为空列表。engine_error 仍只在
         ``review()`` 自身抛异常时触发：单文件失败已被内部降级，不会触发。
         """
+        logger.info("llm-direct review start", extra={"ctx": ctx})
 
         # 每次 review 重置 skipped_files，避免跨 review 串味。
         self.skipped_files = []
@@ -1091,13 +1092,24 @@ class LLMDirectEngine(ReviewEngine):
 
 
 def _loads_model_json(raw_response: str) -> dict[str, Any]:
-    """Load model JSON, accepting optional fenced code blocks."""
+    """Load model JSON, accepting an optional whole-response fenced block.
+
+    先直接整体解析：json_object 模式下模型返回的就是纯 JSON，且 finding 的
+    suggestion 字段可能内嵌 ```java 代码块，用 search 在任意位置提取会误伤
+    （把内嵌代码块当成 JSON body，导致合法响应解析失败）。只有整体解析
+    失败且整个响应被 ```json ... ``` 包裹时才提取 fenced body。
+    """
 
     text = raw_response.strip()
-    match = _JSON_BLOCK_RE.search(text)
-    if match:
-        text = match.group("body").strip()
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # 整体不是合法 JSON：仅当整个响应是 fenced block 时提取，
+        # 内嵌 ``` 的合法 JSON 不会走到这里（上面已成功解析）。
+        match = _JSON_BLOCK_RE.fullmatch(text)
+        if not match:
+            raise
+        data = json.loads(match.group("body").strip())
     if not isinstance(data, dict):
         msg = "LLM response must be a JSON object"
         raise ValueError(msg)

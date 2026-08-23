@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -29,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_VERDICTS: frozenset[str] = frozenset({"keep", "drop", "downgrade"})
 _ALLOWED_SEVERITIES: frozenset[str] = frozenset({"INFO", "WARNING", "BLOCKER"})
+# 与 engine.py 的 _loads_model_json 同一容错策略：模型可能把整个 JSON 包在
+# ```json ... ``` 里（虽然 prompt 要求 no fences）。只接受整体 fenced，
+# 避免误伤响应内部（如 reason 字段）的代码块。filter_stage 不能反向
+# import engine.py（循环依赖），故在此独立定义保持一致。
+_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
 
 FilterVerdict = Literal["keep", "drop", "downgrade"]
@@ -100,10 +106,31 @@ def parse_filter_response(raw_json: str, findings_count: int) -> list[FilterDeci
     if not raw_json or not raw_json.strip():
         return []
 
+    # 先整体解析；失败时兼容模型把整个响应包在 ```json ... ``` 里的情况
+    # （与 engine.py 的 _loads_model_json 同一策略，fullmatch 只认整体 fenced）。
+    text = raw_json.strip()
     try:
-        payload = json.loads(raw_json.strip())
-    except (json.JSONDecodeError, ValueError):
-        return []
+        payload = json.loads(text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        match = _JSON_BLOCK_RE.fullmatch(text)
+        if not match:
+            logger.warning(
+                "filter stage: response is not valid JSON (len=%d), "
+                "keeping all findings: %s",
+                len(raw_json),
+                exc,
+            )
+            return []
+        try:
+            payload = json.loads(match.group("body").strip())
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                "filter stage: fenced JSON body is not valid JSON (len=%d), "
+                "keeping all findings: %s",
+                len(raw_json),
+                exc,
+            )
+            return []
     if not isinstance(payload, dict):
         return []
 

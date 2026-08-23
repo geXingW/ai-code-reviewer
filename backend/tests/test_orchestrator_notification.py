@@ -131,6 +131,9 @@ async def test_orchestrator_notifies_on_success() -> None:
                     "title": "hardcoded credential",
                     "file_path": "app.py",
                     "line_number": None,
+                    "severity": "BLOCKER",
+                    # rule-1 无已知分类映射，回退 infer_category 的 OTHER。
+                    "category": "other",
                 },
             ],
         },
