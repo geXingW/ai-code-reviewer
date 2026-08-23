@@ -123,7 +123,7 @@ def _summary_item(title: str, file_path: str, line_number: int | None) -> dict[s
 
 
 def test_build_message_contains_mr_link_and_grouped_findings() -> None:
-    """新模板：正文含 MR信息 区块链接、按级别分组的 finding 列表与正确计数。"""
+    """新模板：正文含提交信息区块链接、按级别分组的 finding 段落与正确计数。"""
 
     svc = NotificationService(session_factory=None)
     title, text = svc._build_review_message(
@@ -154,7 +154,7 @@ def test_build_message_contains_mr_link_and_grouped_findings() -> None:
         },
     )
     assert "存在阻断" in title
-    # MR 链接（MR信息区块）
+    # MR 链接（提交信息区块）
     assert (
         "- [查看MR详情](https://gitlab.example.com/group/project/-/merge_requests/42)" in text
     )
@@ -162,18 +162,20 @@ def test_build_message_contains_mr_link_and_grouped_findings() -> None:
     assert "🔴 阻断 2 个" in text
     assert "🟡 警告 1 个" in text
     assert "🔵 提示 0 个" in text
-    # 分组列表：标题 + 带行号的条目（数字编号，BLOCKER 组在前 WARNING 组在后）
+    # 分组列表：每条问题独立成段（加粗编号标题 + 代码位置，BLOCKER 组在前）
     assert "🔴 阻断问题 (2)" in text
     assert "🟡 警告问题 (1)" in text
-    assert "1. **SQL 注入风险** - `auth/login.py:45`" in text
-    assert "2. **硬编码密钥** - `config/database.py:12`" in text
+    assert "**1. SQL 注入风险**" in text
+    assert "**2. 硬编码密钥**" in text
+    assert "- 代码位置：`auth/login.py:45`" in text
+    assert "- 代码位置：`config/database.py:12`" in text
     assert text.index("🔴 阻断问题 (2)") < text.index("🟡 警告问题 (1)")
     # 详情链接仍在
     assert "[查看完整审查详情](http://x/reviews/r-1)" in text
 
 
 def test_build_message_renders_mr_section() -> None:
-    """带 MR 信息时渲染「MR信息」区块：标题 / 创建人 / 创建时间 / MR 链接。"""
+    """带 MR 信息时渲染「提交信息」区块：标题 / 创建人 / 创建时间 / MR 链接。"""
 
     svc = NotificationService(session_factory=None)
     _, text = svc._build_review_message(
@@ -189,19 +191,20 @@ def test_build_message_renders_mr_section() -> None:
             "mr_web_url": "http://gitlab.example.com/project/-/merge_requests/42",
         },
     )
-    assert "MR信息:" in text
-    assert "- MR标题: 运单完结时自动结束星标功能" in text
+    assert "**📋 提交信息**" in text
+    assert "- 标题: 运单完结时自动结束星标功能" in text
     assert "- 创建人: wangyl" in text
-    assert "- 创建时间: 2026-08-18 16:59:45" in text
+    # 裸时间按 UTC 语义转北京时间（UTC+8）展示
+    assert "- 创建时间: 2026-08-19 00:59:45" in text
     assert (
         "- [查看MR详情](http://gitlab.example.com/project/-/merge_requests/42)" in text
     )
-    # MR信息区块在 AI Review 结果区块之前
-    assert text.index("MR信息:") < text.index("AI Review 结果:")
+    # 提交信息区块在 AI Review 结果区块之前
+    assert text.index("**📋 提交信息**") < text.index("**🤖 AI Review 结果**")
 
 
 def test_build_message_omits_mr_section_when_no_mr_info() -> None:
-    """无任何 MR 字段时跳过「MR信息」区块，仍渲染 AI Review 结果。"""
+    """无任何 MR 字段时跳过「提交信息」区块，仍渲染 AI Review 结果。"""
 
     svc = NotificationService(session_factory=None)
     _, text = svc._build_review_message(
@@ -213,8 +216,8 @@ def test_build_message_omits_mr_section_when_no_mr_info() -> None:
             "status": "done",
         },
     )
-    assert "MR信息" not in text
-    assert "AI Review 结果:" in text
+    assert "提交信息" not in text
+    assert "**🤖 AI Review 结果**" in text
 
 
 def test_build_message_mr_section_degrades_on_partial_fields() -> None:
@@ -231,7 +234,7 @@ def test_build_message_mr_section_degrades_on_partial_fields() -> None:
             "mr_title": "fix: 修复空指针",
         },
     )
-    assert "- MR标题: fix: 修复空指针" in text
+    assert "- 标题: fix: 修复空指针" in text
     assert "创建人" not in text
     assert "创建时间" not in text
     assert "查看MR详情" not in text
@@ -264,7 +267,7 @@ def test_build_message_renders_summary_section() -> None:
         },
     )
     assert "📋 审查摘要" in text
-    # PR概述已移除（MR 标题放在「MR信息」区块，避免重复）
+    # PR概述已移除（MR 标题放在「提交信息」区块，避免重复）
     assert "PR概述" not in text
     assert "- 变更规模：涉及 3 个文件" in text
     assert "- 总体评价：🔴 阻断 1 个" in text
@@ -336,7 +339,7 @@ def test_build_message_shows_all_blockers() -> None:
     )
     assert "阻断问题 (7)" in text
     for i in range(1, 8):
-        assert f"**阻断{i}**" in text
+        assert f"**{i}. 阻断{i}**" in text
 
 
 def test_build_message_without_findings_omits_list_section() -> None:

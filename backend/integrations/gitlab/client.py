@@ -15,12 +15,14 @@ later PR.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 import httpx
 
 CommitStatusState = Literal["pending", "running", "success", "failed", "canceled", "skipped"]
 
+logger = logging.getLogger(__name__)
 
 class GitLabClientError(RuntimeError):
     """Raised when GitLab returns a non-successful HTTP response."""
@@ -370,7 +372,17 @@ class GitLabClient:
         Returns:
             dict[str, Any]: Raw GitLab status response.
         """
-
+        logger.info(
+            "Setting GitLab commit status",
+            extra={
+                "project_id": project_id,
+                "commit_sha": commit_sha,
+                "state": state,
+                "status_name": name,
+                "description": description,
+                "target_url": target_url,
+            },
+        )
         payload: dict[str, Any] = {
             "state": state,
             "name": name,

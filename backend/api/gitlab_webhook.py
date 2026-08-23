@@ -211,6 +211,7 @@ def _parse_push_event(payload: dict[str, Any]) -> _PushEventInfo | None:
                 "id": str(item.get("id") or ""),
                 "title": str(item.get("title") or ""),
                 "message": str(item.get("message") or ""),
+                "timestamp": str(item.get("timestamp") or ""),
             }
         )
     if not commits:
@@ -243,10 +244,13 @@ async def _process_push_commits(push_info: _PushEventInfo, project: Project) -> 
     from core.config import get_settings
 
     settings = get_settings()
+    # project 经 get_by_gitlab_project_id 查询已 selectinload block_policies，
+    # 空列表时 orchestrator 内部回退默认模板，保证与误报重算路径语义一致。
     orchestrator = ReviewOrchestrator(
         gitlab_client=client,
         engine_registry=get_engine_registry(),
         default_engine=settings.default_review_engine,
+        block_policies=project.block_policies,
         session_factory=db.AsyncSessionLocal,
         notification_service=None,
     )
@@ -259,6 +263,10 @@ async def _process_push_commits(push_info: _PushEventInfo, project: Project) -> 
         commits=push_info.commits,
         author_username=push_info.pusher_username,
         author_name=push_info.pusher_name,
+        # head commit 时间作为本次 push 的代表时间（原样透传，展示层负责格式化）。
+        created_at=(
+            str(push_info.commits[-1].get("timestamp") or "") if push_info.commits else ""
+        ),
     )
     try:
         await orchestrator.review_push(event)
@@ -288,7 +296,7 @@ async def review_merge_request_event(
         session_factory: 可选的 sessionmaker 覆盖。测试里可传入 test_engine
             对应的 factory，避免复用模块级 ``AsyncSessionLocal`` 绑到已关闭的 loop。
     """
-
+    logger.info("review_merge_request_event", extra={"event": event})
     # 兼容旧调用：未传 project 时，从事件的 gitlab_project_id 反查。
     if project is None:
         effective_session_factory = session_factory or db.AsyncSessionLocal
@@ -308,10 +316,13 @@ async def review_merge_request_event(
 
     # 注入应用级 sessionmaker，让 orchestrator 每次评审完成后能落库 review + finding。
     effective_session_factory = session_factory or db.AsyncSessionLocal
+    # project 经 get_by_gitlab_project_id 查询已 selectinload block_policies，
+    # 空列表时 orchestrator 内部回退默认模板，保证与误报重算路径语义一致。
     orchestrator = ReviewOrchestrator(
         gitlab_client=client,
         engine_registry=get_engine_registry(),
         default_engine=settings.default_review_engine,
+        block_policies=project.block_policies,
         session_factory=effective_session_factory,
         # 通知服务复用同一 sessionmaker，按项目渠道推送 Review 完成结果。
         notification_service=NotificationService(effective_session_factory),

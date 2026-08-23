@@ -12,8 +12,11 @@ sessionmaker。
 from __future__ import annotations
 
 import logging
+import re
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from core.finding_taxonomy import FindingCategory, category_display
 from integrations.dingtalk.client import DingTalkClient
 from models.project_notification_channel import ProjectNotificationChannel
 from repositories.project import ProjectRepository
@@ -33,6 +36,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# 北京时间时区（UTC+8），用于钉钉通知消息里 MR / commit 创建时间的展示。
+# 存储层保持 UTC 不变，只在面向用户的展示环节做转换。
+_CN_TZ = timezone(timedelta(hours=8))
+# GitLab webhook 时间字符串尾部常见的时区后缀：``UTC`` / ``+08:00`` / ``+0800``。
+_TZ_SUFFIX_RE = re.compile(r"(?P<tz>[A-Za-z]{1,5}|[+-]\d{2}:?\d{2})\s*$")
+
 # 严重级别 -> (emoji 徽章, 中文标签)。通知正文分组与结果行共用。
 _SEVERITY_META: dict[str, tuple[str, str]] = {
     "BLOCKER": ("🔴", "阻断"),
@@ -48,6 +57,62 @@ _MAX_ITEMS_PER_SEVERITY: dict[str, int | None] = {
 # 钉钉 markdown 正文上限约 20000 字，超长会被整条拒绝；预留安全余量，
 # 超出部分截断并提示到详情页。
 _MAX_MESSAGE_LENGTH = 12_000
+
+
+def _parse_created_at(raw: str) -> datetime | None:
+    """把 GitLab webhook 常见时间格式解析为 aware datetime（UTC 语义）。
+
+    GitLab webhook 的 ``created_at`` / commit ``timestamp`` 常见格式：
+
+    - ``2026-08-23 10:31:01 UTC``（Ruby ``to_s`` 风格，国内用户最常踩的坑）
+    - ``2026-08-20T03:30:16.000Z`` / ``2026-08-20T03:30:16Z``（带 Z 后缀）
+    - ``2026-08-20T03:30:16+00:00`` / ``2026-08-20T11:30:16+08:00``
+    - ``2026-08-20T03:30:16+0800``（无冒号偏移）
+
+    无时区信息的裸时间按 UTC 处理（GitLab 服务器统一以 UTC 存储）；解析失败
+    返回 ``None``，由调用方原样回退，避免因时间格式异常阻断整条通知。
+    """
+
+    text = (raw or "").strip()
+    if not text:
+        return None
+    tz_suffix: str | None = None
+    match = _TZ_SUFFIX_RE.search(text)
+    if match:
+        tz_suffix = match.group("tz")
+        text = text[: match.start()].strip()
+    # Python 3.10 的 fromisoformat 只认 "T" 分隔，先统一再解析。
+    if "T" not in text and " " in text:
+        text = text.replace(" ", "T", 1)
+    try:
+        dt = datetime.fromisoformat(text)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        if tz_suffix and tz_suffix[0] in "+-":
+            sign = 1 if tz_suffix[0] == "+" else -1
+            digits = tz_suffix[1:].replace(":", "")
+            offset = timedelta(
+                hours=int(digits[:2]),
+                minutes=int(digits[2:4] or 0),
+            )
+            dt = dt.replace(tzinfo=timezone(sign * offset))
+        else:
+            # "UTC" / "GMT" 等缩写，以及完全无时区的裸时间：GitLab 按 UTC 存储。
+            dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+def _format_created_at(raw: str) -> str:
+    """把 GitLab 返回的时间字符串转换为北京时间 ``YYYY-MM-DD HH:MM:SS``。
+
+    解析失败时原样返回，避免因时间格式异常阻断整条通知发送。
+    """
+
+    dt = _parse_created_at(raw)
+    if dt is None:
+        return raw
+    return dt.astimezone(_CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class NotificationService:
@@ -213,23 +278,26 @@ class NotificationService:
     def _build_review_message(self, review_data: dict[str, Any]) -> tuple[str, str]:
         """构造消息标题与 markdown 正文。
 
-        正文分两层：``MR信息`` 区块（MR 维度信息，任一字段缺失时
+        正文分两层：``提交信息`` 区块（MR / commit 维度信息，任一字段缺失时
         逐行降级，全缺失时整个区块跳过）+ ``AI Review 结果`` 区块（审查摘要、
-        按严重级别分组的问题列表、详情页链接）。
+        按严重级别分组的问题列表、详情页链接），区块与每条问题之间用空行分隔，
+        便于钉钉端阅读。
 
         ``review_data`` 约定字段：``review_id`` / ``mr_iid`` / ``mr_title`` /
         ``finding_count`` / ``has_blocker`` / ``blocker_count`` / ``detail_url`` /
         ``status``（``"done"`` / ``"engine_error"``），以及可选字段：
 
-        - ``mr_web_url: str | None``：MR 跳转链接，「MR信息」区块用。
+        - ``mr_web_url: str | None``：MR 跳转链接，「提交信息」区块用。
         - ``mr_author_username`` / ``mr_author_name``：MR 创建人信息
           （@ 人由 :meth:`_resolve_at_mobiles` 处理，这里用于显示创建人）。
-        - ``mr_created_at: str``：MR 创建时间。
+        - ``mr_created_at: str``：MR / commit 创建时间（ISO 或 Ruby ``to_s``
+          字符串），可能为空；展示时统一转北京时间。
         - ``findings_summary: list[dict] | None``：按严重级别分组的精简 finding
-          列表，形如 ``[{"severity": "BLOCKER", "items": [{"title", "file_path",
-          "line_number"}, ...]}, ...]``。BLOCKER 全部展示，WARNING / INFO 各
-          最多 5 条，超出显示「还有 N 条，详见详情页」。
-        - ``mr_created_at: str``：MR 创建时间（ISO 字符串），可能为空。
+          列表，形如 ``[{"severity": "BLOCKER", "items": [{"title",
+          "file_path", "line_number", "severity", "category"}, ...]}, ...]``。
+          BLOCKER 全部展示，WARNING / INFO 各最多 5 条，超出显示
+          「还有 N 条，详见详情页」；每条独立成段展示问题类型 / 严重程度 /
+          相关文件 / 代码位置。
         - ``changed_files_count: int``：变更文件数；为 0（缺失 / 非 incremental
           模式）时跳过「变更规模」行。
 
@@ -271,9 +339,9 @@ class NotificationService:
             lines.extend(mr_section)
             lines.append("")
 
-        lines.append("AI Review 结果:")
+        lines.append("**🤖 AI Review 结果**")
         if status_value == "engine_error":
-            lines.append("引擎执行失败，未产出审查结果")
+            lines.extend(["", "引擎执行失败，未产出审查结果"])
         else:
             lines.append("")
             lines.extend(
@@ -285,6 +353,7 @@ class NotificationService:
                 ),
             )
             if findings_summary:
+                lines.extend(["", "**📋 关键问题清单**"])
                 lines.extend(self._build_findings_section(findings_summary))
 
         if detail_url:
@@ -308,17 +377,22 @@ class NotificationService:
         created_at: str,
         web_url: str | None,
     ) -> list[str]:
-        """构造「MR信息」区块；四个字段全为空时返回空列表（跳过整个区块）。"""
+        """构造「提交信息」区块；四个字段全为空时返回空列表（跳过整个区块）。
+
+        ``created_at`` 来自 GitLab webhook（ISO 或 Ruby ``to_s`` 字符串，常带
+        ``UTC`` 后缀 / 时区偏移），展示时统一转换为北京时间（UTC+8）并去掉
+        时区后缀，避免国内用户看到 ``10:31:01 UTC`` 这类反直觉的时间。
+        """
 
         if not (mr_title or author or created_at or web_url):
             return []
-        lines = ["MR信息:"]
+        lines = ["**📋 提交信息**", ""]
         if mr_title:
-            lines.append(f"- MR标题: {mr_title}")
+            lines.append(f"- 标题: {mr_title}")
         if author:
             lines.append(f"- 创建人: {author}")
         if created_at:
-            lines.append(f"- 创建时间: {created_at}")
+            lines.append(f"- 创建时间: {_format_created_at(created_at)}")
         if web_url:
             lines.append(f"- [查看MR详情]({web_url})")
         return lines
@@ -333,7 +407,7 @@ class NotificationService:
     ) -> list[str]:
         """构造「📋 审查摘要」区块；各字段缺失时逐行降级跳过。"""
 
-        lines = ["📋 审查摘要"]
+        lines = ["**📋 审查摘要**", ""]
         if changed_files_count > 0:
             lines.append(f"- 变更规模：涉及 {changed_files_count} 个文件")
         result_line = NotificationService._build_result_line(
@@ -370,7 +444,9 @@ class NotificationService:
     def _build_findings_section(findings_summary: list[dict[str, Any]]) -> list[str]:
         """按严重级别渲染分组 finding 列表（BLOCKER 全展示，其余各最多 5 条）。
 
-        空分组（0 条问题）跳过不渲染，避免正文出现无意义的「0 个问题」标题。
+        参照 AI-Codereview-Gitlab 的展示风格：每条问题独立成段（标题 + 问题
+        类型 / 严重程度 / 相关文件 / 代码位置），段落间空行分隔，避免长列表
+        挤成一团；空分组（0 条问题）跳过不渲染。
         """
 
         lines: list[str] = []
@@ -392,8 +468,40 @@ class NotificationService:
                 file_path = str(item.get("file_path") or "")
                 line_number = item.get("line_number")
                 location = f"{file_path}:{line_number}" if line_number else file_path
-                lines.append(f"{index}. **{title_text}** - `{location}`")
+                lines.append(f"**{index}. {title_text}**")
+                lines.append("")
+                lines.append(
+                    f"- 问题类型：{NotificationService._format_category(item.get('category'))}"
+                )
+                lines.append(
+                    f"- 严重程度：{NotificationService._format_severity(item.get('severity'))}"
+                )
+                lines.append(f"- 相关文件：`{file_path}`")
+                lines.append(f"- 代码位置：`{location}`")
+                lines.append("")
             omitted = len(items) - len(shown)
             if omitted > 0:
                 lines.append(f"...（还有 {omitted} 条，详见详情页）")
         return lines
+
+    @staticmethod
+    def _format_category(category_raw: object) -> str:
+        """finding 分类 → 「emoji 中文标签」；缺失 / 非法值兜底「其他」。"""
+
+        if not category_raw:
+            return "📝 其他"
+        try:
+            emoji, label = category_display(FindingCategory(str(category_raw)))
+        except ValueError:
+            return "📝 其他"
+        return f"{emoji} {label}"
+
+    @staticmethod
+    def _format_severity(severity_raw: object) -> str:
+        """严重级别 → 「emoji 中文标签」；未知值兜底中性圆点。"""
+
+        severity = str(severity_raw or "").upper()
+        if severity in _SEVERITY_META:
+            badge, label = _SEVERITY_META[severity]
+            return f"{badge} {label}"
+        return "⚪ 未知"

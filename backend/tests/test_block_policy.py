@@ -99,7 +99,7 @@ def test_engine_error_blocking_is_controlled_by_policy_flag_and_threshold() -> N
 
 
 def test_default_block_policy_seed_templates_match_issue_contract() -> None:
-    """New project defaults should protect master/main/develop/release/hotfix and allow others."""
+    """New project defaults should protect main branches incl. test and allow others."""
 
     project_id = uuid4()
     defaults = build_default_block_policies(project_id=project_id)
@@ -110,6 +110,7 @@ def test_default_block_policy_seed_templates_match_issue_contract() -> None:
         (3, "develop", BlockSeverity.BLOCKER.value),
         (4, "release/*", BlockSeverity.BLOCKER.value),
         (5, "hotfix/*", BlockSeverity.BLOCKER.value),
+        (6, "test", BlockSeverity.BLOCKER.value),
         (99, "*", BlockSeverity.NONE.value),
     ]
     assert all(p.project_id == project_id for p in defaults)
@@ -117,11 +118,11 @@ def test_default_block_policy_seed_templates_match_issue_contract() -> None:
 
 
 def test_default_policies_include_main_and_develop() -> None:
-    """默认模板必须同时覆盖 master / main / develop，避免主干分支命名不同而漏配。"""
+    """默认模板必须同时覆盖 master / main / develop / test，避免主干分支命名不同而漏配。"""
 
     defaults = build_default_block_policies(project_id=uuid4())
     patterns = {p.branch_pattern for p in defaults}
-    assert {"master", "main", "develop", "release/*", "hotfix/*"} <= patterns
+    assert {"master", "main", "develop", "release/*", "hotfix/*", "test"} <= patterns
 
 
 def test_match_block_policy_main_targets_blocker() -> None:
