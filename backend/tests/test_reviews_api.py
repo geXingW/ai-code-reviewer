@@ -12,10 +12,10 @@ from services.review_orchestrator import GitLabMergeRequestEvent, OrchestratorRe
 
 
 @pytest.mark.asyncio
-async def test_create_review_rejects_missing_internal_token(client: AsyncClient) -> None:
+async def test_create_review_rejects_missing_internal_token(db_client: AsyncClient) -> None:
     """Jenkins review API requires a server-to-server internal token."""
 
-    response = await client.post(
+    response = await db_client.post(
         "/api/reviews",
         json={
             "project_id": 123,
@@ -32,7 +32,7 @@ async def test_create_review_rejects_missing_internal_token(client: AsyncClient)
 
 @pytest.mark.asyncio
 async def test_create_review_runs_orchestrator_and_returns_blocking_summary(
-    client: AsyncClient,
+    db_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Valid Jenkins request synchronously returns blocker summary fields."""
@@ -54,7 +54,7 @@ async def test_create_review_runs_orchestrator_and_returns_blocking_summary(
 
     monkeypatch.setattr(reviews, "review_merge_request_event", fake_review)
 
-    response = await client.post(
+    response = await db_client.post(
         "/api/reviews",
         headers={"X-Internal-Token": "test-internal-token"},
         json={
@@ -94,7 +94,7 @@ async def test_create_review_runs_orchestrator_and_returns_blocking_summary(
 
 @pytest.mark.asyncio
 async def test_create_review_builds_fallback_review_url(
-    client: AsyncClient,
+    db_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Response still contains a stable review URL when GitLab note ID is absent."""
@@ -113,7 +113,7 @@ async def test_create_review_builds_fallback_review_url(
 
     monkeypatch.setattr(reviews, "review_merge_request_event", fake_review)
 
-    response = await client.post(
+    response = await db_client.post(
         "/api/reviews",
         headers={"X-Internal-Token": "test-internal-token"},
         json={
@@ -130,20 +130,20 @@ async def test_create_review_builds_fallback_review_url(
 
 
 @pytest.mark.asyncio
-async def test_recent_reviews_rejects_missing_auth(client: AsyncClient) -> None:
+async def test_recent_reviews_rejects_missing_auth(db_client: AsyncClient) -> None:
     """Dashboard recent reviews endpoint 受 admin JWT 保护，缺 token 返回 401。"""
 
-    response = await client.get("/api/reviews/recent")
+    response = await db_client.get("/api/reviews/recent")
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid admin token"
 
 
 @pytest.mark.asyncio
-async def test_create_review_rejects_unsafe_web_url(client: AsyncClient) -> None:
+async def test_create_review_rejects_unsafe_web_url(db_client: AsyncClient) -> None:
     """Unsafe URL schemes must not be stored or rendered by the dashboard."""
 
-    response = await client.post(
+    response = await db_client.post(
         "/api/reviews",
         headers={"X-Internal-Token": "test-internal-token"},
         json={
@@ -161,13 +161,10 @@ async def test_create_review_rejects_unsafe_web_url(client: AsyncClient) -> None
 
 @pytest.mark.asyncio
 async def test_recent_reviews_returns_latest_manual_review(
-    client: AsyncClient,
+    db_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dashboard can read a sanitized list of recently triggered reviews.
-
-    验证 DB 失败时回退到内存 deque 的行为仍然正常。
-    """
+    """Dashboard can read a sanitized list of recently triggered reviews."""
 
     # 生成合法 admin JWT（/api/reviews/recent 现在走 JWT 认证）
     from datetime import UTC, datetime, timedelta
@@ -192,7 +189,7 @@ async def test_recent_reviews_returns_latest_manual_review(
         )
 
     monkeypatch.setattr(reviews, "review_merge_request_event", fake_review)
-    create_response = await client.post(
+    create_response = await db_client.post(
         "/api/reviews",
         headers={"X-Internal-Token": "test-internal-token"},
         json={
@@ -208,8 +205,8 @@ async def test_recent_reviews_returns_latest_manual_review(
     )
     assert create_response.status_code == 200
 
-    # GET /recent 走 JWT 认证；DB 查询失败（client fixture 无 DB）时回退到 deque
-    list_response = await client.get(
+    # GET /recent 走 JWT 认证
+    list_response = await db_client.get(
         "/api/reviews/recent",
         headers=auth_headers,
     )
