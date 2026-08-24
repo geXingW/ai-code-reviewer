@@ -234,7 +234,10 @@ async def test_login_rejects_invalid_credentials(client: AsyncClient) -> None:
 async def test_login_returns_bearer_token_for_valid_credentials(db_client: AsyncClient) -> None:
     """MVP login endpoint returns a bearer token that can authenticate admin APIs."""
 
-    response = await db_client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    response = await db_client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin"},
+    )
 
     assert response.status_code == 200
     payload = response.json()
