@@ -439,14 +439,17 @@ async def test_reset_pending_false_positive_fails(
 
 
 @pytest.mark.asyncio
-async def test_jwt_token_contains_standard_claims(client: AsyncClient) -> None:
+async def test_jwt_token_contains_standard_claims(db_client: AsyncClient) -> None:
     """Login token must be a decodable JWT with sub, exp, and iat claims."""
 
     import jwt as pyjwt
 
     from core.config import get_settings
 
-    response = await client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    response = await db_client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin"},
+    )
     assert response.status_code == 200
     token = response.json()["access_token"]
 
