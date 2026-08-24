@@ -29,8 +29,10 @@ from repositories.project_notification_channel import (
 from repositories.project_rule import ProjectRuleRepository
 from repositories.provider import ProviderRepository
 from repositories.review import FindingRepository, ReviewRepository
+from repositories.role_repository import RoleRepository
 from repositories.rule import RuleRepository
 from repositories.user_mapping_repository import UserMappingRepository
+from repositories.user_repository import UserRepository
 
 __all__ = [
     "AuditLogRepository",
@@ -46,6 +48,8 @@ __all__ = [
     "ProjectRuleRepository",
     "ProviderRepository",
     "ReviewRepository",
+    "RoleRepository",
     "RuleRepository",
     "UserMappingRepository",
+    "UserRepository",
 ]

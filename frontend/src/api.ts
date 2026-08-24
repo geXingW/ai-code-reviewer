@@ -4,6 +4,61 @@ export type HealthStatus = {
   db: string;
 };
 
+// PR-2 RBAC：用户 / 角色数据类型，对应后端 /api/users、/api/roles 返回的 items。
+export type User = {
+  id: string;
+  username: string;
+  display_name: string | null;
+  role_id: string | null;
+  role_name: string | null;
+  enabled: boolean;
+  assigned_project_ids: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type Role = {
+  id: string;
+  name: string;
+  description: string | null;
+  is_system: boolean;
+  permissions: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type UserCreatePayload = {
+  username: string;
+  password: string;
+  display_name?: string;
+  role_id?: string;
+  enabled?: boolean;
+};
+
+export type UserUpdatePayload = {
+  username?: string;
+  password?: string;
+  display_name?: string;
+  role_id?: string;
+  enabled?: boolean;
+};
+
+export type UserProjectAssignPayload = {
+  project_ids: string[];
+};
+
+export type RoleCreatePayload = {
+  name: string;
+  description?: string;
+  permissions: string[];
+};
+
+export type RoleUpdatePayload = {
+  name?: string;
+  description?: string;
+  permissions?: string[];
+};
+
 export type EngineSummary = {
   name: string;
   supports_feedback: boolean;
@@ -312,16 +367,33 @@ export type FalsePositiveReviewPayload = {
 
 export type LoginResponse = {
   access_token: string;
-  token_type: 'bearer';
+  token_type: string;
   expires_in: number;
   // PR-B：后端登录返回当前用户名，前端存到 sessionStorage 后用作
   // 误报标记/审核弹窗中"标记人 / 审核人"的默认值。
   username: string;
+  // PR-2 RBAC：登录响应带用户展示名、权限与可见项目，前端据此过滤菜单 / 项目。
+  // 老服务或测试 mock 可能缺失这些字段，使用方需做兜底。
+  display_name?: string | null;
+  permissions?: string[];
+  project_ids?: string[];
+};
+
+// PR-2 RBAC：当前登录用户（菜单位权限 + 项目可见范围），由 /api/auth/me 或登录响应构建。
+export type CurrentUser = {
+  username: string;
+  display_name: string | null;
+  permissions: string[];
+  project_ids: string[];
 };
 
 const ADMIN_TOKEN_STORAGE_KEY = 'aicr_admin_access_token';
 // PR-B：与 token 同层 sessionStorage 键，登出时一起清空。
 const ADMIN_USERNAME_STORAGE_KEY = 'aicr_admin_username';
+// PR-2 RBAC：当前用户展示名 / 权限列表 / 可见项目 id，随登录写入、登出清空。
+const ADMIN_DISPLAY_NAME_STORAGE_KEY = 'aicr_admin_display_name';
+const ADMIN_PERMISSIONS_STORAGE_KEY = 'aicr_admin_permissions';
+const ADMIN_PROJECT_IDS_STORAGE_KEY = 'aicr_admin_project_ids';
 
 export class AuthRequiredError extends Error {
   constructor(message = '登录已过期，请重新登录。') {
@@ -357,6 +429,10 @@ export function clearStoredAdminAccessToken(): void {
   setStoredAdminAccessToken('');
   // PR-B：登出时把用户名也一起清掉，保持"登出后什么都不残留"的语义。
   clearStoredAdminUsername();
+  // PR-2 RBAC：展示名 / 权限 / 可见项目一并清空，会话完全重置。
+  setStoredAdminDisplayName('');
+  setStoredAdminPermissions([]);
+  setStoredAdminProjectIds([]);
 }
 
 // PR-B：sessionStorage 里的当前登录用户名。仅用于前端默认值预填（例如误报
@@ -382,6 +458,63 @@ export function setStoredAdminUsername(username: string): void {
 
 export function clearStoredAdminUsername(): void {
   setStoredAdminUsername('');
+}
+
+// PR-2 RBAC：sessionStorage 中的展示名 / 权限列表 / 可见项目 id。
+// 登录时写入，刷新后由 App 恢复 currentUser。权限与项目 id 以 JSON 存储，解析失败退回兜底值。
+export function setStoredAdminDisplayName(displayName: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const trimmed = displayName.trim();
+  if (trimmed) {
+    window.sessionStorage.setItem(ADMIN_DISPLAY_NAME_STORAGE_KEY, trimmed);
+  } else {
+    window.sessionStorage.removeItem(ADMIN_DISPLAY_NAME_STORAGE_KEY);
+  }
+}
+
+export function getStoredAdminDisplayName(): string {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+  return window.sessionStorage.getItem(ADMIN_DISPLAY_NAME_STORAGE_KEY) ?? '';
+}
+
+export function setStoredAdminPermissions(permissions: string[]): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.sessionStorage.setItem(ADMIN_PERMISSIONS_STORAGE_KEY, JSON.stringify(permissions));
+}
+
+export function getStoredAdminPermissions(): string[] {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  try {
+    return JSON.parse(window.sessionStorage.getItem(ADMIN_PERMISSIONS_STORAGE_KEY) ?? '[]') as string[];
+  } catch {
+    return [];
+  }
+}
+
+export function setStoredAdminProjectIds(projectIds: string[]): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.sessionStorage.setItem(ADMIN_PROJECT_IDS_STORAGE_KEY, JSON.stringify(projectIds));
+}
+
+export function getStoredAdminProjectIds(): string[] {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+  try {
+    return JSON.parse(window.sessionStorage.getItem(ADMIN_PROJECT_IDS_STORAGE_KEY) ?? '[]') as string[];
+  } catch {
+    return [];
+  }
 }
 
 function buildAdminHeaders(extraHeaders: Record<string, string> = {}): Record<string, string> {
@@ -429,6 +562,11 @@ export async function loginAdmin(username: string, password: string): Promise<Lo
   // PR-B：后端在 LoginResponse 里带回 username，存下来作为误报处理弹窗默认值。
   // 老服务或测试 mock 可能没有该字段，走 username 兜底避免 trim() 崩。
   setStoredAdminUsername(payload.username ?? username ?? '');
+  // PR-2 RBAC：展示名 / 权限 / 可见项目一并落 sessionStorage，供刷新后恢复当前用户。
+  // 缺省字段做兜底，避免老服务 / 测试 mock 导致的 JSON.parse 失败。
+  setStoredAdminDisplayName(payload.display_name || payload.username || username || '');
+  setStoredAdminPermissions(payload.permissions ?? []);
+  setStoredAdminProjectIds(payload.project_ids ?? []);
   return payload;
 }
 
@@ -992,4 +1130,99 @@ export async function generateProjectNegativePrompt(
     body: JSON.stringify({}),
   });
   return parseJsonResponse<ProjectNegativePromptGenerateResult>(response, true);
+}
+
+// ---------------- 用户管理 API（PR-2 RBAC）----------------
+
+export async function fetchUsers(offset = 0, limit = 20): Promise<Page<User>> {
+  const response = await adminFetch(`/api/users?offset=${offset}&limit=${limit}`);
+  return parseJsonResponse<Page<User>>(response, true);
+}
+
+export async function fetchUser(id: string): Promise<User> {
+  const response = await adminFetch(`/api/users/${id}`);
+  return parseJsonResponse<User>(response, true);
+}
+
+export async function createUser(payload: UserCreatePayload): Promise<User> {
+  const response = await adminFetch('/api/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<User>(response, true);
+}
+
+export async function updateUser(id: string, payload: UserUpdatePayload): Promise<User> {
+  const response = await adminFetch(`/api/users/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<User>(response, true);
+}
+
+// 软删除（设 enabled=false）：成功返回 204/200，参照 deleteRule 直接 check ok。
+export async function deleteUser(id: string): Promise<void> {
+  const response = await adminFetch(`/api/users/${id}`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`删除用户失败：HTTP ${response.status}`);
+  }
+}
+
+export async function assignProjects(
+  id: string,
+  payload: UserProjectAssignPayload,
+): Promise<User> {
+  const response = await adminFetch(`/api/users/${id}/projects`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<User>(response, true);
+}
+
+// ---------------- 角色管理 API（PR-2 RBAC）----------------
+
+export async function fetchRoles(offset = 0, limit = 50): Promise<Page<Role>> {
+  const response = await adminFetch(`/api/roles?offset=${offset}&limit=${limit}`);
+  return parseJsonResponse<Page<Role>>(response, true);
+}
+
+export async function fetchRole(id: string): Promise<Role> {
+  const response = await adminFetch(`/api/roles/${id}`);
+  return parseJsonResponse<Role>(response, true);
+}
+
+export async function createRole(payload: RoleCreatePayload): Promise<Role> {
+  const response = await adminFetch('/api/roles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<Role>(response, true);
+}
+
+export async function updateRole(id: string, payload: RoleUpdatePayload): Promise<Role> {
+  const response = await adminFetch(`/api/roles/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<Role>(response, true);
+}
+
+// is_system 角色不可删：成功返回 204/200，失败由后端 400/403 兜住。
+export async function deleteRole(id: string): Promise<void> {
+  const response = await adminFetch(`/api/roles/${id}`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`删除角色失败：HTTP ${response.status}`);
+  }
+}
+
+// ---------------- 当前用户 API（PR-2 RBAC）----------------
+
+export async function fetchCurrentUser(): Promise<CurrentUser> {
+  const response = await adminFetch('/api/auth/me');
+  return parseJsonResponse<CurrentUser>(response, true);
 }

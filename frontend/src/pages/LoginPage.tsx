@@ -31,12 +31,12 @@ export function LoginPage({ form, onChange, onSubmit, submitting, error, message
           </div>
           <div className="mt-3 text-[13px] font-semibold text-zinc-900">AI Code Reviewer</div>
           <h1 className="mt-1 text-[18px] font-semibold text-zinc-900">管理台登录</h1>
-          <p className="mt-1 text-[13px] text-zinc-500">登录后管理 API 将携带 Bearer Token</p>
+          <p className="mt-1 text-[13px] text-zinc-500">请输入用户名和密码登录管理台</p>
         </div>
 
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="login-username">管理员账号</Label>
+            <Label htmlFor="login-username">用户名</Label>
             <Input
               id="login-username"
               value={form.username}
@@ -44,7 +44,7 @@ export function LoginPage({ form, onChange, onSubmit, submitting, error, message
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="login-password">管理员密码</Label>
+            <Label htmlFor="login-password">密码</Label>
             <Input
               id="login-password"
               type="password"

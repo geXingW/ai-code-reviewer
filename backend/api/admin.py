@@ -10,8 +10,9 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, cast
 from uuid import UUID, uuid4
 
+import bcrypt
 import jwt as pyjwt
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Select, asc, desc, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -34,8 +35,12 @@ from models.project_notification_channel import ProjectNotificationChannel
 from models.project_rule import ProjectRule
 from models.provider import Provider
 from models.review import Review
+from models.role import Role
+from models.role_permission import RolePermission
 from models.rule import Rule
+from models.user import User
 from models.user_mapping import UserMapping
+from models.user_project_assignment import UserProjectAssignment
 from repositories import (
     BaseRepository,
     FindingRepository,
@@ -44,8 +49,10 @@ from repositories import (
     ProjectNotificationChannelRepository,
     ProjectRepository,
     ReviewRepository,
+    RoleRepository,
     RuleRepository,
     UserMappingRepository,
+    UserRepository,
 )
 from schemas.engine import EngineCreate, EngineRead, EngineUpdate
 from schemas.finding import FindingCreate, FindingRead, FindingUpdate
@@ -70,7 +77,15 @@ from schemas.project_notification_channel import (
 from schemas.project_rule import ProjectRuleCreate
 from schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
 from schemas.review import RecentReviewRead, ReviewCreate, ReviewRead, ReviewUpdate
+from schemas.role import RoleCreate, RoleRead, RoleUpdate
 from schemas.rule import RuleCreate, RuleRead, RuleUpdate
+from schemas.user import (
+    UserCreate,
+    UserLoginResponse,
+    UserProjectAssignRequest,
+    UserRead,
+    UserUpdate,
+)
 from schemas.user_mapping import (
     UserMappingCreate,
     UserMappingResponse,
@@ -93,7 +108,32 @@ _ALLOWED_SORTS: dict[str, set[str]] = {
     "findings": {"created_at", "updated_at", "severity", "file_path", "fp_status"},
     "negative_examples": {"created_at", "updated_at", "rule_id"},
     "engines": {"created_at", "updated_at", "name", "enabled"},
+    "users": {"created_at", "updated_at", "username"},
 }
+
+# Legacy fallback: all permissions for old admin-only mode.
+ALL_PERMISSIONS_LEGACY: list[str] = [
+    "page:dashboard",
+    "page:providers",
+    "page:global-prompt",
+    "page:rules",
+    "page:projects",
+    "page:user-mappings",
+    "page:reviews",
+    "page:findings",
+    "page:falsePositives",
+    "page:negativeExamples",
+    "page:engines",
+    "page:users",
+    "page:roles",
+    "user:create",
+    "user:edit",
+    "user:delete",
+    "role:create",
+    "role:edit",
+    "role:delete",
+    "project:assign",
+]
 
 
 
@@ -109,22 +149,56 @@ def _unauthorized() -> HTTPException:
     )
 
 
-def _require_admin_auth(
+async def _require_admin_auth(
+    request: Request,
+    db: DbSession,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
-) -> str:
-    """Validate the admin bearer token before serving protected management APIs."""
+) -> dict[str, Any]:
+    """Validate the admin bearer token and load the user context.
 
+    Injects ``request.state.current_user``, ``request.state.permissions``,
+    and ``request.state.project_ids`` for downstream use.
+    """
     if authorization is None:
         raise _unauthorized()
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
         raise _unauthorized()
-    return _verify_token(token.strip())
+    ctx = await _verify_token_and_load_user(token.strip(), db)
+    request.state.current_user = ctx["user"]
+    request.state.permissions = ctx["permissions"]
+    request.state.project_ids = ctx["project_ids"]
+    request.state.is_legacy_admin = ctx["is_legacy_admin"]
+    return ctx
 
 
-def _verify_token(token: str) -> str:
-    """Verify a standard JWT and return the authenticated subject."""
+def _require_permission(permission: str) -> Callable[[Request], None]:
+    """FastAPI dependency: require the current user to have a specific permission.
 
+    Usage:
+        @router.get("/users", dependencies=[Depends(_require_permission("user:create"))])
+    """
+    def check_permission(request: Request) -> None:
+        if not hasattr(request.state, "permissions"):
+            raise _unauthorized()
+        if permission not in request.state.permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing permission: {permission}",
+            )
+    return check_permission
+
+
+async def _verify_token_and_load_user(
+    token: str,
+    db: AsyncSession | None = None,
+) -> dict[str, Any]:
+    """Verify a JWT and load the user with role, permissions, and project assignments.
+
+    Returns a dict with "user" (User object) and "permissions" (list[str]) and
+    "project_ids" (list[UUID]).
+    Falls back to legacy admin-only mode if users table is empty.
+    """
     settings = get_settings()
     try:
         payload = pyjwt.decode(
@@ -136,10 +210,69 @@ def _verify_token(token: str) -> str:
         raise _unauthorized() from exc
 
     username = str(payload.get("sub", ""))
-    expected_username = settings.admin_username
-    if not hmac.compare_digest(username, expected_username):
+
+    # Legacy fallback: if RBAC is disabled or users table is empty, use old admin check
+    if not settings.rbac_enabled:
+        if not hmac.compare_digest(username, settings.admin_username):
+            raise _unauthorized()
+        return {
+            "user": None,
+            "permissions": ALL_PERMISSIONS_LEGACY,
+            "project_ids": [],
+            "is_legacy_admin": True,
+        }
+
+    if db is None:
+        # No DB session available — fall back to legacy
+        if not hmac.compare_digest(username, settings.admin_username):
+            raise _unauthorized()
+        return {
+            "user": None,
+            "permissions": ALL_PERMISSIONS_LEGACY,
+            "project_ids": [],
+            "is_legacy_admin": True,
+        }
+
+    user_repo = UserRepository(db)
+    user = await user_repo.get_by_username(username)
+
+    if user is None:
+        # Check if users table is empty (seed not yet run) — fall back to legacy
+        from sqlalchemy import func as _sa_func
+        from sqlalchemy import select as _sa_select
+
+        count_result = await db.execute(_sa_select(_sa_func.count()).select_from(User))
+        if count_result.scalar_one() == 0:
+            if not hmac.compare_digest(username, settings.admin_username):
+                raise _unauthorized()
+            return {
+                "user": None,
+                "permissions": ALL_PERMISSIONS_LEGACY,
+                "project_ids": [],
+                "is_legacy_admin": True,
+            }
         raise _unauthorized()
-    return username
+
+    if not user.enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
+
+    # Extract permissions from role
+    permissions: list[str] = []
+    if user.role is not None:
+        for rp in user.role.permissions:
+            permissions.append(rp.permission)
+
+    # Extract project IDs
+    project_ids: list[UUID] = [
+        assign.project_id for assign in user.project_assignments
+    ]
+
+    return {
+        "user": user,
+        "permissions": permissions,
+        "project_ids": project_ids,
+        "is_legacy_admin": False,
+    }
 
 
 login_router = APIRouter(prefix="/api", tags=["admin"])
@@ -191,29 +324,104 @@ class FalsePositiveReviewRequest(BaseModel):
     note: str | None = None
 
 
-@login_router.post("/auth/login", response_model=LoginResponse)
-async def login(payload: LoginRequest) -> LoginResponse:
-    """Authenticate the MVP admin account and return a signed bearer token."""
-
+@login_router.post("/auth/login", response_model=UserLoginResponse)
+async def login(payload: LoginRequest, db: DbSession) -> UserLoginResponse:
+    """Authenticate a user and return a signed bearer token with permissions."""
     settings = get_settings()
+
+    # Try RBAC first
+    if settings.rbac_enabled:
+        user_repo = UserRepository(db)
+        user = await user_repo.get_by_username(payload.username)
+
+        if user is not None and user.enabled:
+            if bcrypt.checkpw(
+                payload.password.encode("utf-8"),
+                user.password_hash.encode("utf-8"),
+            ):
+                permissions = _extract_permissions(user)
+                project_ids = _extract_project_ids(user)
+                expires_in = settings.jwt_expires_in
+                expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+                return UserLoginResponse(
+                    access_token=_sign_token(user.username, expires_at),
+                    expires_in=expires_in,
+                    username=user.username,
+                    display_name=user.display_name,
+                    permissions=permissions,
+                    project_ids=project_ids,
+                )
+
+    # Fall back to legacy admin login
     expected_username = settings.admin_username
     expected_password = settings.admin_password.get_secret_value()
     if not hmac.compare_digest(payload.username, expected_username) or not hmac.compare_digest(
         payload.password,
         expected_password,
     ):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+        )
 
     expires_in = settings.jwt_expires_in
     expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
-    return LoginResponse(
+    return UserLoginResponse(
         access_token=_sign_token(payload.username, expires_at),
         expires_in=expires_in,
         username=payload.username,
+        display_name="管理员",
+        permissions=ALL_PERMISSIONS_LEGACY,
+        project_ids=[],
     )
 
 
-@router.get("/providers", response_model=Page)
+def _extract_permissions(user: User) -> list[str]:
+    """Extract permission strings from a user's role."""
+    if user.role is None:
+        return []
+    return [rp.permission for rp in user.role.permissions]
+
+
+def _extract_project_ids(user: User) -> list[UUID]:
+    """Extract assigned project IDs from a user."""
+    return [assign.project_id for assign in user.project_assignments]
+
+
+@login_router.get("/auth/me", response_model=UserLoginResponse)
+async def get_current_user(
+    request: Request,
+    db: DbSession,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> UserLoginResponse:
+    """Return the current authenticated user's info."""
+    ctx = await _require_admin_auth(request, db, authorization)
+    user = ctx.get("user")
+    if user is not None:
+        return UserLoginResponse(
+            access_token="",  # 不回传 token
+            expires_in=0,
+            username=user.username,
+            display_name=user.display_name,
+            permissions=ctx["permissions"],
+            project_ids=ctx["project_ids"],
+        )
+    # Legacy admin fallback
+    return UserLoginResponse(
+        access_token="",
+        expires_in=0,
+        username=get_settings().admin_username,
+        display_name="管理员",
+        permissions=ALL_PERMISSIONS_LEGACY,
+        project_ids=[],
+    )
+
+
+@router.get(
+    "/providers",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:providers"))],
+)
 async def list_providers(
     db: DbSession,
     enabled: bool | None = None,
@@ -232,7 +440,12 @@ async def list_providers(
     return await _paginate(db, stmt, ProviderRead, "providers", sort, limit, offset)
 
 
-@router.post("/providers", response_model=ProviderRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/providers",
+    response_model=ProviderRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_permission("page:providers"))],
+)
 async def create_provider(payload: ProviderCreate, db: DbSession) -> ProviderRead:
     """Create an LLM provider configuration."""
 
@@ -240,7 +453,11 @@ async def create_provider(payload: ProviderCreate, db: DbSession) -> ProviderRea
     return await _create(db, provider, ProviderRead, "Provider already exists")
 
 
-@router.get("/providers/{provider_id}", response_model=ProviderRead)
+@router.get(
+    "/providers/{provider_id}",
+    response_model=ProviderRead,
+    dependencies=[Depends(_require_permission("page:providers"))],
+)
 async def get_provider(provider_id: UUID, db: DbSession) -> ProviderRead:
     """Return one LLM provider by ID."""
 
@@ -248,7 +465,11 @@ async def get_provider(provider_id: UUID, db: DbSession) -> ProviderRead:
     return ProviderRead.model_validate(provider)
 
 
-@router.patch("/providers/{provider_id}", response_model=ProviderRead)
+@router.patch(
+    "/providers/{provider_id}",
+    response_model=ProviderRead,
+    dependencies=[Depends(_require_permission("page:providers"))],
+)
 async def update_provider(
     provider_id: UUID,
     payload: ProviderUpdate,
@@ -260,14 +481,22 @@ async def update_provider(
     return await _update(db, provider, payload, ProviderRead)
 
 
-@router.delete("/providers/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/providers/{provider_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(_require_permission("page:providers"))],
+)
 async def delete_provider(provider_id: UUID, db: DbSession) -> None:
     """Delete an LLM provider configuration."""
 
     await _delete(db, Provider, provider_id, "Provider")
 
 
-@router.get("/rules", response_model=Page)
+@router.get(
+    "/rules",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:rules"))],
+)
 async def list_rules(
     db: DbSession,
     enabled: bool | None = None,
@@ -286,7 +515,12 @@ async def list_rules(
     return await _paginate(db, stmt, RuleRead, "rules", sort, limit, offset)
 
 
-@router.post("/rules", response_model=RuleRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/rules",
+    response_model=RuleRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_permission("page:rules"))],
+)
 async def create_rule(payload: RuleCreate, db: DbSession) -> RuleRead:
     """Create a reusable review rule."""
 
@@ -300,7 +534,11 @@ async def create_rule(payload: RuleCreate, db: DbSession) -> RuleRead:
     return await _create(db, rule, RuleRead, "Rule already exists")
 
 
-@router.get("/rules/{rule_id}", response_model=RuleRead)
+@router.get(
+    "/rules/{rule_id}",
+    response_model=RuleRead,
+    dependencies=[Depends(_require_permission("page:rules"))],
+)
 async def get_rule(rule_id: UUID, db: DbSession) -> RuleRead:
     """Return one review rule by ID."""
 
@@ -308,7 +546,11 @@ async def get_rule(rule_id: UUID, db: DbSession) -> RuleRead:
     return RuleRead.model_validate(rule)
 
 
-@router.patch("/rules/{rule_id}", response_model=RuleRead)
+@router.patch(
+    "/rules/{rule_id}",
+    response_model=RuleRead,
+    dependencies=[Depends(_require_permission("page:rules"))],
+)
 async def update_rule(rule_id: UUID, payload: RuleUpdate, db: DbSession) -> RuleRead:
     """Update a reusable review rule."""
 
@@ -316,16 +558,25 @@ async def update_rule(rule_id: UUID, payload: RuleUpdate, db: DbSession) -> Rule
     return await _update(db, rule, payload, RuleRead)
 
 
-@router.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(_require_permission("page:rules"))],
+)
 async def delete_rule(rule_id: UUID, db: DbSession) -> None:
     """Delete a reusable review rule."""
 
     await _delete(db, Rule, rule_id, "Rule")
 
 
-@router.get("/projects", response_model=Page)
+@router.get(
+    "/projects",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:projects"))],
+)
 async def list_projects(
     db: DbSession,
+    request: Request,
     enabled: bool | None = None,
     q: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -335,6 +586,10 @@ async def list_projects(
     """List GitLab project configurations."""
 
     stmt = _project_select()
+    project_ids = getattr(request.state, "project_ids", [])
+    # 非超级管理员：只返回分配给该用户的项目。
+    if project_ids:
+        stmt = stmt.where(Project.id.in_(project_ids))
     if enabled is not None:
         stmt = stmt.where(Project.enabled == enabled)
     if q:
@@ -344,7 +599,12 @@ async def list_projects(
     return await _paginate(db, stmt, ProjectRead, "projects", sort, limit, offset)
 
 
-@router.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/projects",
+    response_model=ProjectRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_permission("page:projects"))],
+)
 async def create_project(payload: ProjectCreate, db: DbSession) -> ProjectRead:
     """Create a project with optional nested rules and block policies.
 
@@ -371,14 +631,22 @@ async def create_project(payload: ProjectCreate, db: DbSession) -> ProjectRead:
     return await _load_project_read(db, project.id)
 
 
-@router.get("/projects/{project_id}", response_model=ProjectRead)
+@router.get(
+    "/projects/{project_id}",
+    response_model=ProjectRead,
+    dependencies=[Depends(_require_permission("page:projects"))],
+)
 async def get_project(project_id: UUID, db: DbSession) -> ProjectRead:
     """Return one project configuration by ID."""
 
     return await _load_project_read(db, project_id)
 
 
-@router.patch("/projects/{project_id}", response_model=ProjectRead)
+@router.patch(
+    "/projects/{project_id}",
+    response_model=ProjectRead,
+    dependencies=[Depends(_require_permission("page:projects"))],
+)
 async def update_project(project_id: UUID, payload: ProjectUpdate, db: DbSession) -> ProjectRead:
     """Update a project and optionally replace nested rules and block policies."""
 
@@ -402,7 +670,11 @@ async def update_project(project_id: UUID, payload: ProjectUpdate, db: DbSession
     return await _load_project_read(db, project_id)
 
 
-@router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/projects/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(_require_permission("page:projects"))],
+)
 async def delete_project(project_id: UUID, db: DbSession) -> None:
     """Delete a project configuration and dependent rules/policies/reviews."""
 
@@ -412,6 +684,7 @@ async def delete_project(project_id: UUID, db: DbSession) -> None:
 @router.get(
     "/projects/{project_id}/notification-channels",
     response_model=list[ProjectNotificationChannelRead],
+    dependencies=[Depends(_require_permission("page:projects"))],
 )
 async def list_project_notification_channels(
     project_id: UUID,
@@ -429,6 +702,7 @@ async def list_project_notification_channels(
     "/projects/{project_id}/notification-channels",
     response_model=ProjectNotificationChannelRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_permission("page:projects"))],
 )
 async def create_project_notification_channel(
     project_id: UUID,
@@ -455,6 +729,7 @@ async def create_project_notification_channel(
 @router.patch(
     "/projects/{project_id}/notification-channels/{channel_id}",
     response_model=ProjectNotificationChannelRead,
+    dependencies=[Depends(_require_permission("page:projects"))],
 )
 async def update_project_notification_channel(
     project_id: UUID,
@@ -485,6 +760,7 @@ async def update_project_notification_channel(
 @router.delete(
     "/projects/{project_id}/notification-channels/{channel_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(_require_permission("page:projects"))],
 )
 async def delete_project_notification_channel(
     project_id: UUID,
@@ -522,6 +798,7 @@ async def _get_scoped_notification_channel(
 @router.get(
     "/projects/{project_id}/user-mappings",
     response_model=list[UserMappingResponse],
+    dependencies=[Depends(_require_permission("page:user-mappings"))],
 )
 async def list_project_user_mappings(
     project_id: UUID,
@@ -539,6 +816,7 @@ async def list_project_user_mappings(
     "/projects/{project_id}/user-mappings",
     response_model=UserMappingResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_permission("page:user-mappings"))],
 )
 async def create_project_user_mapping(
     project_id: UUID,
@@ -564,7 +842,11 @@ async def create_project_user_mapping(
     return UserMappingResponse.model_validate(mapping)
 
 
-@router.put("/user-mappings/{mapping_id}", response_model=UserMappingResponse)
+@router.put(
+    "/user-mappings/{mapping_id}",
+    response_model=UserMappingResponse,
+    dependencies=[Depends(_require_permission("page:user-mappings"))],
+)
 async def update_user_mapping(
     mapping_id: UUID,
     payload: UserMappingUpdate,
@@ -584,6 +866,7 @@ async def update_user_mapping(
 @router.delete(
     "/user-mappings/{mapping_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(_require_permission("page:user-mappings"))],
 )
 async def delete_user_mapping(mapping_id: UUID, db: DbSession) -> None:
     """Delete a user mapping."""
@@ -594,7 +877,11 @@ async def delete_user_mapping(mapping_id: UUID, db: DbSession) -> None:
     await _commit_or_400(db, "User mapping delete failed")
 
 
-@router.get("/reviews/recent", response_model=list[RecentReviewRead])
+@router.get(
+    "/reviews/recent",
+    response_model=list[RecentReviewRead],
+    dependencies=[Depends(_require_permission("page:reviews"))],
+)
 async def list_recent_reviews(db: DbSession) -> list[RecentReviewRead]:
     """从 DB 读最近 20 条评审用于首页最近审查面板。
 
@@ -664,8 +951,16 @@ def _recent_review_from_orm(review: object) -> RecentReviewRead:
     )
 
 
-@router.get("/reviews", response_model=Page)
-@router.get("/reviews/records", response_model=Page)
+@router.get(
+    "/reviews",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:reviews"))],
+)
+@router.get(
+    "/reviews/records",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:reviews"))],
+)
 async def list_reviews(
     db: DbSession,
     project_id: UUID | None = None,
@@ -689,7 +984,12 @@ async def list_reviews(
     )
 
 
-@router.post("/reviews/records", response_model=ReviewRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/reviews/records",
+    response_model=ReviewRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_permission("page:reviews"))],
+)
 async def create_review_record(payload: ReviewCreate, db: DbSession) -> ReviewRead:
     """Create a review record for tests and internal admin seeding."""
 
@@ -697,7 +997,11 @@ async def create_review_record(payload: ReviewCreate, db: DbSession) -> ReviewRe
     return await _create(db, review, ReviewRead, "Review create failed")
 
 
-@router.get("/reviews/{review_id}", response_model=ReviewRead)
+@router.get(
+    "/reviews/{review_id}",
+    response_model=ReviewRead,
+    dependencies=[Depends(_require_permission("page:reviews"))],
+)
 async def get_review_record(review_id: UUID, db: DbSession) -> ReviewRead:
     """Return one review record by ID."""
 
@@ -705,7 +1009,11 @@ async def get_review_record(review_id: UUID, db: DbSession) -> ReviewRead:
     return _review_to_read(review)
 
 
-@router.patch("/reviews/{review_id}", response_model=ReviewRead)
+@router.patch(
+    "/reviews/{review_id}",
+    response_model=ReviewRead,
+    dependencies=[Depends(_require_permission("page:reviews"))],
+)
 async def update_review_record(review_id: UUID, payload: ReviewUpdate, db: DbSession) -> ReviewRead:
     """Update a review record for internal admin correction."""
 
@@ -713,14 +1021,22 @@ async def update_review_record(review_id: UUID, payload: ReviewUpdate, db: DbSes
     return await _update(db, review, payload, ReviewRead)
 
 
-@router.delete("/reviews/{review_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/reviews/{review_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(_require_permission("page:reviews"))],
+)
 async def delete_review_record(review_id: UUID, db: DbSession) -> None:
     """Delete one review record."""
 
     await _delete(db, Review, review_id, "Review")
 
 
-@router.get("/findings", response_model=Page)
+@router.get(
+    "/findings",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:findings"))],
+)
 async def list_findings(
     db: DbSession,
     review_id: UUID | None = None,
@@ -748,7 +1064,12 @@ async def list_findings(
     )
 
 
-@router.post("/findings", response_model=FindingRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/findings",
+    response_model=FindingRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_permission("page:findings"))],
+)
 async def create_finding(payload: FindingCreate, db: DbSession) -> FindingRead:
     """Create a finding for tests and internal admin seeding."""
 
@@ -756,7 +1077,11 @@ async def create_finding(payload: FindingCreate, db: DbSession) -> FindingRead:
     return await _create(db, finding, FindingRead, "Finding create failed")
 
 
-@router.get("/findings/{finding_id}", response_model=FindingRead)
+@router.get(
+    "/findings/{finding_id}",
+    response_model=FindingRead,
+    dependencies=[Depends(_require_permission("page:findings"))],
+)
 async def get_finding(finding_id: UUID, db: DbSession) -> FindingRead:
     """Return one finding by ID."""
 
@@ -764,7 +1089,11 @@ async def get_finding(finding_id: UUID, db: DbSession) -> FindingRead:
     return _finding_to_read(finding)
 
 
-@router.patch("/findings/{finding_id}", response_model=FindingRead)
+@router.patch(
+    "/findings/{finding_id}",
+    response_model=FindingRead,
+    dependencies=[Depends(_require_permission("page:findings"))],
+)
 async def update_finding(finding_id: UUID, payload: FindingUpdate, db: DbSession) -> FindingRead:
     """Update one finding for internal admin correction."""
 
@@ -772,14 +1101,22 @@ async def update_finding(finding_id: UUID, payload: FindingUpdate, db: DbSession
     return await _update(db, finding, payload, FindingRead)
 
 
-@router.delete("/findings/{finding_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/findings/{finding_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(_require_permission("page:findings"))],
+)
 async def delete_finding(finding_id: UUID, db: DbSession) -> None:
     """Delete one finding."""
 
     await _delete(db, Finding, finding_id, "Finding")
 
 
-@router.post("/findings/{finding_id}/false-positive", response_model=FindingRead)
+@router.post(
+    "/findings/{finding_id}/false-positive",
+    response_model=FindingRead,
+    dependencies=[Depends(_require_permission("page:findings"))],
+)
 async def mark_false_positive(
     finding_id: UUID,
     payload: FalsePositiveMarkRequest,
@@ -808,7 +1145,11 @@ class ResolveRequest(BaseModel):
     reason: str | None = Field(None, description="解决原因")
 
 
-@router.post("/findings/{finding_id}/resolve", response_model=FindingRead)
+@router.post(
+    "/findings/{finding_id}/resolve",
+    response_model=FindingRead,
+    dependencies=[Depends(_require_permission("page:findings"))],
+)
 async def resolve_finding(
     finding_id: UUID,
     payload: ResolveRequest,
@@ -989,7 +1330,11 @@ async def _recompute_mr_block_status(finding: Finding, db: AsyncSession) -> None
         )
 
 
-@router.get("/false-positives/pending", response_model=Page)
+@router.get(
+    "/false-positives/pending",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:falsePositives"))],
+)
 async def list_pending_false_positives(
     db: DbSession,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -1002,7 +1347,11 @@ async def list_pending_false_positives(
     return await _paginate(db, stmt, FindingRead, "findings", sort, limit, offset)
 
 
-@router.post("/false-positives/{finding_id}/confirm", response_model=FindingRead)
+@router.post(
+    "/false-positives/{finding_id}/confirm",
+    response_model=FindingRead,
+    dependencies=[Depends(_require_permission("page:falsePositives"))],
+)
 async def confirm_false_positive(
     finding_id: UUID,
     payload: FalsePositiveReviewRequest,
@@ -1043,7 +1392,11 @@ async def confirm_false_positive(
     return _finding_to_read(finding)
 
 
-@router.post("/false-positives/{finding_id}/reject", response_model=FindingRead)
+@router.post(
+    "/false-positives/{finding_id}/reject",
+    response_model=FindingRead,
+    dependencies=[Depends(_require_permission("page:falsePositives"))],
+)
 async def reject_false_positive(
     finding_id: UUID,
     payload: FalsePositiveReviewRequest,
@@ -1072,7 +1425,11 @@ async def _get_reviewed_finding(db: AsyncSession, finding_id: UUID) -> Finding:
         )
     return finding
 
-@router.post("/false-positives/{finding_id}/reset", response_model=FindingRead)
+@router.post(
+    "/false-positives/{finding_id}/reset",
+    response_model=FindingRead,
+    dependencies=[Depends(_require_permission("page:falsePositives"))],
+)
 async def reset_false_positive_review(
     finding_id: UUID,
     db: DbSession,
@@ -1121,7 +1478,11 @@ async def reset_false_positive_review(
     return _finding_to_read(finding)
 
 
-@router.get("/negative-examples", response_model=Page)
+@router.get(
+    "/negative-examples",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:negativeExamples"))],
+)
 async def list_negative_examples(
     db: DbSession,
     rule_id: str | None = None,
@@ -1140,7 +1501,11 @@ async def list_negative_examples(
     return await _paginate(db, stmt, NegativeExampleRead, "negative_examples", sort, limit, offset)
 
 
-@router.get("/engines/configs", response_model=Page)
+@router.get(
+    "/engines/configs",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:engines"))],
+)
 async def list_engine_configs(
     db: DbSession,
     enabled: bool | None = None,
@@ -1159,7 +1524,12 @@ async def list_engine_configs(
     return await _paginate(db, stmt, EngineRead, "engines", sort, limit, offset)
 
 
-@router.post("/engines/configs", response_model=EngineRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/engines/configs",
+    response_model=EngineRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_permission("page:engines"))],
+)
 async def create_engine_config(payload: EngineCreate, db: DbSession) -> EngineRead:
     """Create a persisted engine configuration."""
 
@@ -1167,7 +1537,11 @@ async def create_engine_config(payload: EngineCreate, db: DbSession) -> EngineRe
     return await _create(db, engine, EngineRead, "Engine config already exists")
 
 
-@router.get("/engines/configs/{engine_id}", response_model=EngineRead)
+@router.get(
+    "/engines/configs/{engine_id}",
+    response_model=EngineRead,
+    dependencies=[Depends(_require_permission("page:engines"))],
+)
 async def get_engine_config(engine_id: UUID, db: DbSession) -> EngineRead:
     """Return one persisted engine configuration."""
 
@@ -1175,7 +1549,11 @@ async def get_engine_config(engine_id: UUID, db: DbSession) -> EngineRead:
     return EngineRead.model_validate(engine)
 
 
-@router.patch("/engines/configs/{engine_id}", response_model=EngineRead)
+@router.patch(
+    "/engines/configs/{engine_id}",
+    response_model=EngineRead,
+    dependencies=[Depends(_require_permission("page:engines"))],
+)
 async def update_engine_config(engine_id: UUID, payload: EngineUpdate, db: DbSession) -> EngineRead:
     """Update a persisted engine configuration, including enable/disable."""
 
@@ -1183,7 +1561,11 @@ async def update_engine_config(engine_id: UUID, payload: EngineUpdate, db: DbSes
     return await _update(db, engine, payload, EngineRead)
 
 
-@router.delete("/engines/configs/{engine_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/engines/configs/{engine_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(_require_permission("page:engines"))],
+)
 async def delete_engine_config(engine_id: UUID, db: DbSession) -> None:
     """Delete a persisted engine configuration."""
 
@@ -1195,7 +1577,11 @@ async def delete_engine_config(engine_id: UUID, db: DbSession) -> None:
 _GLOBAL_PROMPT_KEY = "global_system_prompt"
 
 
-@router.get("/settings/global-prompt", response_model=GlobalPromptResponse)
+@router.get(
+    "/settings/global-prompt",
+    response_model=GlobalPromptResponse,
+    dependencies=[Depends(_require_permission("page:global-prompt"))],
+)
 async def get_global_prompt(db: DbSession) -> GlobalPromptResponse:
     """Return the current global system prompt content.
 
@@ -1209,7 +1595,11 @@ async def get_global_prompt(db: DbSession) -> GlobalPromptResponse:
     return GlobalPromptResponse(content=content)
 
 
-@router.put("/settings/global-prompt", response_model=GlobalPromptResponse)
+@router.put(
+    "/settings/global-prompt",
+    response_model=GlobalPromptResponse,
+    dependencies=[Depends(_require_permission("page:global-prompt"))],
+)
 async def update_global_prompt(
     payload: GlobalPromptUpdate,
     db: DbSession,
@@ -1227,7 +1617,11 @@ async def update_global_prompt(
 # ---- 项目级负样本提示词 ----
 
 
-@router.get("/projects/{project_id}/negative-prompt", response_model=ProjectNegativePromptResponse)
+@router.get(
+    "/projects/{project_id}/negative-prompt",
+    response_model=ProjectNegativePromptResponse,
+    dependencies=[Depends(_require_permission("page:projects"))],
+)
 async def get_project_negative_prompt(
     project_id: UUID,
     db: DbSession,
@@ -1244,7 +1638,11 @@ async def get_project_negative_prompt(
     return ProjectNegativePromptResponse(content=content, example_count=example_count)
 
 
-@router.put("/projects/{project_id}/negative-prompt", response_model=ProjectNegativePromptResponse)
+@router.put(
+    "/projects/{project_id}/negative-prompt",
+    response_model=ProjectNegativePromptResponse,
+    dependencies=[Depends(_require_permission("page:projects"))],
+)
 async def update_project_negative_prompt(
     project_id: UUID,
     payload: ProjectNegativePromptUpdate,
@@ -1335,6 +1733,7 @@ async def _pick_generate_provider(
 @router.post(
     "/projects/{project_id}/negative-prompt/generate",
     response_model=ProjectNegativePromptGenerateResponse,
+    dependencies=[Depends(_require_permission("page:projects"))],
 )
 async def generate_project_negative_prompt(
     project_id: UUID,
@@ -1701,3 +2100,355 @@ def _sign_token(username: str, expires_at: datetime) -> str:
         settings.jwt_secret.get_secret_value(),
         algorithm=settings.jwt_algorithm,
     )
+
+
+def _enrich_user_read(user: User) -> dict[str, Any]:
+    """Build enrichment dict for UserRead from ORM User object."""
+    permissions: list[str] = []
+    role_name: str | None = None
+    if user.role is not None:
+        role_name = user.role.name
+        permissions = [rp.permission for rp in user.role.permissions]
+    project_ids = [a.project_id for a in user.project_assignments]
+    return {
+        "role_name": role_name,
+        "permissions": permissions,
+        "project_ids": project_ids,
+    }
+
+
+def _user_to_read(user: User) -> UserRead:
+    """Serialize an ORM User into a fully-enriched UserRead."""
+    return UserRead.model_validate(user).model_copy(update=_enrich_user_read(user))
+
+
+# ────────────────────────────── RBAC Router ──────────────────────────────
+
+users_router = APIRouter(
+    prefix="/api",
+    tags=["admin"],
+    dependencies=[Depends(_require_admin_auth)],
+)
+
+# ── 用户管理 ──
+
+
+@users_router.get(
+    "/users",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:users"))],
+)
+async def list_users(
+    db: DbSession,
+    request: Request,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    sort: str = "-created_at",
+) -> Page:
+    """List all users with pagination."""
+    del request
+    stmt = select(User).options(
+        selectinload(User.role).selectinload(Role.permissions),
+        selectinload(User.project_assignments),
+    )
+    return await _paginate(db, stmt, UserRead, "users", sort, limit, offset, enrich=_user_to_read)
+
+
+@users_router.post(
+    "/users",
+    response_model=UserRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_permission("user:create"))],
+)
+async def create_user(payload: UserCreate, db: DbSession) -> UserRead:
+    """Create a new user."""
+    user_repo = UserRepository(db)
+
+    # Check uniqueness
+    existing = await user_repo.get_by_username(payload.username)
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username already exists",
+        )
+
+    user = User(
+        username=payload.username,
+        password_hash=bcrypt.hashpw(
+            payload.password.encode("utf-8"),
+            bcrypt.gensalt(),
+        ).decode("utf-8"),
+        display_name=payload.display_name,
+        role_id=payload.role_id,
+        enabled=payload.enabled,
+    )
+    await user_repo.add(user)
+    await db.commit()
+    await db.refresh(user, attribute_names=["role", "project_assignments"])
+
+    return _user_to_read(user)
+
+
+@users_router.get(
+    "/users/{user_id}",
+    response_model=UserRead,
+    dependencies=[Depends(_require_permission("user:edit"))],
+)
+async def get_user(user_id: UUID, db: DbSession) -> UserRead:
+    """Get a single user by ID."""
+    user_repo = UserRepository(db)
+    user = await user_repo.get_with_relations(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return _user_to_read(user)
+
+
+@users_router.patch(
+    "/users/{user_id}",
+    response_model=UserRead,
+    dependencies=[Depends(_require_permission("user:edit"))],
+)
+async def update_user(user_id: UUID, payload: UserUpdate, db: DbSession) -> UserRead:
+    """Update an existing user."""
+    user_repo = UserRepository(db)
+    user = await user_repo.get_with_relations(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+
+    if "password" in update_data and update_data["password"]:
+        update_data["password_hash"] = bcrypt.hashpw(
+            update_data.pop("password").encode("utf-8"),
+            bcrypt.gensalt(),
+        ).decode("utf-8")
+
+    if "username" in update_data and update_data["username"] != user.username:
+        existing = await user_repo.get_by_username(update_data["username"])
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Username already exists",
+            )
+
+    for field, value in update_data.items():
+        setattr(user, field, value)
+
+    await db.commit()
+    await db.refresh(user, attribute_names=["role", "project_assignments"])
+
+    return _user_to_read(user)
+
+
+@users_router.delete(
+    "/users/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(_require_permission("user:delete"))],
+)
+async def delete_user(user_id: UUID, db: DbSession) -> None:
+    """Soft-delete a user (set enabled=False)."""
+    user_repo = UserRepository(db)
+    user = await user_repo.get(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user.enabled = False
+    await db.commit()
+
+
+@users_router.put(
+    "/users/{user_id}/projects",
+    response_model=UserRead,
+    dependencies=[Depends(_require_permission("project:assign"))],
+)
+async def assign_user_projects(
+    user_id: UUID,
+    payload: UserProjectAssignRequest,
+    db: DbSession,
+) -> UserRead:
+    """Replace the user's project assignments."""
+    user_repo = UserRepository(db)
+    user = await user_repo.get_with_relations(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Clear existing assignments
+    for assignment in list(user.project_assignments):
+        await db.delete(assignment)
+
+    # Create new assignments
+    for project_id in payload.project_ids:
+        db.add(UserProjectAssignment(user_id=user_id, project_id=project_id))
+
+    await db.commit()
+    await db.refresh(user, attribute_names=["role", "project_assignments"])
+
+    return _user_to_read(user)
+
+
+# ── 角色管理 ──
+
+
+@users_router.get(
+    "/roles",
+    response_model=Page,
+    dependencies=[Depends(_require_permission("page:roles"))],
+)
+async def list_roles(
+    db: DbSession,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> Page:
+    """List all roles."""
+    role_repo = RoleRepository(db)
+    stmt = select(Role).options(selectinload(Role.permissions)).order_by(Role.created_at.asc())
+    result = await db.execute(stmt.offset(offset).limit(limit))
+    roles = list(result.scalars().all())
+
+    items = []
+    for role in roles:
+        items.append(
+            RoleRead(
+                id=role.id,
+                name=role.name,
+                description=role.description,
+                is_system=role.is_system,
+                permissions=[rp.permission for rp in role.permissions],
+                user_count=await role_repo.count_users(role.id),
+                created_at=role.created_at,
+                updated_at=role.updated_at,
+            )
+        )
+
+    count_stmt = select(func.count()).select_from(Role)
+    total = await db.execute(count_stmt)
+    return Page(items=items, total=total.scalar_one(), limit=limit, offset=offset)
+
+
+@users_router.post(
+    "/roles",
+    response_model=RoleRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_require_permission("role:create"))],
+)
+async def create_role(payload: RoleCreate, db: DbSession) -> RoleRead:
+    """Create a new role with permissions."""
+    role_repo = RoleRepository(db)
+
+    existing = await role_repo.get_by_name(payload.name)
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Role name already exists",
+        )
+
+    role = Role(name=payload.name, description=payload.description)
+    await role_repo.add(role)
+
+    for perm in payload.permissions:
+        db.add(RolePermission(role_id=role.id, permission=perm))
+
+    await db.commit()
+    await db.refresh(role, attribute_names=["permissions"])
+
+    return RoleRead(
+        id=role.id,
+        name=role.name,
+        description=role.description,
+        is_system=role.is_system,
+        permissions=[rp.permission for rp in role.permissions],
+        user_count=0,
+        created_at=role.created_at,
+        updated_at=role.updated_at,
+    )
+
+
+@users_router.get(
+    "/roles/{role_id}",
+    response_model=RoleRead,
+    dependencies=[Depends(_require_permission("role:edit"))],
+)
+async def get_role(role_id: UUID, db: DbSession) -> RoleRead:
+    """Get a single role by ID."""
+    role_repo = RoleRepository(db)
+    role = await role_repo.get_with_permissions(role_id)
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+
+    return RoleRead(
+        id=role.id,
+        name=role.name,
+        description=role.description,
+        is_system=role.is_system,
+        permissions=[rp.permission for rp in role.permissions],
+        user_count=await role_repo.count_users(role.id),
+        created_at=role.created_at,
+        updated_at=role.updated_at,
+    )
+
+
+@users_router.patch(
+    "/roles/{role_id}",
+    response_model=RoleRead,
+    dependencies=[Depends(_require_permission("role:edit"))],
+)
+async def update_role(role_id: UUID, payload: RoleUpdate, db: DbSession) -> RoleRead:
+    """Update a role and its permissions."""
+    role_repo = RoleRepository(db)
+    role = await role_repo.get_with_permissions(role_id)
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+
+    if "name" in update_data:
+        existing = await role_repo.get_by_name(update_data["name"])
+        if existing is not None and existing.id != role_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Role name already exists",
+            )
+        role.name = update_data["name"]
+
+    if "description" in update_data:
+        role.description = update_data["description"]
+
+    if "permissions" in update_data:
+        # Replace all permissions
+        for rp in list(role.permissions):
+            await db.delete(rp)
+        for perm in update_data["permissions"]:
+            db.add(RolePermission(role_id=role.id, permission=perm))
+
+    await db.commit()
+    await db.refresh(role, attribute_names=["permissions"])
+
+    return RoleRead(
+        id=role.id,
+        name=role.name,
+        description=role.description,
+        is_system=role.is_system,
+        permissions=[rp.permission for rp in role.permissions],
+        user_count=await role_repo.count_users(role.id),
+        created_at=role.created_at,
+        updated_at=role.updated_at,
+    )
+
+
+@users_router.delete(
+    "/roles/{role_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(_require_permission("role:delete"))],
+)
+async def delete_role(role_id: UUID, db: DbSession) -> None:
+    """Delete a role (system roles cannot be deleted)."""
+    role_repo = RoleRepository(db)
+    role = await role_repo.get(role_id)
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
+    if role.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot delete a system role",
+        )
+    await role_repo.delete(role)
+    await db.commit()

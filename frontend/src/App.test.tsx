@@ -35,8 +35,8 @@ function jsonResponse(body: unknown, ok = true, status = 200): MockResponse {
 }
 
 async function loginAsAdmin(): Promise<void> {
-  await userEvent.type(screen.getByLabelText('管理员账号'), 'admin');
-  await userEvent.type(screen.getByLabelText('管理员密码'), 'admin');
+  await userEvent.type(screen.getByLabelText('用户名'), 'admin');
+  await userEvent.type(screen.getByLabelText('密码'), 'admin');
   await userEvent.click(screen.getByRole('button', { name: '登录' }));
   await waitFor(() => expect(screen.getByText('管理台已登录。')).toBeInTheDocument());
 }
@@ -72,8 +72,8 @@ describe('MVP 管理台', () => {
     render(<MemoryRouter><App /></MemoryRouter>);
 
     expect(await screen.findByText('管理台登录')).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText('管理员账号'), 'admin');
-    await userEvent.type(screen.getByLabelText('管理员密码'), 'admin');
+    await userEvent.type(screen.getByLabelText('用户名'), 'admin');
+    await userEvent.type(screen.getByLabelText('密码'), 'admin');
     await userEvent.click(screen.getByRole('button', { name: '登录' }));
 
     await waitFor(() => expect(screen.getByText('管理台已登录。')).toBeInTheDocument());
