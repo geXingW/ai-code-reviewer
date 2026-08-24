@@ -15,6 +15,7 @@ from starlette.types import Scope
 
 from api.admin import login_router as admin_login_router
 from api.admin import router as admin_router
+from api.admin import users_router as rbac_users_router
 from api.engines import router as engines_router
 from api.gitlab_webhook import router as gitlab_webhook_router
 from api.health import router as health_router
@@ -23,6 +24,7 @@ from api.stats import router as stats_router
 from core.config import get_settings, validate_secret_key
 from core.db import engine
 from core.logging import configure_logging
+from core.seed import seed_super_admin
 from engines import load_builtin_engines
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,7 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     validate_secret_key(settings)
     configure_logging(settings)
     load_builtin_engines()
+    await seed_super_admin()
     logger.info("Starting %s %s", settings.app_name, settings.app_version)
     try:
         yield
@@ -103,6 +106,7 @@ def create_app() -> FastAPI:
     app.include_router(reviews_router)
     app.include_router(admin_login_router)
     app.include_router(admin_router)
+    app.include_router(rbac_users_router)
     app.include_router(stats_router)
 
     # ---- 静态文件托管（单包部署模式）----

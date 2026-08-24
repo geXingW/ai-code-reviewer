@@ -64,6 +64,11 @@ import {
   type StatsOverview,
   type TimeseriesPoint,
   RuleCreatePayload,
+  getStoredAdminPermissions,
+  getStoredAdminProjectIds,
+  getStoredAdminDisplayName,
+  fetchCurrentUser,
+  type CurrentUser,
 } from './api';
 import { AlertOctagon, AlertTriangle, Boxes, Cpu, FileX, Filter, FolderGit2, Inbox, ListChecks, ScrollText, Settings, Sparkles, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -86,6 +91,8 @@ import { ProjectDialog } from './components/dialogs/ProjectDialog';
 import { NegativePromptDialog } from './components/dialogs/NegativePromptDialog';
 import { UserMappingsPage } from './components/UserMappingsPage';
 import { LoginPage } from './pages/LoginPage';
+import { UsersPage } from './pages/UsersPage';
+import { RolesPage } from './pages/RolesPage';
 import { categoryDisplay, severityDisplay, SEVERITY_ORDER, Severity, isKnownSeverity } from './lib/findingTaxonomy';
 
 // PR-B：新增独立页「负样本库」，放在「误报队列」之后。
@@ -100,7 +107,9 @@ type PageKey =
   | 'findings'
   | 'falsePositives'
   | 'negativeExamples'
-  | 'engines';
+  | 'engines'
+  | 'users'
+  | 'roles';
 
 type LoginFormState = {
   username: string;
@@ -169,6 +178,8 @@ const navItems: Array<{ key: PageKey; label: string }> = [
   { key: 'falsePositives', label: '误报队列' },
   { key: 'negativeExamples', label: '负样本库' },
   { key: 'engines', label: '引擎配置' },
+  { key: 'users', label: '用户管理' },
+  { key: 'roles', label: '角色管理' },
 ];
 type StatsBundle = {
   overview: StatsOverview | null;
@@ -192,6 +203,8 @@ function App() {
   const location = useLocation();
   const [adminToken, setAdminToken] = useState(() => getStoredAdminAccessToken());
   const [loginForm, setLoginForm] = useState<LoginFormState>(initialLoginForm);
+  // PR-2 RBAC：当前登录用户（展示名 / 权限 / 可见项目），用于用户区展示与菜单/项目过滤。
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
 
   // 从 URL path 读取初始页面（/dashboard, /providers, ...），刷新保持不变
   const getInitialPage = (): PageKey => {
@@ -277,6 +290,13 @@ function App() {
         setLoading(false);
         return;
       }
+      // PR-2 RBAC：刷新后从 sessionStorage 恢复当前用户（展示名 / 权限 / 可见项目）。
+      setCurrentUser({
+        username: getStoredAdminUsername() || '',
+        display_name: getStoredAdminDisplayName() || null,
+        permissions: getStoredAdminPermissions(),
+        project_ids: getStoredAdminProjectIds(),
+      });
       try {
         setLoading(true);
         setError(null);
@@ -398,6 +418,13 @@ function App() {
       }
       const result = await loginAdmin(username, password);
       setAdminToken(result.access_token);
+      // PR-2 RBAC：登录成功后从响应构建当前用户，驱动侧栏用户区 / 菜单 / 项目过滤。
+      setCurrentUser({
+        username: result.username,
+        display_name: result.display_name ?? null,
+        permissions: result.permissions ?? [],
+        project_ids: result.project_ids ?? [],
+      });
       setLoginForm(initialLoginForm);
       setMessage('管理台已登录。');
     } catch (caught) {
@@ -410,6 +437,8 @@ function App() {
   function handleLogout() {
     clearStoredAdminAccessToken();
     setAdminToken('');
+    // PR-2 RBAC：登出时清空当前用户会话状态。
+    setCurrentUser(null);
     setMessage(null);
     setError(null);
     setActivePage('dashboard');
@@ -790,7 +819,14 @@ function App() {
   const defaultOperator = getStoredAdminUsername() || 'admin';
 
   return (
-    <AppShell activePage={activePage} onNavigate={setActivePage} health={health} onLogout={handleLogout}>
+    <AppShell
+      activePage={activePage}
+      onNavigate={setActivePage}
+      health={health}
+      onLogout={handleLogout}
+      currentUser={currentUser ? { username: currentUser.username, display_name: currentUser.display_name } : undefined}
+      permissions={currentUser?.permissions}
+    >
       {error ? <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">{error}</div> : null}
       {message ? <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-primary">{message}</div> : null}
       {activePage === 'dashboard' ? renderDashboard() : null}
@@ -804,6 +840,8 @@ function App() {
       {activePage === 'negativeExamples' ? renderNegativeExamples() : null}
       {activePage === 'engines' ? renderEngineConfigs() : null}
       {activePage === 'global-prompt' ? renderGlobalPrompt() : null}
+      {activePage === 'users' ? renderUsersPage() : null}
+      {activePage === 'roles' ? renderRolesPage() : null}
 
       {/* PR-B：误报处理弹窗。挂在 AppShell 里，便于任何页面上的按钮触发。 */}
       <MarkFalsePositiveDialog
@@ -1249,6 +1287,16 @@ function App() {
   // 这里只透传已加载的项目列表。
   function renderUserMappings() {
     return <UserMappingsPage projects={projectsPage?.items ?? []} />;
+  }
+
+  // PR-2 RBAC：用户管理页，透传已加载的项目列表供弹窗里的项目多选使用。
+  function renderUsersPage() {
+    return <UsersPage projects={projectsPage?.items ?? []} />;
+  }
+
+  // PR-2 RBAC：角色管理页，无外部依赖。
+  function renderRolesPage() {
+    return <RolesPage />;
   }
 
   function renderReviewRecords() {

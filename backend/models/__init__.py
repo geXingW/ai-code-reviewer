@@ -12,8 +12,12 @@ from models.project_notification_channel import ProjectNotificationChannel
 from models.project_rule import ProjectRule
 from models.provider import Provider
 from models.review import Review
+from models.role import Role
+from models.role_permission import RolePermission
 from models.rule import Rule
+from models.user import User
 from models.user_mapping import UserMapping
+from models.user_project_assignment import UserProjectAssignment
 
 __all__ = [
     "AuditLog",
@@ -28,6 +32,10 @@ __all__ = [
     "ProjectRule",
     "Provider",
     "Review",
+    "Role",
+    "RolePermission",
     "Rule",
+    "User",
     "UserMapping",
+    "UserProjectAssignment",
 ]

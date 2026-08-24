@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   ListChecks,
   ScrollText,
+  Shield,
   ShieldCheck,
   Sparkles,
   Users,
@@ -27,7 +28,9 @@ export type PageKey =
   | 'findings'
   | 'falsePositives'
   | 'negativeExamples'
-  | 'engines';
+  | 'engines'
+  | 'users'
+  | 'roles';
 
 interface NavItem {
   key: PageKey;
@@ -46,6 +49,9 @@ interface AppShellProps {
   health: { status: string; version?: string } | null;
   onLogout: () => void;
   children: React.ReactNode;
+  // PR-2 RBAC：当前登录用户（用于用户区展示）与权限列表（用于过滤导航菜单）。
+  currentUser?: { username: string; display_name: string | null };
+  permissions?: string[];
 }
 
 /**
@@ -74,6 +80,13 @@ const NAV_SECTIONS: NavSection[] = [
       { key: 'engines', label: '引擎配置', icon: Cpu },
     ],
   },
+  {
+    label: '系统管理',
+    items: [
+      { key: 'users', label: '用户管理', icon: Users },
+      { key: 'roles', label: '角色管理', icon: Shield },
+    ],
+  },
 ];
 
 /**
@@ -81,7 +94,7 @@ const NAV_SECTIONS: NavSection[] = [
  * 主 CTA 黑、Indigo 仅作激活态点缀；边框极淡、无阴影、靠留白分层。
  * 业务面板作为 children 注入主内容滚动区，自身样式不动。
  */
-export function AppShell({ activePage, onNavigate, health, onLogout, children }: AppShellProps) {
+export function AppShell({ activePage, onNavigate, health, onLogout, children, currentUser, permissions }: AppShellProps) {
   const healthy = health?.status === 'ok';
   const statusDotClass = !health
     ? 'bg-zinc-300'
@@ -92,6 +105,11 @@ export function AppShell({ activePage, onNavigate, health, onLogout, children }:
   const currentLabel =
     NAV_SECTIONS.flatMap((section) => section.items).find((item) => item.key === activePage)
       ?.label ?? '';
+  // PR-2 RBAC：按权限过滤导航项。permissions 为空（未传入）时显示全部菜单。
+  const hasPermission = (pageKey: PageKey): boolean => {
+    if (!permissions || permissions.length === 0) return true;
+    return permissions.includes(`page:${pageKey}`);
+  };
 
   function handleUserClick() {
     if (typeof window !== 'undefined' && window.confirm('确定退出登录？')) {
@@ -121,39 +139,43 @@ export function AppShell({ activePage, onNavigate, health, onLogout, children }:
 
         {/* Nav */}
         <nav aria-label="管理页面导航" className="flex-1 space-y-4 overflow-y-auto p-3">
-          {NAV_SECTIONS.map((section) => (
-            <div key={section.label}>
-              <div className="mb-2 px-2 text-[11px] font-medium uppercase tracking-[0.06em] text-zinc-400">
-                {section.label}
+          {NAV_SECTIONS.map((section) => {
+            const visibleItems = section.items.filter((item) => hasPermission(item.key));
+            if (visibleItems.length === 0) return null; // 整组无可见项则隐藏
+            return (
+              <div key={section.label}>
+                <div className="mb-2 px-2 text-[11px] font-medium uppercase tracking-[0.06em] text-zinc-400">
+                  {section.label}
+                </div>
+                <div className="space-y-0.5">
+                  {visibleItems.map((item) => {
+                    const Icon = item.icon;
+                    const active = activePage === item.key;
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => onNavigate(item.key)}
+                        className={cn(
+                          'flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] transition-colors',
+                          active
+                            ? 'bg-black/[0.06] font-medium text-zinc-900'
+                            : 'text-zinc-600 hover:bg-black/5 hover:text-zinc-900',
+                        )}
+                      >
+                        <Icon
+                          size={14}
+                          strokeWidth={1.75}
+                          className={cn('shrink-0', active ? 'text-[#4F46E5] opacity-100' : 'opacity-70')}
+                        />
+                        <span>{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-              <div className="space-y-0.5">
-                {section.items.map((item) => {
-                  const Icon = item.icon;
-                  const active = activePage === item.key;
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => onNavigate(item.key)}
-                      className={cn(
-                        'flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] transition-colors',
-                        active
-                          ? 'bg-black/[0.06] font-medium text-zinc-900'
-                          : 'text-zinc-600 hover:bg-black/5 hover:text-zinc-900',
-                      )}
-                    >
-                      <Icon
-                        size={14}
-                        strokeWidth={1.75}
-                        className={cn('shrink-0', active ? 'text-[#4F46E5] opacity-100' : 'opacity-70')}
-                      />
-                      <span>{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </nav>
 
         {/* User footer */}
@@ -164,11 +186,15 @@ export function AppShell({ activePage, onNavigate, health, onLogout, children }:
             className="flex w-full items-center gap-2 rounded-md p-1.5 text-left transition-colors hover:bg-zinc-50"
           >
             <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-indigo-500 text-[11px] font-medium text-white">
-              A
+              {(currentUser?.display_name || currentUser?.username || 'A').charAt(0).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-[12px] font-medium leading-tight text-zinc-900">admin</div>
-              <div className="truncate text-[11px] leading-tight text-zinc-500">Bearer Token</div>
+              <div className="truncate text-[12px] font-medium leading-tight text-zinc-900">
+                {currentUser?.display_name || currentUser?.username || 'admin'}
+              </div>
+              <div className="truncate text-[11px] leading-tight text-zinc-500">
+                {currentUser?.username ? `@${currentUser.username}` : 'Bearer Token'}
+              </div>
             </div>
             <MoreHorizontalIcon className="size-3.5 shrink-0 text-zinc-400" />
           </button>

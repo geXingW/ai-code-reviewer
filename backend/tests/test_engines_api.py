@@ -39,7 +39,7 @@ class _BoomEngine(ReviewEngine):
 
 
 @pytest.fixture(autouse=True)
-def _isolated_registry(client: AsyncClient) -> Iterator[None]:
+def _isolated_registry(db_client: AsyncClient) -> Iterator[None]:
     """Provide a clean registry + admin JWT per test.
 
     注册内置 engine，并给 client 默认带上 admin JWT（engines 端点现在需要认证）。
@@ -47,23 +47,23 @@ def _isolated_registry(client: AsyncClient) -> Iterator[None]:
 
     # 注入 admin JWT
     token = _sign_token("admin", datetime.now(UTC) + timedelta(hours=1))
-    client.headers.update({"Authorization": f"Bearer {token}"})
+    db_client.headers.update({"Authorization": f"Bearer {token}"})
 
     registry = get_engine_registry()
     registry.clear()
     registry.register(LLMDirectEngine())
     load_builtin_engines()
     yield
-    client.headers.pop("Authorization", None)
+    db_client.headers.pop("Authorization", None)
     registry.clear()
     registry.register(LLMDirectEngine())
 
 
 @pytest.mark.asyncio
-async def test_list_engines_contains_builtin_llm_direct(client: AsyncClient) -> None:
+async def test_list_engines_contains_builtin_llm_direct(db_client: AsyncClient) -> None:
     """The built-in ``llm-direct`` engine shows up with healthy=True."""
 
-    response = await client.get("/api/engines")
+    response = await db_client.get("/api/engines")
     assert response.status_code == 200
 
     payload = response.json()
@@ -79,10 +79,10 @@ async def test_list_engines_contains_builtin_llm_direct(client: AsyncClient) -> 
 
 
 @pytest.mark.asyncio
-async def test_engine_health_returns_details(client: AsyncClient) -> None:
+async def test_engine_health_returns_details(db_client: AsyncClient) -> None:
     """Single-engine health endpoint mirrors HealthStatus payload."""
 
-    response = await client.get("/api/engines/llm-direct/health")
+    response = await db_client.get("/api/engines/llm-direct/health")
     assert response.status_code == 200
 
     payload = response.json()
@@ -93,21 +93,21 @@ async def test_engine_health_returns_details(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_engine_health_unknown_returns_404(client: AsyncClient) -> None:
+async def test_engine_health_unknown_returns_404(db_client: AsyncClient) -> None:
     """Unknown engine names produce a 404 with a helpful message."""
 
-    response = await client.get("/api/engines/does-not-exist/health")
+    response = await db_client.get("/api/engines/does-not-exist/health")
     assert response.status_code == 404
     assert "not registered" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
-async def test_health_check_exceptions_are_isolated(client: AsyncClient) -> None:
+async def test_health_check_exceptions_are_isolated(db_client: AsyncClient) -> None:
     """A broken engine's exception must not poison the listing endpoint."""
 
     get_engine_registry().register(_BoomEngine())
 
-    response = await client.get("/api/engines")
+    response = await db_client.get("/api/engines")
     assert response.status_code == 200
     by_name = {item["name"]: item for item in response.json()}
     assert by_name["boom"]["healthy"] is False
@@ -117,12 +117,12 @@ async def test_health_check_exceptions_are_isolated(client: AsyncClient) -> None
 
 
 @pytest.mark.asyncio
-async def test_single_engine_health_swallows_exceptions(client: AsyncClient) -> None:
+async def test_single_engine_health_swallows_exceptions(db_client: AsyncClient) -> None:
     """``GET /engines/{name}/health`` returns status=error on raise."""
 
     get_engine_registry().register(_BoomEngine())
 
-    response = await client.get("/api/engines/boom/health")
+    response = await db_client.get("/api/engines/boom/health")
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "error"

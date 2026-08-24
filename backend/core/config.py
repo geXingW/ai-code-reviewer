@@ -181,6 +181,15 @@ class Settings(BaseSettings):
             ),
         ),
     ] = 10
+    rbac_enabled: Annotated[
+        bool,
+        Field(
+            description=(
+                "Enable RBAC multi-user mode. Set to False to fall back to "
+                "legacy single-admin mode."
+            ),
+        ),
+    ] = True
 
 
 @lru_cache

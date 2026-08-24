@@ -24,7 +24,14 @@ from schemas.project_negative_prompt import (
 from schemas.project_rule import ProjectRuleCreate, ProjectRuleRead, ProjectRuleUpdate
 from schemas.provider import ProviderCreate, ProviderRead, ProviderUpdate
 from schemas.review import ReviewCreate, ReviewRead, ReviewUpdate
+from schemas.role import RoleCreate, RoleRead, RoleUpdate
 from schemas.rule import RuleCreate, RuleRead, RuleUpdate
+from schemas.user import (
+    UserCreate,
+    UserProjectAssignRequest,
+    UserRead,
+    UserUpdate,
+)
 from schemas.user_mapping import UserMappingCreate, UserMappingResponse, UserMappingUpdate
 
 __all__ = [
@@ -61,10 +68,17 @@ __all__ = [
     "ReviewCreate",
     "ReviewRead",
     "ReviewUpdate",
+    "RoleCreate",
+    "RoleRead",
+    "RoleUpdate",
     "RuleCreate",
     "RuleRead",
     "RuleUpdate",
+    "UserCreate",
     "UserMappingCreate",
     "UserMappingResponse",
     "UserMappingUpdate",
+    "UserProjectAssignRequest",
+    "UserRead",
+    "UserUpdate",
 ]
