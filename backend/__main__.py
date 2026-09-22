@@ -10,7 +10,6 @@ Usage::
     python -m app --host 127.0.0.1   # bind to localhost only
     python -m app --env-file /path/to/.env
     python -m app --reload           # development auto-reload
-    python -m app --migrate          # run alembic upgrade head before starting
 """
 
 from __future__ import annotations
@@ -86,11 +85,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable auto-reload (development only)",
     )
     parser.add_argument(
-        "--migrate",
-        action="store_true",
-        help="Run 'alembic upgrade head' before starting the server",
-    )
-    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -120,24 +114,6 @@ def main(argv: list[str] | None = None) -> int:
         elif args.env_file != ".env":
             # Explicitly specified but missing — warn the user
             print(f"Warning: env file not found: {env_path}", file=sys.stderr)
-
-    # Run database migrations if requested
-    if args.migrate:
-        try:
-            from alembic.config import Config as AlembicConfig
-
-            from alembic import command
-
-            alembic_ini = Path("alembic.ini")
-            if not alembic_ini.is_file():
-                print("Warning: alembic.ini not found, skipping migration", file=sys.stderr)
-            else:
-                print("Running database migrations...")
-                alembic_cfg = AlembicConfig(str(alembic_ini.resolve()))
-                command.upgrade(alembic_cfg, "head")
-                print("Migrations complete")
-        except ImportError:
-            print("Warning: alembic not installed, skipping migration", file=sys.stderr)
 
     # Import app after env is loaded so settings are correct
     import uvicorn

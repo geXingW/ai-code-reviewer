@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
@@ -16,7 +17,30 @@ from pydantic import BaseModel, ConfigDict, Field
 logger = logging.getLogger(__name__)
 
 ProviderProtocol = Literal["openai_compatible", "anthropic", "custom"]
-ChatRole = Literal["system", "user", "assistant"]
+# "tool" 角色用于 function-calling 循环：把工具执行结果回填给模型。
+ChatRole = Literal["system", "user", "assistant", "tool"]
+
+
+class ToolCall(BaseModel):
+    """One function call requested by the model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    # JSON-encoded arguments string；部分 provider 直接返回 dict，归一化时统一序列化。
+    arguments: str = "{}"
+
+
+class ToolSpec(BaseModel):
+    """Function definition advertised to the model via native tool calling."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+    # JSON Schema object describing the function parameters.
+    parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatMessage(BaseModel):
@@ -25,7 +49,11 @@ class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     role: ChatRole
-    content: str
+    content: str = ""
+    # Assistant message: tool calls the model requested（OpenAI / Anthropic 均支持）。
+    tool_calls: list[ToolCall] | None = None
+    # Tool message: which call this content answers（OpenAI 语义，Anthropic 归一化时转换）。
+    tool_call_id: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -35,6 +63,7 @@ class ChatResponse(BaseModel):
 
     content: str
     model: str
+    tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: dict[str, int] = Field(default_factory=dict)
     raw: dict[str, Any] = Field(default_factory=dict)
 
@@ -154,8 +183,19 @@ class LLMProvider(ABC):
         self._max_retries = max_retries
 
     @abstractmethod
-    async def chat(self, messages: Sequence[ChatMessage]) -> ChatResponse:
-        """Return one complete chat response."""
+    async def chat(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec] | None = None,
+    ) -> ChatResponse:
+        """Return one complete chat response.
+
+        Args:
+            messages: 对话消息序列（可含 ``role="tool"`` 的工具结果回填）。
+            tools: 可选的 function 定义列表。传入后 provider 以原生
+                function calling 协议发送；返回的 ``ChatResponse.tool_calls``
+                携带模型请求的工具调用。不支持 tools 的适配器应 fail-fast。
+        """
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         """Reserved embedding contract for later semantic matching."""
@@ -201,14 +241,20 @@ class LLMProvider(ABC):
 class OpenAICompatibleProvider(LLMProvider):
     """OpenAI-compatible chat-completions provider adapter."""
 
-    async def chat(self, messages: Sequence[ChatMessage]) -> ChatResponse:
+    async def chat(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec] | None = None,
+    ) -> ChatResponse:
         """Call ``/chat/completions`` and normalize the response."""
 
         payload: dict[str, object] = {
             "model": self.config.model,
             "temperature": self.config.temperature,
-            "messages": [message.model_dump() for message in messages],
+            "messages": [_to_openai_message(message) for message in messages],
         }
+        if tools:
+            payload["tools"] = [_tool_spec_to_openai(tool) for tool in tools]
         if self.config.max_tokens is not None:
             payload["max_tokens"] = self.config.max_tokens
         if self.config.default_json_mode:
@@ -230,16 +276,23 @@ class OpenAICompatibleProvider(LLMProvider):
         )
         data = _ensure_mapping(response.json())
         try:
-            content = data["choices"][0]["message"]["content"]
+            raw_message = data["choices"][0]["message"]
+            content = raw_message["content"]
         except (KeyError, IndexError, TypeError) as exc:
             msg = "OpenAI-compatible response missing choices[0].message.content"
             raise ProviderResponseError(msg) from exc
+        if content is None:
+            # 带 tool_calls 的响应里 content 可能为 null，归一化成空串。
+            content = ""
         if not isinstance(content, str):
             msg = "OpenAI-compatible response content must be a string"
             raise ProviderResponseError(msg)
+        if not isinstance(raw_message, dict):
+            raw_message = {}
         return ChatResponse(
             content=content,
             model=self.config.model,
+            tool_calls=_parse_openai_tool_calls(raw_message),
             usage=_normalise_usage(data.get("usage")),
             raw=dict(data),
         )
@@ -248,17 +301,30 @@ class OpenAICompatibleProvider(LLMProvider):
 class AnthropicProvider(LLMProvider):
     """Anthropic native messages provider adapter."""
 
-    async def chat(self, messages: Sequence[ChatMessage]) -> ChatResponse:
+    async def chat(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec] | None = None,
+    ) -> ChatResponse:
         """Call Anthropic ``/messages`` and normalize the response."""
 
         system_messages = [message.content for message in messages if message.role == "system"]
         non_system_messages = [message for message in messages if message.role != "system"]
         payload: dict[str, object] = {
             "model": self.config.model,
-            "messages": [message.model_dump() for message in non_system_messages],
+            "messages": _to_anthropic_messages(non_system_messages),
             "max_tokens": self.config.max_tokens or 4096,
             "temperature": self.config.temperature,
         }
+        if tools:
+            payload["tools"] = [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.parameters or {"type": "object", "properties": {}},
+                }
+                for tool in tools
+            ]
         if system_messages:
             payload["system"] = "\n\n".join(system_messages)
 
@@ -272,10 +338,14 @@ class AnthropicProvider(LLMProvider):
             payload=payload,
         )
         data = _ensure_mapping(response.json())
-        content = _extract_anthropic_text(data.get("content"))
+        content, tool_calls = _extract_anthropic_content(data.get("content"))
+        if not content and not tool_calls:
+            msg = "Anthropic response did not contain text or tool_use content"
+            raise ProviderResponseError(msg)
         return ChatResponse(
             content=content,
             model=self.config.model,
+            tool_calls=tool_calls,
             usage=_normalise_usage(data.get("usage")),
             raw=dict(data),
         )
@@ -284,8 +354,18 @@ class AnthropicProvider(LLMProvider):
 class CustomProvider(LLMProvider):
     """Custom HTTP JSON provider adapter with templated Authorization header."""
 
-    async def chat(self, messages: Sequence[ChatMessage]) -> ChatResponse:
+    async def chat(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec] | None = None,
+    ) -> ChatResponse:
         """POST provider-neutral JSON to a custom endpoint."""
+
+        if tools:
+            # Custom 协议没有约定的 function-calling 载荷格式，fail-fast 让
+            # 调用方（agent 引擎）感知并降级，而不是静默丢掉工具能力。
+            msg = "Custom provider does not support native tool calling"
+            raise NotImplementedError(msg)
 
         payload: dict[str, object] = {
             "model": self.config.model,
@@ -358,6 +438,155 @@ def truncate_to_budget(messages: Sequence[ChatMessage], *, max_tokens: int) -> l
     return list(reversed(kept_reversed))
 
 
+def _tool_spec_to_openai(tool: ToolSpec) -> dict[str, Any]:
+    """Convert a neutral tool spec to the OpenAI ``tools`` payload shape."""
+
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.parameters or {"type": "object", "properties": {}},
+        },
+    }
+
+
+def _to_openai_message(message: ChatMessage) -> dict[str, Any]:
+    """Serialize a neutral message into the OpenAI chat-completions shape."""
+
+    payload: dict[str, Any] = {"role": message.role, "content": message.content}
+    if message.tool_call_id is not None:
+        payload["tool_call_id"] = message.tool_call_id
+    if message.tool_calls:
+        payload["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments},
+            }
+            for call in message.tool_calls
+        ]
+    return payload
+
+
+def _parse_openai_tool_calls(raw_message: dict[str, Any]) -> list[ToolCall]:
+    """Extract ``tool_calls`` from an OpenAI response message（缺失则返回空）。"""
+
+    calls: list[ToolCall] = []
+    raw_calls = raw_message.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        return calls
+    for item in raw_calls:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            arguments_text = arguments
+        elif isinstance(arguments, dict):
+            # 部分 OpenAI 兼容网关直接返回 dict，统一序列化成 JSON 字符串。
+            arguments_text = json.dumps(arguments, ensure_ascii=False)
+        else:
+            arguments_text = "{}"
+        calls.append(
+            ToolCall(id=str(item.get("id") or ""), name=name, arguments=arguments_text),
+        )
+    return calls
+
+
+def _to_anthropic_messages(messages: Sequence[ChatMessage]) -> list[dict[str, Any]]:
+    """Serialize neutral messages into Anthropic ``messages`` blocks.
+
+    转换规则：
+    - assistant 消息带 ``tool_calls`` 时转成 ``tool_use`` content blocks；
+    - ``role="tool"`` 消息转成带 ``tool_result`` blocks 的 user 消息，连续的
+      tool 消息合并进同一条 user 消息（Anthropic 要求紧跟 tool_use 之后）；
+    - 其余按 role 原样转 text content。
+    """
+
+    payload: list[dict[str, Any]] = []
+    pending_tool_results: list[dict[str, Any]] = []
+
+    def _flush_tool_results() -> None:
+        if pending_tool_results:
+            payload.append({"role": "user", "content": pending_tool_results.copy()})
+            pending_tool_results.clear()
+
+    for message in messages:
+        if message.role == "tool":
+            pending_tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": message.tool_call_id or "",
+                    "content": message.content,
+                },
+            )
+            continue
+        _flush_tool_results()
+        if message.role == "assistant" and message.tool_calls:
+            blocks: list[dict[str, Any]] = []
+            if message.content:
+                blocks.append({"type": "text", "text": message.content})
+            for call in message.tool_calls:
+                try:
+                    tool_input = json.loads(call.arguments) if call.arguments else {}
+                except ValueError:
+                    tool_input = {"_raw": call.arguments}
+                if not isinstance(tool_input, dict):
+                    tool_input = {"_raw": call.arguments}
+                blocks.append(
+                    {"type": "tool_use", "id": call.id, "name": call.name, "input": tool_input},
+                )
+            payload.append({"role": "assistant", "content": blocks})
+            continue
+        payload.append({"role": message.role, "content": message.content})
+
+    _flush_tool_results()
+    return payload
+
+
+def _extract_anthropic_content(value: object) -> tuple[str, list[ToolCall]]:
+    """Split an Anthropic ``content`` block list into text and tool calls."""
+
+    if not isinstance(value, list):
+        msg = "Anthropic response content must be a list"
+        raise ProviderResponseError(msg)
+    chunks: list[str] = []
+    calls: list[ToolCall] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        text = item.get("text")
+        if item_type == "text" and isinstance(text, str):
+            chunks.append(text)
+            continue
+        if item_type == "tool_use":
+            name = item.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            tool_input = item.get("input")
+            if isinstance(tool_input, str):
+                arguments_text = tool_input
+            elif isinstance(tool_input, dict):
+                arguments_text = json.dumps(tool_input, ensure_ascii=False)
+            else:
+                arguments_text = "{}"
+            calls.append(
+                ToolCall(
+                    id=str(item.get("id") or ""),
+                    name=name,
+                    arguments=arguments_text,
+                ),
+            )
+    return "".join(chunks), calls
+
+
 def _map_http_status(status_code: int, exc: Exception) -> LLMError:
     if status_code == 429:
         return RateLimitError("LLM provider rate limit exceeded")
@@ -383,20 +612,3 @@ def _normalise_usage(value: object) -> dict[str, int]:
         if isinstance(key, str) and isinstance(raw, int):
             usage[key] = raw
     return usage
-
-
-def _extract_anthropic_text(value: object) -> str:
-    if not isinstance(value, list):
-        msg = "Anthropic response content must be a list"
-        raise ProviderResponseError(msg)
-    chunks: list[str] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        text = item.get("text")
-        if item.get("type") == "text" and isinstance(text, str):
-            chunks.append(text)
-    if not chunks:
-        msg = "Anthropic response did not contain text content"
-        raise ProviderResponseError(msg)
-    return "".join(chunks)

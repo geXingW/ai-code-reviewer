@@ -14,6 +14,8 @@ from llm.base import (
     RateLimitError,
     ServerError,
     TimeoutError,
+    ToolCall,
+    ToolSpec,
     count_tokens,
     truncate_to_budget,
 )
@@ -33,6 +35,8 @@ __all__ = [
     "RateLimitError",
     "ServerError",
     "TimeoutError",
+    "ToolCall",
+    "ToolSpec",
     "build_provider",
     "count_tokens",
     "truncate_to_budget",

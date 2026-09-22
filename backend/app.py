@@ -1,7 +1,8 @@
 """Startup entrypoint for ai-code-reviewer backend.
 
-Loads ``.env`` from the current working directory (if present) and starts
-the FastAPI application with uvicorn.
+Loads ``.env`` from the current working directory (if present, else falls
+back to the repository root ``.env``) and starts the FastAPI application
+with uvicorn.
 
 Usage::
 
@@ -10,7 +11,6 @@ Usage::
     python app.py --host 127.0.0.1      # bind to localhost only
     python app.py --env-file /path/.env
     python app.py --reload              # development auto-reload
-    python app.py --migrate             # run alembic upgrade head before starting
 """
 
 from __future__ import annotations
@@ -65,11 +65,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable auto-reload (development only)",
     )
     parser.add_argument(
-        "--migrate",
-        action="store_true",
-        help="Run 'alembic upgrade head' before starting the server",
-    )
-    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -83,28 +78,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.env_file:
         env_path = Path(args.env_file)
+        if not env_path.is_file() and args.env_file == ".env":
+            # CWD 下没有 .env 时回退到仓库根目录：IDE 从 backend/ 目录直接运行
+            # app.py 时工作目录是 backend/，而 .env 位于仓库根。
+            fallback = Path(__file__).resolve().parent.parent / ".env"
+            if fallback.is_file():
+                env_path = fallback
         if env_path.is_file():
             _load_env_file(env_path)
             print(f"Loaded environment from {env_path.resolve()}")
         elif args.env_file != ".env":
             print(f"Warning: env file not found: {env_path}", file=sys.stderr)
-
-    if args.migrate:
-        try:
-            from alembic.config import Config as AlembicConfig
-
-            from alembic import command
-
-            alembic_ini = Path("alembic.ini")
-            if not alembic_ini.is_file():
-                print("Warning: alembic.ini not found, skipping migration", file=sys.stderr)
-            else:
-                print("Running database migrations...")
-                alembic_cfg = AlembicConfig(str(alembic_ini.resolve()))
-                command.upgrade(alembic_cfg, "head")
-                print("Migrations complete")
-        except ImportError:
-            print("Warning: alembic not installed, skipping migration", file=sys.stderr)
 
     import uvicorn
 

@@ -69,20 +69,17 @@ COPY backend/repositories ./repositories
 COPY backend/schemas ./schemas
 COPY backend/services ./services
 COPY backend/static ./static
-COPY backend/alembic ./alembic
-COPY backend/alembic.ini ./alembic.ini
+COPY backend/sql ./sql
 COPY backend/scripts ./scripts
 
 # 前端静态文件（由阶段 1 构建）
 COPY --from=frontend-builder /frontend/dist ./static
 
-# Generate release SQL artifacts (full schema + incremental migrations)
-RUN python scripts/generate_release_sql.py --output-dir /app/sql
-
+# 建库 SQL（backend/sql/schema-*.sql）需在启动前手动执行，应用启动不再自动迁移
 RUN chown -R appuser:appuser /app
 
 USER appuser
 
 EXPOSE 8000
 
-CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "8000", "--migrate"]
+CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "8000"]

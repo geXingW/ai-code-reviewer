@@ -47,6 +47,7 @@ from models.review import Review as ReviewRow
 from repositories.project import ProjectRepository
 from repositories.provider import ProviderRepository
 from repositories.review import FindingRepository, ReviewRepository
+from services.repo_reader import GitLabRepoReader
 
 if TYPE_CHECKING:
     from services.notification_service import NotificationService
@@ -413,6 +414,11 @@ class ReviewOrchestrator:
         # 顺序敏感：先算 rules，再基于启用 rule 集拉负例（scope=rule/both 需要）。
         rules = await self._resolve_rules(event)
         history = await self._resolve_history(event, rules)
+        repo_reader = GitLabRepoReader(
+            self._gitlab_client,
+            project_id=event.project_id,
+            default_ref=event.source_commit_sha,
+        )
         context = ReviewContext(
             review_id=review_id,
             project_id=event.project_uuid,
@@ -436,6 +442,7 @@ class ReviewOrchestrator:
                 "review_mode": plan.mode,
                 "review_base_sha": plan.base_sha,
             },
+            repo_reader=repo_reader,
         )
         engine = self._engine_registry.get(self._default_engine)
         try:
@@ -679,6 +686,11 @@ class ReviewOrchestrator:
         provider = await self._resolve_provider(event)
         history = await self._resolve_history(event, rules)
         review_id = uuid4()
+        repo_reader = GitLabRepoReader(
+            self._gitlab_client,
+            project_id=event.project_id,
+            default_ref=event.commit_sha,
+        )
         context = ReviewContext(
             review_id=review_id,
             project_id=event.project_uuid,
@@ -701,6 +713,7 @@ class ReviewOrchestrator:
                 "review_kind": "commit",
                 "review_base_sha": parent_sha,
             },
+            repo_reader=repo_reader,
         )
         engine = self._engine_registry.get(self._default_engine)
         try:
@@ -862,6 +875,11 @@ class ReviewOrchestrator:
         provider = await self._resolve_provider(event)
         history = await self._resolve_history(event, rules)
         review_id = uuid4()
+        repo_reader = GitLabRepoReader(
+            self._gitlab_client,
+            project_id=event.project_id,
+            default_ref=event.after_sha,
+        )
         context = ReviewContext(
             review_id=review_id,
             project_id=event.project_uuid,
@@ -888,6 +906,7 @@ class ReviewOrchestrator:
                     for c in event.commits
                 ],
             },
+            repo_reader=repo_reader,
         )
         engine = self._engine_registry.get(self._default_engine)
         try:

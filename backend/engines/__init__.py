@@ -19,6 +19,7 @@ from engines.types import (
     Finding,
     HealthStatus,
     ProviderConfig,
+    RepoReader,
     ReviewContext,
     ReviewHistoryItem,
     RuleSpec,
@@ -31,6 +32,7 @@ __all__ = [
     "Finding",
     "HealthStatus",
     "ProviderConfig",
+    "RepoReader",
     "ReviewContext",
     "ReviewEngine",
     "ReviewHistoryItem",
@@ -52,4 +54,5 @@ def load_builtin_engines() -> None:
     """
 
     # Importing the module triggers the @register_engine decorator.
+    from engines.llm_agent import engine as _llm_agent_engine  # noqa: F401
     from engines.llm_engine import engine as _llm_engine  # noqa: F401

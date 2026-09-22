@@ -28,7 +28,8 @@ docker compose up -d postgres
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-alembic upgrade head
+# 空库时手动执行建库 SQL（应用启动不自动建表）
+python scripts/export_schema_sql.py && mysql -u<user> -p <database> < sql/schema-mysql.sql
 python app.py --reload
 
 # 前端
@@ -102,7 +103,7 @@ cd frontend && npm test
 ## 文档
 
 - 改动 API → 更新 [docs/api.md](docs/api.md)
-- 改动数据模型 → 更新 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) + 新建 Alembic migration
+- 改动数据模型 → 更新 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) + 运行 `python scripts/export_schema_sql.py` 重新生成建库 SQL
 - 新增 engine → 在 [docs/engine-development.md](docs/engine-development.md) 加示例
 - 用户可见行为变更 → 更新 [CHANGELOG.md](CHANGELOG.md) `[Unreleased]` 段
 

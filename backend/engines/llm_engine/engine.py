@@ -15,18 +15,41 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
 
 from core.config import Settings, get_settings
 from engines.base import ReviewEngine
+
+# 兼容性别名：历史测试直接从本模块 import 这些私有名，实现已抽到
+# engines.finding_parsing，这里保留 re-export 不改测试导入路径。
+from engines.finding_parsing import (  # noqa: F401
+    added_line_numbers as _added_line_numbers,
+)
+from engines.finding_parsing import (  # noqa: F401
+    iter_added_lines as _iter_added_lines,
+)
+from engines.finding_parsing import (  # noqa: F401
+    line_in_diff as _line_in_diff,
+)
+from engines.finding_parsing import (
+    normalise_raw_finding as _normalise_raw_finding_impl,
+)
+from engines.finding_parsing import (
+    parse_findings_from_response,
+)
+from engines.finding_parsing import (  # noqa: F401
+    resolve_line_number as _resolve_line_number,
+)
+from engines.finding_parsing import (
+    split_real_hunks as _split_real_hunks,
+)
 from engines.llm_engine.filter_stage import (
     FilterDecision,
     apply_decisions,
@@ -39,7 +62,6 @@ from engines.registry import register_engine
 from engines.types import (
     DiffHunk,
     Finding,
-    FindingSource,
     HealthStatus,
     ProviderConfig,
     ReviewContext,
@@ -51,13 +73,6 @@ from llm import AsyncHTTPClient, ChatMessage, LLMError, build_provider
 
 logger = logging.getLogger(__name__)
 
-_ALLOWED_SEVERITIES = {"INFO", "WARNING", "BLOCKER"}
-_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.*?)\s*```", re.DOTALL | re.IGNORECASE)
-# 与 review_orchestrator._DIFF_HEADER_RE 保持一致：Git 省略 ",1" 时计数组不出现。
-_DIFF_HEADER_RE = re.compile(
-    r"@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? "
-    r"\+(?P<new_start>\d+)(?:,(?P<new_lines>\d+))? @@"
-)
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 
@@ -899,70 +914,19 @@ class LLMDirectEngine(ReviewEngine):
         return "\n\n".join(blocks)
 
     def _parse_findings(self, raw_response: str, ctx: ReviewContext) -> list[Finding]:
-        payload = _loads_model_json(raw_response)
-        raw_findings = payload.get("findings", [])
-        if not isinstance(raw_findings, list):
-            return []
+        """解析模型 JSON 响应；规范化/过滤逻辑抽到 ``engines.finding_parsing`` 供
+        ``llm-agent`` 复用，这里保持方法签名向后兼容。"""
 
-        parsed: list[Finding] = []
-        for raw in raw_findings:
-            if not isinstance(raw, Mapping):
-                continue
-            normalized = self._normalise_raw_finding(raw, ctx.diff_hunks)
-            if normalized is None:
-                continue
-            try:
-                finding = Finding(**normalized)
-            except ValidationError:
-                logger.info(
-                    "llm-direct ignored invalid finding payload",
-                    extra={"finding": normalized},
-                )
-                continue
-            if _matches_false_positive_history(finding, ctx.history):
-                continue
-            parsed.append(_tag_finding_source(finding, ctx))
-        return parsed
+        return parse_findings_from_response(raw_response, ctx)
 
     def _normalise_raw_finding(
         self,
         raw: Mapping[str, Any],
         diff_hunks: list[DiffHunk],
     ) -> dict[str, Any] | None:
-        file_path = _optional_str(raw.get("file_path"))
-        if file_path is None or not _file_in_diff(file_path, diff_hunks):
-            return None
+        """向后兼容的委托：实现见 ``engines.finding_parsing.normalise_raw_finding``。"""
 
-        severity = _optional_str(raw.get("severity"))
-        if severity not in _ALLOWED_SEVERITIES:
-            return None
-
-        title = _optional_str(raw.get("title"))
-        rule_id = _optional_str(raw.get("rule_id"))
-        if not title or not rule_id:
-            return None
-
-        existing_code = _optional_str(raw.get("existing_code"))
-        line_number = _optional_int(raw.get("line_number"))
-        if line_number is None and existing_code:
-            line_number = _resolve_line_number(file_path, existing_code, diff_hunks)
-        if line_number is not None and not _line_in_diff(file_path, line_number, diff_hunks):
-            return None
-
-        return {
-            "file_path": file_path,
-            "line_number": line_number,
-            "rule_id": rule_id,
-            "severity": severity,
-            "title": title,
-            "description": _optional_str(raw.get("description")),
-            "suggestion": _optional_str(raw.get("suggestion")),
-            "existing_code": existing_code,
-            # 模型偶尔会填 "null" 字符串或者空串--``_optional_str`` 只把空/None
-            # 归成 None，其它字符串一律原样透传。合法性交给渲染层收敛。
-            "category": _optional_str(raw.get("category")),
-            "confidence": _clamp_confidence(raw.get("confidence")),
-        }
+        return _normalise_raw_finding_impl(raw, diff_hunks)
 
     async def _filter_findings(
         self,
@@ -1091,45 +1055,6 @@ class LLMDirectEngine(ReviewEngine):
         return kept
 
 
-def _loads_model_json(raw_response: str) -> dict[str, Any]:
-    """Load model JSON, accepting an optional whole-response fenced block.
-
-    先直接整体解析：json_object 模式下模型返回的就是纯 JSON，且 finding 的
-    suggestion 字段可能内嵌 ```java 代码块，用 search 在任意位置提取会误伤
-    （把内嵌代码块当成 JSON body，导致合法响应解析失败）。只有整体解析
-    失败且整个响应被 ```json ... ``` 包裹时才提取 fenced body。
-    """
-
-    text = raw_response.strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        # 整体不是合法 JSON：仅当整个响应是 fenced block 时提取，
-        # 内嵌 ``` 的合法 JSON 不会走到这里（上面已成功解析）。
-        match = _JSON_BLOCK_RE.fullmatch(text)
-        if not match:
-            raise
-        data = json.loads(match.group("body").strip())
-    if not isinstance(data, dict):
-        msg = "LLM response must be a JSON object"
-        raise ValueError(msg)
-    return cast(dict[str, Any], data)
-
-
-def _tag_finding_source(finding: Finding, ctx: ReviewContext) -> Finding:
-    """按 ``finding.rule_id`` 是否命中 ``ctx.rules`` 打来源标签。
-
-    命中启用中的团队/项目规则 -> ``USER_RULE``（Filter 默认保留）。
-
-    其余一律 ``LLM_INFERRED``（Filter 阶段最激进证伪的一档）。
-    """
-
-    user_rule_ids = {rule.rule_id for rule in ctx.rules if rule.enabled}
-    if finding.rule_id in user_rule_ids:
-        return finding.model_copy(update={"source": FindingSource.USER_RULE})
-    return finding.model_copy(update={"source": FindingSource.LLM_INFERRED})
-
-
 def _decision_to_dict(decision: FilterDecision) -> dict[str, Any]:
     """把 FilterDecision 转成 dict 便于 DEBUG 日志序列化。"""
 
@@ -1139,126 +1064,3 @@ def _decision_to_dict(decision: FilterDecision) -> dict[str, Any]:
         "reason": decision.reason,
         "new_severity": decision.new_severity,
     }
-
-
-def _file_in_diff(file_path: str, diff_hunks: list[DiffHunk]) -> bool:
-    return any(hunk.file_path == file_path for hunk in diff_hunks)
-
-
-def _line_in_diff(file_path: str, line_number: int, diff_hunks: list[DiffHunk]) -> bool:
-    return any(
-        line_number in _added_line_numbers(hunk)
-        for hunk in diff_hunks
-        if hunk.file_path == file_path
-    )
-
-
-def _resolve_line_number(
-    file_path: str,
-    existing_code: str,
-    diff_hunks: list[DiffHunk],
-) -> int | None:
-    needle = " ".join(existing_code.strip().split())
-    if not needle:
-        return None
-    for hunk in diff_hunks:
-        if hunk.file_path != file_path:
-            continue
-        for line_no, code in _iter_added_lines(hunk):
-            haystack = " ".join(code.strip().split())
-            if needle in haystack or haystack in needle:
-                return line_no
-    return None
-
-
-def _added_line_numbers(hunk: DiffHunk) -> set[int]:
-    return {line_no for line_no, _ in _iter_added_lines(hunk)}
-
-
-def _split_real_hunks(content: str) -> list[tuple[int, int, str]]:
-    """Split a file's diff content into real hunks.
-
-    一个 ``DiffHunk.content`` 可能包含多个 ``@@`` hunk。返回
-    ``(new_start, new_lines, hunk_text)`` 列表；没有 @@ header 时返回空列表。
-    """
-
-    matches = list(_DIFF_HEADER_RE.finditer(content))
-    result: list[tuple[int, int, str]] = []
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
-        hunk_text = content[match.start() : end].strip("\n")
-        new_lines_raw = match.group("new_lines")
-        new_lines = int(new_lines_raw) if new_lines_raw else 1
-        result.append((int(match.group("new_start")), new_lines, hunk_text))
-    return result
-
-
-def _iter_added_lines(hunk: DiffHunk) -> list[tuple[int, str]]:
-    """Return added lines with new-file line numbers for a unified diff hunk."""
-
-    current_new_line = hunk.new_start
-    added: list[tuple[int, str]] = []
-    for raw_line in hunk.content.splitlines():
-        if raw_line.startswith("@@"):
-            # content 可能包含多个真实 hunk（一个 DiffHunk = 一个文件的全部 diff），
-            # 遇到新的 @@ header 时必须重置行号计数器。
-            header = _DIFF_HEADER_RE.search(raw_line)
-            if header:
-                current_new_line = int(header.group("new_start"))
-            continue
-        if raw_line.startswith("+") and not raw_line.startswith("+++"):
-            added.append((current_new_line, raw_line[1:]))
-            current_new_line += 1
-            continue
-        if raw_line.startswith("-") and not raw_line.startswith("---"):
-            continue
-        current_new_line += 1
-    return added
-
-
-def _matches_false_positive_history(finding: Finding, history: list[ReviewHistoryItem]) -> bool:
-    for item in history:
-        if item.rule_id != finding.rule_id:
-            continue
-        if item.file_path != finding.file_path:
-            continue
-        if item.line_number is not None and finding.line_number is not None:
-            if abs(item.line_number - finding.line_number) > 2:
-                continue
-        if item.title.strip().lower() == finding.title.strip().lower():
-            return True
-        if item.description and finding.description:
-            if item.description.strip().lower() == finding.description.strip().lower():
-                return True
-    return False
-
-
-def _optional_str(value: object) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        return stripped or None
-    return str(value).strip() or None
-
-
-def _optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return None
-    if not isinstance(value, int | float | str | bytes | bytearray):
-        return None
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
-def _clamp_confidence(value: object) -> float:
-    try:
-        confidence = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(1.0, confidence))

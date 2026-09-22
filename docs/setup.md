@@ -41,11 +41,11 @@ docker run -d \
 
 ### 1.3 初始化数据库
 
-首次启动前需要执行数据库迁移和种子数据：
+首次启动前需要手动建库并写入种子数据：
 
 ```bash
-# 执行迁移
-docker exec ai-code-reviewer alembic upgrade head
+# 空库时手动执行建库 SQL（按数据库方言选择，应用启动不会自动建表）
+docker exec -i ai-code-reviewer mysql -u<user> -p<password> <database> < /app/sql/schema-mysql.sql
 
 # 写入种子数据（默认规则、引擎配置等）
 docker exec ai-code-reviewer python scripts/seed.py
@@ -53,13 +53,12 @@ docker exec ai-code-reviewer python scripts/seed.py
 
 #### SQL 归档文件
 
-镜像内 `/app/sql/` 目录附带了可追溯的 SQL 文件，方便离线部署或 DBA 审阅：
+镜像内 `/app/sql/` 目录附带建库 SQL，方便离线部署或 DBA 审阅：
 
-- `sql/schema-full.sql`：全量初始化 SQL（从空库到当前版本）
-- `sql/migrations/*.sql`：每个版本的增量 DDL
-- `sql/VERSION`：当前版本对应的 Alembic revision
+- `sql/schema-mysql.sql`：MySQL 全量建库脚本（从空库到当前版本）
+- `sql/schema-postgresql.sql`：PostgreSQL 全量建库脚本
 
-新部署也可以直接执行 `sql/schema-full.sql` 建库，跳过 `alembic upgrade head`。
+SQL 由 `scripts/export_schema_sql.py` 从 ORM 模型生成；模型变更后需重新生成并手动执行。
 
 ### 1.4 访问入口
 
@@ -128,7 +127,9 @@ set -a; source /opt/ai-code-reviewer/.env; set +a
 
 cd /opt/ai-code-reviewer/backend
 
-alembic upgrade head
+# 空库时手动执行建库 SQL
+python scripts/export_schema_sql.py
+mysql -u<user> -p<password> <database> < sql/schema-mysql.sql
 python scripts/seed.py
 ```
 
@@ -253,9 +254,6 @@ docker build -t ai-code-reviewer-backend .
 # 查看日志
 docker logs -f ai-code-reviewer
 
-# 重新执行迁移
-docker exec ai-code-reviewer alembic upgrade head
-
 # 重新写入种子数据
 docker exec ai-code-reviewer python scripts/seed.py
 
@@ -284,9 +282,6 @@ docker compose ps
 
 # 查看后端日志
 docker compose logs -f backend
-
-# 重新执行迁移
-docker compose exec backend alembic upgrade head
 
 # 停止（保留数据）
 docker compose down

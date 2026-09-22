@@ -153,7 +153,7 @@ providers                     // LLM 供应商池
 
 engines                       // 引擎池
 ├─ id
-├─ name             "llm-direct" / "alibaba-ocr"
+├─ name             "llm-direct" / "llm-agent" / "alibaba-ocr"
 ├─ type             builtin / external_cli
 ├─ config           JSONB
 └─ enabled
@@ -327,7 +327,7 @@ stage('AI Code Review') {
 | 多次 push | 全量评审 | MVP 简单优先；增量评审复杂度高 |
 | 误报反馈 | 半自动（管理员审定） | 避免 prompt 被污染 |
 | 阻断默认 | master/release → BLOCKER, 其他 NONE | 渐进引入，让团队先用起来 |
-| 评审引擎 | 抽象 + 多实现 | 不被 LLM API 涨价 / 上游 CLI 改接口卡脖子 |
+| 评审引擎 | 抽象 + 多实现（`llm-direct` 纯 diff 单轮 / `llm-agent` 多轮工具调用，可调查提交影响范围） | 不被 LLM API 涨价 / 上游 CLI 改接口卡脖子 |
 
 ## 十一、文档索引
 

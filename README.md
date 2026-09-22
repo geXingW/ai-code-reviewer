@@ -69,7 +69,7 @@ CONFIRMED 写入 negative_examples
 
 ## 技术栈
 
-- **后端**：Python 3.11 + FastAPI + SQLAlchemy (async) + Alembic
+- **后端**：Python 3.11 + FastAPI + SQLAlchemy (async)
 - **数据库**：PostgreSQL 15 或 MySQL 8.0（跨方言，二选一）
 - **前端**：React 19 + Vite + TypeScript + Vitest
 - **部署**：Docker 单镜像 / pip 安装 / Docker Compose（开发）
@@ -79,7 +79,7 @@ CONFIRMED 写入 negative_examples
 ### v0.1.0 MVP（Phase 1）
 
 - [x] 项目治理基础设施
-- [x] 后端骨架 + 数据模型（10 表 + Fernet 加密 + Alembic）
+- [x] 后端骨架 + 数据模型（10 表 + Fernet 加密）
 - [x] ReviewEngine 抽象 + LLMEngine 实现
 - [x] GitLab 客户端（diff / discussion / commit status）
 - [x] Webhook 接收 + 评审编排
@@ -153,7 +153,7 @@ export SECRET_KEY=...
 export DATABASE_URL=postgresql+asyncpg://...
 
 # 3. 初始化 + 启动
-alembic upgrade head
+# 建库：空库时手动执行 backend/sql/ 下的 schema-<方言>.sql（应用启动不再自动建表）
 python app.py --host 0.0.0.0 --port 8000
 ```
 

@@ -34,12 +34,8 @@ COPY schemas ./schemas
 COPY services ./services
 COPY static ./static
 
-COPY alembic ./alembic
-COPY alembic.ini ./alembic.ini
+COPY sql ./sql
 COPY scripts ./scripts
-
-# Generate release SQL artifacts (full schema + incremental migrations)
-RUN python scripts/generate_release_sql.py --output-dir /app/sql
 
 # app.py as entrypoint
 COPY app.py ./app.py
@@ -50,4 +46,5 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "8000", "--migrate"]
+# 建库 SQL（sql/schema-*.sql）需在启动前手动执行，应用启动不再自动迁移
+CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "8000"]

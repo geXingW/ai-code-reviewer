@@ -19,7 +19,7 @@ forcing a migration.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -134,6 +134,63 @@ class ReviewHistoryItem(BaseModel):
     confirmed_at: str = Field(description="ISO-8601 timestamp.")
 
 
+@runtime_checkable
+class RepoReader(Protocol):
+    """Structural interface engines use to read repository content.
+
+    只读仓库访问的抽象：引擎层不依赖任何具体 Git 集成，orchestrator 在构造
+    ``ReviewContext`` 时注入实现（当前是 ``services.repo_reader.GitLabRepoReader``，
+    未来可以是本地 clone 读取器）。所有方法都应做到"失败返回错误信息而不是
+    抛异常"，方便 agent 循环把错误当作观察回填给模型。
+    """
+
+    async def read_file(
+        self,
+        file_path: str,
+        ref: str,
+        *,
+        max_chars: int = 8000,
+    ) -> str:
+        """Return file content at ``ref``, or an error description string."""
+        ...
+
+    async def list_tree(
+        self,
+        path: str,
+        ref: str,
+        *,
+        recursive: bool = False,
+        max_chars: int = 4000,
+    ) -> str:
+        """Return a newline-separated directory listing, or an error string."""
+        ...
+
+    async def blame(
+        self,
+        file_path: str,
+        ref: str,
+        *,
+        max_chars: int = 6000,
+    ) -> str:
+        """Return a compact per-line blame view, or an error string."""
+        ...
+
+    async def search(self, query: str, *, max_chars: int = 4000) -> str:
+        """Return blob search hits (path + snippet), or an error string."""
+        ...
+
+    async def commit_history(
+        self,
+        file_path: str,
+        ref: str,
+        limit: int = 10,
+        *,
+        max_chars: int = 3000,
+    ) -> str:
+        """Return recent commits touching ``file_path``, or an error string."""
+        ...
+
+
 class ReviewContext(BaseModel):
     """Everything an engine needs to review a single merge request.
 
@@ -154,6 +211,9 @@ class ReviewContext(BaseModel):
         history: Prior confirmed false positives for this project.
         repo_url: Optional clone URL — only needed by engines that have
             ``ReviewEngine.requires_repo_clone() == True``.
+        repo_reader: 可选的只读仓库访问器（:class:`RepoReader` 结构契约），
+            agent 类引擎用它拉取文件内容 / 目录树 / blame / 代码搜索，以便在
+            给出结论前调查提交的影响范围。纯 diff 引擎可以忽略。
         mr_title: MR 标题；作为 prompt 上下文注入，帮助模型理解意图。
         mr_description: MR 描述正文；同上，可能为空字符串。
         last_commit_message: MR head 分支最近一次 commit message；同上。
@@ -174,6 +234,9 @@ class ReviewContext(BaseModel):
     provider: ProviderConfig | None = None
     history: list[ReviewHistoryItem] = Field(default_factory=list)
     repo_url: str | None = None
+    # 用 Any 而不是 RepoReader：pydantic v2 对 Protocol 字段做 isinstance 校验
+    # 会有运行时开销/兼容问题，这里只保留文档语义，实际类型由注入方保证。
+    repo_reader: Any | None = None
     mr_title: str = ""
     mr_description: str = ""
     last_commit_message: str = ""

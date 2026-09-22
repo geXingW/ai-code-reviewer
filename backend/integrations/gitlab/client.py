@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Literal
+from urllib.parse import quote
 
 import httpx
 
@@ -104,6 +105,221 @@ class GitLabClient:
             f"/api/v4/projects/{project_id}/repository/compare",
             params={"from": from_sha, "to": to_sha, "straight": "true"},
         )
+
+    async def get_file_contents(
+        self,
+        *,
+        project_id: int,
+        file_path: str,
+        ref: str,
+    ) -> str:
+        """读取指定 ref 下某个文件的原始内容。
+
+        对应 GitLab API：
+        ``GET /api/v4/projects/:id/repository/files/:file_path/raw?ref=:ref``。
+        GitLab 要求路径中的 ``/`` 以 ``%2F`` 形式出现在 URL 段中，这里手动
+        ``quote`` 编码。
+
+        Args:
+            project_id: 数值型 GitLab 项目 ID。
+            file_path: 仓库内文件相对路径，如 ``src/app.py``。
+            ref: 分支名 / tag / commit SHA。
+
+        Returns:
+            str: 文件原始文本内容。
+
+        Raises:
+            ValueError: ``file_path`` 或 ``ref`` 为空。
+            GitLabClientError: 文件不存在（404）或其他非 2xx 响应。
+        """
+
+        if not file_path.strip():
+            msg = "GitLab get_file_contents file_path must not be empty."
+            raise ValueError(msg)
+        if not ref.strip():
+            msg = "GitLab get_file_contents ref must not be empty."
+            raise ValueError(msg)
+        encoded = quote(file_path, safe="")
+        return await self._request_text(
+            "GET",
+            f"/api/v4/projects/{project_id}/repository/files/{encoded}/raw",
+            params={"ref": ref},
+        )
+
+    async def list_repository_tree(
+        self,
+        *,
+        project_id: int,
+        path: str = "",
+        ref: str,
+        recursive: bool = False,
+        page: int = 1,
+        per_page: int = 50,
+    ) -> list[dict[str, Any]]:
+        """列出仓库目录树（文件 / 子目录条目）。
+
+        对应 GitLab API：``GET /api/v4/projects/:id/repository/tree``。
+
+        Args:
+            project_id: 数值型 GitLab 项目 ID。
+            path: 相对路径，空串表示仓库根目录。
+            ref: 分支名 / tag / commit SHA。
+            recursive: 是否递归展开子目录。
+            page: 页码（从 1 开始）。
+            per_page: 每页条数（GitLab 上限 100）。
+
+        Returns:
+            list[dict[str, Any]]: tree 条目数组（``id``/``name``/``type``/``path`` 等）。
+
+        Raises:
+            ValueError: ``ref`` 为空。
+        """
+
+        if not ref.strip():
+            msg = "GitLab list_repository_tree ref must not be empty."
+            raise ValueError(msg)
+        params: dict[str, str] = {
+            "ref": ref,
+            "page": str(max(1, page)),
+            "per_page": str(max(1, min(per_page, 100))),
+        }
+        if path.strip():
+            params["path"] = path
+        if recursive:
+            params["recursive"] = "true"
+        payload = await self._request_json(
+            "GET",
+            f"/api/v4/projects/{project_id}/repository/tree",
+            params=params,
+        )
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
+    async def get_file_blame(
+        self,
+        *,
+        project_id: int,
+        file_path: str,
+        ref: str,
+    ) -> list[dict[str, Any]]:
+        """获取文件逐行 blame（每段含 commit 与对应行）。
+
+        对应 GitLab API：
+        ``GET /api/v4/projects/:id/repository/files/:file_path/blame?ref=:ref``。
+
+        Args:
+            project_id: 数值型 GitLab 项目 ID。
+            file_path: 仓库内文件相对路径。
+            ref: 分支名 / tag / commit SHA。
+
+        Returns:
+            list[dict[str, Any]]: blame 段数组（``commit`` + ``lines``）。
+
+        Raises:
+            ValueError: ``file_path`` 或 ``ref`` 为空。
+        """
+
+        if not file_path.strip():
+            msg = "GitLab get_file_blame file_path must not be empty."
+            raise ValueError(msg)
+        if not ref.strip():
+            msg = "GitLab get_file_blame ref must not be empty."
+            raise ValueError(msg)
+        encoded = quote(file_path, safe="")
+        payload = await self._request_json(
+            "GET",
+            f"/api/v4/projects/{project_id}/repository/files/{encoded}/blame",
+            params={"ref": ref},
+        )
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
+    async def search_code(
+        self,
+        *,
+        project_id: int,
+        query: str,
+        page: int = 1,
+    ) -> list[dict[str, Any]]:
+        """在项目内搜索代码（blob 级），返回命中的文件与片段。
+
+        对应 GitLab API：``GET /api/v4/projects/:id/search?scope=blobs&search=...``。
+        依赖实例侧的搜索索引；未建索引时 GitLab 可能返回错误，调用方需捕获
+        :class:`GitLabClientError` 并降级（agent 工具层会把错误作为观察返回）。
+
+        Args:
+            project_id: 数值型 GitLab 项目 ID。
+            query: 搜索关键词。
+            page: 页码（从 1 开始）。
+
+        Returns:
+            list[dict[str, Any]]: 命中条目数组（``path``/``data``/``startline`` 等）。
+
+        Raises:
+            ValueError: ``query`` 为空。
+        """
+
+        if not query.strip():
+            msg = "GitLab search_code query must not be empty."
+            raise ValueError(msg)
+        payload = await self._request_json(
+            "GET",
+            f"/api/v4/projects/{project_id}/search",
+            params={"scope": "blobs", "search": query, "page": str(max(1, page))},
+        )
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
+    async def list_commits(
+        self,
+        *,
+        project_id: int,
+        ref: str,
+        path: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """列出指定 ref（可选限定 path）下的最近 commit 列表。
+
+        对应 GitLab API：
+        ``GET /api/v4/projects/:id/repository/commits?ref_name=:ref&path=:path``。
+
+        Args:
+            project_id: 数值型 GitLab 项目 ID。
+            ref: 分支名 / tag / commit SHA。
+            path: 可选的文件相对路径；传入时只返回影响该文件的 commit。
+            limit: 返回条数上限（GitLab 单页上限 100）。
+
+        Returns:
+            list[dict[str, Any]]: commit 数组（``id``/``title``/``message`` 等）。
+
+        Raises:
+            ValueError: ``ref`` 为空。
+        """
+
+        if not ref.strip():
+            msg = "GitLab list_commits ref must not be empty."
+            raise ValueError(msg)
+        params: dict[str, str] = {
+            "ref_name": ref,
+            "per_page": str(max(1, min(limit, 100))),
+        }
+        if path and path.strip():
+            params["path"] = path
+        payload = await self._request_json(
+            "GET",
+            f"/api/v4/projects/{project_id}/repository/commits",
+            params=params,
+        )
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
 
     async def create_merge_request_note(
         self,
@@ -396,15 +612,15 @@ class GitLabClient:
             json=payload,
         )
 
-    async def _request_json(
+    async def _send_request(
         self,
         method: str,
         path: str,
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        """Send an HTTP request and return parsed JSON.
+    ) -> httpx.Response:
+        """Send an HTTP request and return the raw response.
 
         Raises:
             GitLabClientError: On any non-2xx response.
@@ -423,10 +639,39 @@ class GitLabClient:
                 message=self._extract_error_message(response),
                 response_body=response.text,
             )
+        return response
+
+    async def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Send an HTTP request and return parsed JSON.
+
+        Raises:
+            GitLabClientError: On any non-2xx response.
+        """
+
+        response = await self._send_request(method, path, json=json, params=params)
         data = response.json()
         if not isinstance(data, dict):
             return {"data": data}
         return data
+
+    async def _request_text(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str] | None = None,
+    ) -> str:
+        """Send an HTTP request and return the raw text body（供 raw 端点）。"""
+
+        response = await self._send_request(method, path, params=params)
+        return response.text
 
     @staticmethod
     def _extract_error_message(response: httpx.Response) -> str:

@@ -49,17 +49,13 @@ jobs:
         run: pip install -r requirements.txt
         working-directory: backend
 
-      - name: Generate release SQL artifacts
+      - name: Verify schema SQL artifacts
         run: |
-          python scripts/generate_release_sql.py --output-dir sql/
-          # 校验关键输出文件存在
-          test -f sql/schema-full.sql || { echo "ERROR: schema-full.sql not generated"; exit 1; }
-          test -f sql/VERSION || { echo "ERROR: VERSION file not generated"; exit 1; }
-          test -d sql/migrations || { echo "ERROR: migrations/ directory not generated"; exit 1; }
-          MIG_COUNT=$(ls sql/migrations/*.sql 2>/dev/null | wc -l)
-          echo "Generated ${MIG_COUNT} migration SQL files"
-          test "$MIG_COUNT" -gt 0 || { echo "ERROR: no migration SQL files generated"; exit 1; }
-          echo "SQL artifacts OK"
+          # 建库 SQL 由 scripts/export_schema_sql.py 从模型生成并提交在仓库中，
+          # 发布时仅校验存在（应用启动不执行任何 SQL，需手动建库）。
+          test -f sql/schema-mysql.sql || { echo "ERROR: sql/schema-mysql.sql not found"; exit 1; }
+          test -f sql/schema-postgresql.sql || { echo "ERROR: sql/schema-postgresql.sql not found"; exit 1; }
+          echo "Schema SQL OK"
         working-directory: backend
 
       - name: Package full-stack deployment bundle
@@ -88,12 +84,10 @@ jobs:
           # 依赖清单
           cp requirements.txt "dist/${PKG_NAME}/"
 
-          # 数据库迁移 + 种子脚本
-          cp -r alembic "dist/${PKG_NAME}/alembic"
-          cp alembic.ini "dist/${PKG_NAME}/"
+          # 种子脚本
           cp -r scripts "dist/${PKG_NAME}/scripts"
 
-          # 发布用 SQL 文件（全量 + 增量，由上一步生成）
+          # 建库 SQL（部署时手动执行，应用启动不建表）
           cp -r sql "dist/${PKG_NAME}/sql"
 
           # 配置示例
@@ -120,9 +114,9 @@ jobs:
             pip install -r requirements.txt
           fi
 
-          # 启动（自动加载 ./.env，自动执行数据库迁移）
+          # 启动（自动加载 ./.env；建库 SQL 需在首次部署时手动执行 sql/schema-*.sql）
           echo "Starting ai-code-reviewer on :8000..."
-          exec python app.py --migrate
+          exec python app.py
           SCRIPTEOF
           chmod +x "dist/${PKG_NAME}/start.sh"
 
@@ -137,7 +131,7 @@ jobs:
           User=www-data
           WorkingDirectory=/opt/ai-code-reviewer
           EnvironmentFile=/opt/ai-code-reviewer/.env
-          ExecStart=/opt/ai-code-reviewer/venv/bin/python app.py --host 0.0.0.0 --port 8000 --migrate
+          ExecStart=/opt/ai-code-reviewer/venv/bin/python app.py --host 0.0.0.0 --port 8000
           Restart=on-failure
           RestartSec=5s
 
@@ -155,7 +149,7 @@ jobs:
           echo "Zip size: ${ZIP_SIZE} bytes"
           test "$ZIP_SIZE" -gt 1000000 || { echo "ERROR: zip too small (< 1MB), build likely failed"; exit 1; }
           unzip -l "${PKG_NAME}.zip" | grep -q "index.html" || { echo "ERROR: index.html missing from zip"; exit 1; }
-          unzip -l "${PKG_NAME}.zip" | grep -q "schema-full.sql" || { echo "ERROR: schema-full.sql missing from zip"; exit 1; }
+          unzip -l "${PKG_NAME}.zip" | grep -q "schema-mysql.sql" || { echo "ERROR: schema-mysql.sql missing from zip"; exit 1; }
           unzip -l "${PKG_NAME}.zip" | grep -q "app.py" || { echo "ERROR: app.py missing from zip"; exit 1; }
           echo "Zip contents verified OK"
         working-directory: backend
