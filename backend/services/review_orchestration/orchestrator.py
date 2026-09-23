@@ -50,19 +50,19 @@ from services.review_orchestration.handlers import (
     CommitReviewHandler,
     PushReviewHandler,
 )
+from services.review_orchestration.lifecycle import (
+    _handle_reuse,
+    get_lifecycle_action,
+)
 from services.review_orchestration.notification import (
     _push_review_notification,
 )
 from services.review_orchestration.persistence import (
-    _handle_mr_closed,
-    _handle_mr_merged,
     _merge_findings_for_plan,
     _persist_review,
-    _reopen_mr_closed_findings,
 )
 from services.review_orchestration.planning import (
     _fetch_changes_for_plan,
-    _handle_reuse,
     _plan_review,
 )
 from services.review_orchestration.results import (
@@ -140,14 +140,13 @@ class ReviewOrchestrator:
         #  - close：把 (project, mr) 所有 open finding 批量标 mr_closed；
         #  - merge：批量标 resolved（视为"跟着代码合进主线"）；
         #  - reopen：把 mr_closed 的 finding 翻回 open，然后走常规增量流程。
-        # 前两种直接短路返回；reopen 只做翻转，接下来的常规流程会继续跑。
-        if event.action == "close":
-            return await _handle_mr_closed(event, session_factory=self._session_factory)
-        if event.action == "merge":
-            return await _handle_mr_merged(event, session_factory=self._session_factory)
-        if event.action == "reopen":
-            await _reopen_mr_closed_findings(event, session_factory=self._session_factory)
-            # fall through 到常规审查流程
+        # close / merge 直接短路返回；reopen 返回 None，fall through 到常规审查
+        # 流程。未知 action（open / update 等）查表返回 None，直接走常规审查。
+        action = get_lifecycle_action(event.action)
+        if action is not None:
+            result = await action.apply(event, session_factory=self._session_factory)
+            if result is not None:
+                return result
 
         started_at = time.perf_counter()
         review_id = uuid4()
