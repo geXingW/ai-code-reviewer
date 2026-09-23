@@ -7,6 +7,5 @@ ignore = ["S101", "S104", "S105", "S110"]
 
 [lint.per-file-ignores]
 # Tests use mock secrets in fixtures; suppress hard-coded password warnings.
-"tests/**/*.py" = ["ANN201", "S106", "S107"]
-# Alembic migrations are auto-generated and line breaks hurt readability.
-"alembic/versions/*.py" = ["E501"]
+# ANN401: fakes/stubs legitimately accept Any (providers, kwargs, overrides).
+"tests/**/*.py" = ["ANN201", "ANN401", "S106", "S107"]

@@ -147,6 +147,49 @@ class Settings(BaseSettings):
             ),
         ),
     ] = "both"
+    # feat/llm-agent-engine：agent 引擎循环护栏。
+    agent_max_turns: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=32,
+            description=(
+                "llm-agent 引擎单次审查的最大循环轮数。每轮模型可以请求一批"
+                "工具调用或给出最终 findings。默认 8：足够调查调用链又不至于"
+                "失控；成本敏感时可降到 3-4。"
+            ),
+        ),
+    ] = 8
+    agent_tool_result_max_chars: Annotated[
+        int,
+        Field(
+            gt=0,
+            description=(
+                "单次工具执行结果回填给模型的最大字符数，超出截断。"
+                "默认 8000（约 2K tokens），防止 read_file 大文件一次性吃满预算。"
+            ),
+        ),
+    ] = 8000
+    agent_total_context_max_chars: Annotated[
+        int,
+        Field(
+            gt=0,
+            description=(
+                "整个 agent 会话工具观察的总字符预算。达到后停止执行新工具，"
+                "强制模型基于已收集的信息给出结论。默认 120000。"
+            ),
+        ),
+    ] = 120000
+    agent_tool_timeout_seconds: Annotated[
+        float,
+        Field(
+            gt=0.0,
+            description=(
+                "单次工具执行（GitLab API 调用）超时秒数。超时以错误观察回填，"
+                "不终止整个审查。默认 15s。"
+            ),
+        ),
+    ] = 15.0
     cors_origins: Annotated[
         list[str],
         Field(description="Allowed CORS origins."),

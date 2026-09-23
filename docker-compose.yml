@@ -49,8 +49,7 @@ services:
       dockerfile: Dockerfile
       network: host
     command: >
-      sh -c "alembic upgrade head &&
-      python scripts/seed.py &&
+      sh -c "python scripts/seed.py &&
       if [ \"$${BACKEND_RELOAD:-false}\" = \"true\" ]; then
       python app.py --host 0.0.0.0 --port 8000 --reload;
       else

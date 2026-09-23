@@ -25,7 +25,7 @@
 - 确认 `postgres` 容器 healthy：`docker compose ps`。
 - 检查 `DATABASE_URL` 与 Compose 环境一致。容器内应是 `postgresql+asyncpg://ai_reviewer:<pwd>@postgres:5432/ai_code_reviewer`（主机名 `postgres`），本地直连用 `localhost`。
 - `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` 在 `.env` 与 Compose 间必须一致；改过密码需 `docker compose down -v` 清掉旧数据卷再重启（旧卷里仍是旧密码）。
-- 首次启动后端会跑 `alembic upgrade head`；若迁移失败，`docker compose exec backend alembic upgrade head` 手动重试并查看报错。
+- 首次启动不会自动建表：需先手动执行 `backend/sql/schema-<方言>.sql` 建库；若报“表不存在”，确认建库 SQL 是否已执行、库是否选对。
 - 本地跑 pytest 时连接串默认 `postgresql+asyncpg://ai_reviewer:ai_reviewer@localhost:5432/ai_code_reviewer`，需确保该库与账号存在（`docker compose up postgres` 即可创建）。
 
 ### 1.4 后端启动报 `SECRET_KEY` / Fernet 错误
@@ -48,11 +48,11 @@
 - 管理台输入的 `INTERNAL_API_TOKEN` 与 `.env` 完全一致；该 token 仅保存在页面内存，刷新即丢。
 - 浏览器 Network 看 `/api/reviews/recent` 状态码：401 通常是 token 不匹配；5xx 看 backend 日志。
 
-### 1.6 `alembic upgrade head` 报错
+### 1.6 找不到表 / 表结构不一致
 
-- 多半是数据库非空且与迁移历史不一致。`docker compose exec backend alembic current` 看当前版本。
-- 开发环境可 `docker compose down -v` 清数据卷后重启（会丢数据，仅限试运行）。
-- 切勿在生产直接 `down -v`；用 `alembic downgrade` 回退或手动修表。
+- 应用启动不再自动建表或迁移，建库 SQL（`backend/sql/schema-*.sql`）需手动执行；执行前确认连接的库正确。
+- 模型变更后必须重新运行 `python scripts/export_schema_sql.py` 生成 SQL 并手动执行；生产环境建议 DBA 审阅后再执行。
+- 开发环境可 `docker compose down -v` 清数据卷后重建（会丢数据，仅限试运行）。
 
 ## 二、GitLab Webhook 不触发
 
