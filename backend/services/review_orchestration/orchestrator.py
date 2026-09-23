@@ -24,11 +24,6 @@ from engines.registry import EngineRegistry, get_engine_registry
 from integrations.gitlab.client import GitLabClient
 from services.notification_service import NotificationService
 from services.repo_reader import GitLabRepoReader
-from services.review_orchestration.context_builder import (
-    _resolve_history,
-    _resolve_provider,
-    resolve_rules,
-)
 from services.review_orchestration.diff_utils import (
     _extract_int,
     build_diff_hunks,
@@ -64,6 +59,11 @@ from services.review_orchestration.persistence import (
 from services.review_orchestration.planning import (
     _fetch_changes_for_plan,
     _plan_review,
+)
+from services.review_orchestration.resolution import (
+    _resolve_history,
+    _resolve_provider,
+    resolve_rules,
 )
 from services.review_orchestration.results import (
     CommitReviewResult,

@@ -33,7 +33,6 @@ from core.block_policy import (
     match_block_policy,
 )
 from core.diff_filter import DiffFilterConfig
-from core.summary_builder import build_commit_review_note, build_push_review_note
 from engines import DiffHunk, Finding, ProviderConfig, ReviewContext, RuleSpec
 from engines.registry import EngineRegistry
 from engines.types import ReviewHistoryItem
@@ -41,27 +40,22 @@ from integrations.gitlab.client import GitLabClient
 from repositories.project import ProjectRepository
 from services.notification_service import NotificationService
 from services.repo_reader import GitLabRepoReader
-from services.review_orchestration.context_builder import (
-    _resolve_history,
-    _resolve_provider,
-    resolve_rules,
-)
 from services.review_orchestration.diff_utils import (
     _extract_int,
     build_diff_hunks,
 )
 from services.review_orchestration.engine_error import _handle_commit_engine_error
-from services.review_orchestration.events import (
-    GitLabCommitEvent,
-    GitLabPushEvent,
-    _CommitLikeEvent,
-)
+from services.review_orchestration.events import _CommitLikeEvent
 from services.review_orchestration.gitlab_feedback import (
     _build_review_detail_url,
     _post_commit_finding_comments,
 )
 from services.review_orchestration.notification import _push_commit_review_notification
-from services.review_orchestration.planning import _fetch_push_changes
+from services.review_orchestration.resolution import (
+    _resolve_history,
+    _resolve_provider,
+    resolve_rules,
+)
 from services.review_orchestration.results import CommitReviewResult
 
 if TYPE_CHECKING:
@@ -408,219 +402,3 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
     @abstractmethod
     def _log_engine_failure(self, event: _EventT) -> None:
         """engine 异常时的 ``logger.exception``（两条链路文案不同，不许合并）。"""
-
-
-class CommitReviewHandler(ReviewCommitStyleHandler[GitLabCommitEvent]):
-    """Push Hook 逐 commit 审查：commit vs 其第一个 parent 的 diff。
-
-    审查结果写回 GitLab（行级评论 + 汇总评论 + commit status），**不落库**
-    （只持久化 MR 审查），完成后 best-effort 推送钉钉通知。
-
-    行为规则：
-      - 项目级 ``project.commit_review_enabled=False`` -> skipped_disabled
-        （查不到 Project--无 DB / 未注册--时回退全局 settings 开关）；
-      - merge commit（parent_ids >1）-> skipped_merge_commit；根提交
-        （parent_ids 为空）-> skipped_root_commit，均无评论无通知；
-      - diff 过滤后为空 -> 0 findings + 汇总评论"无可审查变更" + 通知；
-      - engine 异常 -> commit status failed + 审查失败评论 + 通知，
-        绝不静默通过。
-    """
-
-    async def _fetch_changes(self, event: GitLabCommitEvent) -> _FetchOutcome:
-        # commit 审查不落库，也就没有"已审查过"记录可查 -- 每次 push 都重新审查。
-        # Push Hook payload 不带 parents 信息，必须逐个调 commit 详情 API 判断。
-        commit = await self._gitlab_client.get_commit(
-            project_id=event.project_id,
-            sha=event.commit_sha,
-        )
-        parent_ids = commit.get("parent_ids")
-        parent_id_list = [str(p) for p in parent_ids] if isinstance(parent_ids, list) else []
-        if len(parent_id_list) > 1:
-            return _FetchOutcome(changes=None, skip_status="skipped_merge_commit")
-        if not parent_id_list:
-            return _FetchOutcome(changes=None, skip_status="skipped_root_commit")
-        parent_sha = parent_id_list[0]
-
-        diffs = await self._gitlab_client.get_commit_diff(
-            project_id=event.project_id,
-            sha=event.commit_sha,
-        )
-        return _FetchOutcome(changes={"changes": diffs}, base_sha=parent_sha)
-
-    def _build_context(
-        self,
-        event: GitLabCommitEvent,
-        *,
-        review_id: UUID,
-        hunks: list[DiffHunk],
-        base_sha: str | None,
-        rules: list[RuleSpec],
-        provider: ProviderConfig | None,
-        history: list[ReviewHistoryItem],
-        repo_reader: GitLabRepoReader,
-    ) -> ReviewContext:
-        # base_sha 由 _fetch_changes 判断 parents 时带回，恒非 None。
-        parent_sha = base_sha or ""
-        return ReviewContext(
-            review_id=review_id,
-            project_id=event.project_uuid,
-            # engine 层已与 MR 解耦：mr_iid 不进 prompt，commit 审查传空串。
-            mr_iid="",
-            source_branch=event.branch,
-            target_branch=event.branch,
-            source_commit_sha=event.commit_sha,
-            target_commit_sha=parent_sha,
-            diff_hunks=hunks,
-            provider=provider,
-            rules=rules,
-            history=history,
-            mr_title=event.title,
-            mr_description="",
-            last_commit_message=event.message,
-            extra={
-                "gitlab_project_id": event.project_id,
-                "gitlab_project_path": event.project_path,
-                "review_kind": "commit",
-                "review_base_sha": parent_sha,
-            },
-            repo_reader=repo_reader,
-        )
-
-    def _build_note(
-        self,
-        *,
-        event: GitLabCommitEvent,
-        review_id: UUID,
-        findings: Sequence[Finding],
-        has_blocker: bool,
-        blocker_count: int,
-        policy_applied: str,
-    ) -> str:
-        return build_commit_review_note(
-            review_id=review_id,
-            commit_sha=event.commit_sha,
-            commit_title=event.title,
-            findings=findings,
-            has_blocker=has_blocker,
-            blocker_count=blocker_count,
-            policy_applied=policy_applied,
-            detail_url=_build_review_detail_url(
-                review_detail_base_url=self._review_detail_base_url,
-                review_id=review_id,
-            ),
-        )
-
-    def _head_sha(self, event: GitLabCommitEvent) -> str:
-        return event.commit_sha
-
-    def _log_engine_failure(self, event: GitLabCommitEvent) -> None:
-        logger.exception(
-            "commit review engine failed",
-            extra={
-                "gitlab_project_id": event.project_id,
-                "commit_sha": event.commit_sha,
-                "engine": self._default_engine,
-            },
-        )
-
-
-class PushReviewHandler(ReviewCommitStyleHandler[GitLabPushEvent]):
-    """Push Hook 合并审查：一次 push 的全部 commit 变更合并后单次审查。
-
-    与 :class:`CommitReviewHandler`（逐 commit 审查）的区别：
-      - diff 语义：``before..after`` 一次 compare 拉取（新建分支时降级为
-        head commit 的 diff），不再逐个 commit 判断 merge / root；
-      - 一次 push 只做**一次** LLM 调用，全部 commit message 拼接进上下文；
-      - 行级评论 / 汇总评论 / commit status 全部写回 head commit（after SHA）。
-
-    行为规则：
-      - 项目级 ``project.commit_review_enabled=False`` -> skipped_disabled；
-      - compare 失败 / 异常 -> skipped_no_changes（记 warning，不误报失败）；
-      - diff 过滤后为空 -> 0 findings + 汇总评论"无可审查变更" + success status；
-      - engine 异常 -> commit status failed + 审查失败评论，绝不静默通过。
-    """
-
-    async def _fetch_changes(self, event: GitLabPushEvent) -> _FetchOutcome:
-        changes = await _fetch_push_changes(event, gitlab_client=self._gitlab_client)
-        # compare 失败 / 异常 -> None，上层按 skipped_no_changes 处理（不误报失败）。
-        return _FetchOutcome(changes=changes)
-
-    def _build_context(
-        self,
-        event: GitLabPushEvent,
-        *,
-        review_id: UUID,
-        hunks: list[DiffHunk],
-        base_sha: str | None,
-        rules: list[RuleSpec],
-        provider: ProviderConfig | None,
-        history: list[ReviewHistoryItem],
-        repo_reader: GitLabRepoReader,
-    ) -> ReviewContext:
-        return ReviewContext(
-            review_id=review_id,
-            project_id=event.project_uuid,
-            # engine 层已与 MR 解耦：mr_iid 不进 prompt，push 审查传空串。
-            mr_iid="",
-            source_branch=event.branch,
-            target_branch=event.branch,
-            source_commit_sha=event.after_sha,
-            target_commit_sha=event.before_sha,
-            diff_hunks=hunks,
-            provider=provider,
-            rules=rules,
-            history=history,
-            mr_title=event.branch,
-            mr_description="",
-            last_commit_message="\n".join(str(c.get("message") or "") for c in event.commits),
-            extra={
-                "gitlab_project_id": event.project_id,
-                "gitlab_project_path": event.project_path,
-                "review_kind": "push",
-                "review_base_sha": event.before_sha,
-                "push_commits": [
-                    {"id": str(c.get("id") or ""), "title": str(c.get("title") or "")}
-                    for c in event.commits
-                ],
-            },
-            repo_reader=repo_reader,
-        )
-
-    def _build_note(
-        self,
-        *,
-        event: GitLabPushEvent,
-        review_id: UUID,
-        findings: Sequence[Finding],
-        has_blocker: bool,
-        blocker_count: int,
-        policy_applied: str,
-    ) -> str:
-        return build_push_review_note(
-            review_id=review_id,
-            head_sha=event.after_sha,
-            branch=event.branch,
-            commit_count=len(event.commits),
-            commit_titles=[str(c.get("title") or "").strip() for c in event.commits],
-            findings=findings,
-            has_blocker=has_blocker,
-            blocker_count=blocker_count,
-            policy_applied=policy_applied,
-            detail_url=_build_review_detail_url(
-                review_detail_base_url=self._review_detail_base_url,
-                review_id=review_id,
-            ),
-        )
-
-    def _head_sha(self, event: GitLabPushEvent) -> str:
-        return event.after_sha
-
-    def _log_engine_failure(self, event: GitLabPushEvent) -> None:
-        logger.exception(
-            "push review engine failed",
-            extra={
-                "gitlab_project_id": event.project_id,
-                "after_sha": event.after_sha,
-                "engine": self._default_engine,
-            },
-        )
