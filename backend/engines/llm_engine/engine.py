@@ -38,6 +38,9 @@ from engines.finding_parsing import (  # noqa: F401
 from engines.finding_parsing import (  # noqa: F401
     line_in_diff as _line_in_diff,
 )
+from engines.finding_parsing import (  # noqa: F401
+    matches_false_positive_history as _matches_false_positive_history,
+)
 from engines.finding_parsing import (
     normalise_raw_finding as _normalise_raw_finding_impl,
 )
