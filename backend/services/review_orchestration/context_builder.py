@@ -6,14 +6,12 @@ import logging
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from core.config import get_settings
 from engines import ProviderConfig, RuleSpec
 from engines.types import ReviewHistoryItem
-from models.finding import Finding as FindingRow
-from models.negative_example import NegativeExample
+from repositories.negative_example import NegativeExampleRepository
 from repositories.project import ProjectRepository
 from repositories.provider import ProviderRepository
 from services.review_orchestration.events import _EventLike
@@ -175,11 +173,11 @@ async def _resolve_history(
       不打开 DB session。
     - ``session_factory`` 为 None → 保留旧 MVP 行为，返回空列表。
     - Project 未在管理后台注册 → 返回空列表（拿不到 project_id 就不谈范围）。
-    - 按 ``settings.llm_history_scope`` 构造 WHERE：
-      * ``project``：仅 ``ne.project_id == project.id``（不含 project_id NULL 的全局负例）；
-      * ``rule``：仅 ``ne.rule_id IN <当前启用规则 rule_id 集合>``（可拉到任意项目
-        及全局负例，只看规则命中）；
-      * ``both``：上述两者的 OR 并集，SQL 层通过 id DISTINCT 去重。
+    - 按 ``settings.llm_history_scope`` 圈选（WHERE 组装 / JOIN / 排序 / limit
+      已下沉 :meth:`NegativeExampleRepository.list_approved_for_history`）：
+      * ``project``：仅当前项目负例；
+      * ``rule``：仅当前启用规则命中的负例（含全局负例）；
+      * ``both``：上述两者的 OR 并集，Python 层按 id 去重。
     - LEFT OUTER JOIN 兜底：``source_finding_id`` 指向的 finding 可能被 SET NULL，
       此时 file_path / title / description / line_number 都拿不到，
       走 "(unknown)" + 兜底标题让 engine 侧的硬过滤跳过它（file_path 不同不匹配），
@@ -208,40 +206,12 @@ async def _resolve_history(
             if project is None:
                 return []
 
-            # 组装 scope 分支的 WHERE 子句。project=only 项目负例；rule=只按规则命中；
-            # both=OR 并集。scope=rule 且没有启用规则时不可能命中任何负例，早退。
-            where_clauses = []
-            if scope in ("project", "both"):
-                where_clauses.append(NegativeExample.project_id == project.id)
-            if scope in ("rule", "both"):
-                if active_rule_keys:
-                    where_clauses.append(NegativeExample.rule_id.in_(active_rule_keys))
-                elif scope == "rule":
-                    # 无启用规则 → 按规则维度什么都拉不到，直接 return。
-                    return []
-            if not where_clauses:
-                # 极端保险：不该发生，构造保守空结果。
-                return []
-            combined_where = (
-                where_clauses[0] if len(where_clauses) == 1 else or_(*where_clauses)
+            rows = await NegativeExampleRepository(session).list_approved_for_history(
+                project_id=project.id,
+                active_rule_keys=active_rule_keys,
+                scope=scope,
+                limit=limit,
             )
-
-            # LEFT OUTER JOIN 兜底 source finding 已被 SET NULL 的情况。
-            stmt = (
-                select(NegativeExample, FindingRow)
-                .select_from(NegativeExample)
-                .outerjoin(FindingRow, FindingRow.id == NegativeExample.source_finding_id)
-                .where(combined_where)
-                # NULLS LAST 用两级排序兼容 MySQL / PG：approved_at 为 NULL 时
-                # 由 created_at 兜底排后面（近期新落库的靠前）。
-                .order_by(
-                    NegativeExample.approved_at.desc(),
-                    NegativeExample.created_at.desc(),
-                )
-                .limit(limit)
-            )
-            result = await session.execute(stmt)
-            rows = result.all()
 
             history: list[ReviewHistoryItem] = []
             seen_ids: set[UUID] = set()

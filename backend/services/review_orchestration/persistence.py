@@ -1,6 +1,8 @@
 """Review persistence: 落库 reviews / review_findings 与增量 finding 合并。
 
 MR 生命周期动作（close / merge / reopen）已迁往 :mod:`lifecycle`（PR3）。
+行构造 / flush / mark_resolved / commit 已下沉
+:meth:`ReviewRepository.create_review_with_findings`（PR4）。
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from engines import Finding
 from models.finding import Finding as FindingRow
 from models.review import Review as ReviewRow
 from repositories.project import ProjectRepository
-from repositories.review import FindingRepository
+from repositories.review import FindingRepository, ReviewRepository
 from services.review_orchestration.diff_utils import _finding_row_to_engine
 from services.review_orchestration.events import GitLabMergeRequestEvent
 from services.review_orchestration.results import _MergeResult, _ReviewPlan
@@ -47,6 +49,10 @@ async def _persist_review(
     - ``session_factory`` 为 None：跳过（MVP 兼容路径）。
     - Project 不存在（GitLab 项目未在管理后台注册）：跳过并记 warning。
     - 事务失败：rollback + 记 warning，不影响 GitLab 反馈与 API 响应。
+
+    行构造 / flush / mark_resolved / commit 已下沉
+    :meth:`ReviewRepository.create_review_with_findings`；本函数只保留编排语义
+    （Project 查询、review 行构造、discussion_ids 对齐校验）与异常兜底。
 
     增量语义（feat/rescan-changed-files）：
       - ``findings`` = 本轮 engine 输出。改动文件全量重审，全部当作新增
@@ -112,40 +118,15 @@ async def _persist_review(
                 parent_review_id=plan.parent_review_id,
                 review_mode=plan.mode,
             )
-            session.add(review_row)
-            # flush 一下让 review 主键先落，随后 update / insert 老 finding 才有 FK 目标。
-            await session.flush()
-            for finding, discussion_id in zip(
-                new_findings_to_persist, ids_seq, strict=True,
-            ):
-                session.add(
-                    FindingRow(
-                        review_id=review_id,
-                        file_path=finding.file_path,
-                        line_number=finding.line_number,
-                        rule_id=finding.rule_id or "unknown",
-                        severity=finding.severity,
-                        title=finding.title,
-                        description=finding.description,
-                        suggestion=finding.suggestion,
-                        existing_code=finding.existing_code,
-                        # LLM 输出的分类原样落库；缺失/无效不做兜底——渲染层
-                        # 会 fallback 到 rule_id 推断，避免在这里错误锁死。
-                        category=finding.category,
-                        confidence=float(finding.confidence or 0.0),
-                        # 本次新出现的 finding：first_seen 指向自己。
-                        first_seen_review_id=review_id,
-                        status="open",
-                        gitlab_discussion_id=discussion_id,
-                    )
-                )
-            if stale_rows:
-                finding_repo = FindingRepository(session)
-                await finding_repo.mark_resolved(
-                    [row.id for row in stale_rows],
-                    review_id,
-                )
-            await session.commit()
+            review_repo = ReviewRepository(session)
+            await review_repo.create_review_with_findings(
+                review=review_row,
+                findings=list(
+                    zip(new_findings_to_persist, ids_seq, strict=True),
+                ),
+                stale_finding_ids=[row.id for row in stale_rows],
+                resolved_in_review_id=review_id,
+            )
     except SQLAlchemyError:
         logger.exception(
             "failed to persist review",

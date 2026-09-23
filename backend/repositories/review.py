@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
+from engines.types import Finding as EngineFinding
 from models.finding import Finding
 from models.review import Review
 from repositories.base import BaseRepository
@@ -159,6 +160,71 @@ class ReviewRepository(BaseRepository[Review]):
         )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def create_review_with_findings(
+        self,
+        *,
+        review: Review,
+        findings: Sequence[tuple[EngineFinding, str | None]],
+        stale_finding_ids: Sequence[UUID],
+        resolved_in_review_id: UUID,
+    ) -> None:
+        """写入一条 review 及其 findings，并把 stale finding 批量标 resolved。
+
+        供 orchestrator 的 ``_persist_review`` 使用，一个方法覆盖整个落库事务：
+
+        1. ``session.add(review)`` + ``flush()`` —— 先让 review 主键落库，随后
+           insert finding 才有 FK 目标；
+        2. 逐条把 engine finding 映射成 ``Finding`` 行并 add（``rule_id`` 缺失
+           兜底 ``"unknown"``、``confidence`` 缺失兜底 ``0.0``、
+           ``first_seen_review_id`` 指向本次 review、``status="open"``）；
+        3. ``stale_finding_ids`` 非空时走 :meth:`FindingRepository.mark_resolved`
+           批量 UPDATE；
+        4. ``commit()``。
+
+        ``SQLAlchemyError`` 不在本层吞——事务失败语义（rollback + warning 日志）
+        由调用方负责，保持现有日志位置和文案。
+
+        Args:
+            review: 已构造好的 ``Review`` 行（构造字段属编排语义，由调用方完成）。
+            findings: ``(engine finding, gitlab_discussion_id)`` 元组序列，与
+                discussion_ids 同序对齐。
+            stale_finding_ids: 要批量标 resolved 的老 finding 主键集合。
+            resolved_in_review_id: 标 resolved 时写入的 review 主键。
+        """
+
+        self._session.add(review)
+        # flush 一下让 review 主键先落，随后 update / insert 老 finding 才有 FK 目标。
+        await self._session.flush()
+        for finding, discussion_id in findings:
+            self._session.add(
+                Finding(
+                    review_id=review.id,
+                    file_path=finding.file_path,
+                    line_number=finding.line_number,
+                    rule_id=finding.rule_id or "unknown",
+                    severity=finding.severity,
+                    title=finding.title,
+                    description=finding.description,
+                    suggestion=finding.suggestion,
+                    existing_code=finding.existing_code,
+                    # LLM 输出的分类原样落库；缺失/无效不做兜底——渲染层
+                    # 会 fallback 到 rule_id 推断，避免在这里错误锁死。
+                    category=finding.category,
+                    confidence=float(finding.confidence or 0.0),
+                    # 本次新出现的 finding：first_seen 指向自己。
+                    first_seen_review_id=review.id,
+                    status="open",
+                    gitlab_discussion_id=discussion_id,
+                )
+            )
+        if stale_finding_ids:
+            finding_repo = FindingRepository(self._session)
+            await finding_repo.mark_resolved(
+                list(stale_finding_ids),
+                resolved_in_review_id,
+            )
+        await self._session.commit()
 
 
 class FindingRepository(BaseRepository[Finding]):
