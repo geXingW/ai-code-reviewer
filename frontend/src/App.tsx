@@ -81,7 +81,6 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { RuleSelector } from './components/RuleSelector';
 import { EmptyState } from './components/EmptyState';
-import { PageHeader } from './components/PageHeader';
 import { MarkFalsePositiveDialog } from './components/dialogs/MarkFalsePositiveDialog';
 import { ResolveDialog } from './components/dialogs/ResolveDialog';
 import { ReviewFalsePositiveDialog } from './components/dialogs/ReviewFalsePositiveDialog';
