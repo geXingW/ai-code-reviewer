@@ -6,7 +6,10 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 
 # 数据库 & ORM
-sqlalchemy[asyncio]>=2.0.0,<3.0.0
+# <2.1 上限：SQLAlchemy 2.1.0 变更了 select() 的类型推断（Select[tuple[Entity]] ->
+# Select[Entity]），导致 mypy 全量报错；2.1 运行时行为也未经本项目验证，适配作为
+# 独立任务处理。详见 PR fix/backend-mypy。
+sqlalchemy[asyncio]>=2.0.0,<2.1.0
 asyncpg>=0.29.0
 aiomysql>=0.2.0
 pymysql>=1.1.0
