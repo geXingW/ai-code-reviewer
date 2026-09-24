@@ -1,24 +1,21 @@
 /**
- * 新增/编辑模型供应商弹窗。
+ * 新增/编辑模型供应商弹窗（antd 版）。
  *
- * 支持两种模式：
- * - 新增模式：initialData = null
- * - 编辑模式：initialData = ProviderConfig
- *
+ * 支持两种模式：新增（initialData = null）/ 编辑（initialData = ProviderConfig）。
  * 纯受控组件，不做接口调用，onSubmit 由父组件把 payload 交给后端。
  */
 
 import { useEffect, useState } from 'react';
+import { Button, Input, Modal, Select, Switch } from 'antd';
+import { Alert } from 'antd';
 
-import { ProviderConfig, ProviderFormPayload } from '../../api';
-import { Button } from '../ui/button';
-import { Dialog } from '../ui/dialog';
-import { Input } from '../ui/input';
-import { Label } from '../ui/label';
-import { PasswordInput } from '../ui/password-input';
-import { Select } from '../ui/select';
+import type { ProviderConfig, ProviderFormPayload } from '../../api';
 
-const PROTOCOL_OPTIONS = ['openai_compatible', 'anthropic', 'custom'] as const;
+const PROTOCOL_OPTIONS = [
+  { value: 'openai_compatible', label: 'openai_compatible' },
+  { value: 'anthropic', label: 'anthropic' },
+  { value: 'custom', label: 'custom' },
+];
 
 export interface ProviderDialogProps {
   open: boolean;
@@ -39,12 +36,7 @@ const initialEmptyForm: ProviderFormPayload = {
   enabled: true,
 };
 
-export function ProviderDialog({
-  open,
-  initialData,
-  onCancel,
-  onSubmit,
-}: ProviderDialogProps) {
+export function ProviderDialog({ open, initialData, onCancel, onSubmit }: ProviderDialogProps) {
   const [form, setForm] = useState<ProviderFormPayload>(initialEmptyForm);
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -53,13 +45,11 @@ export function ProviderDialog({
   useEffect(() => {
     if (open) {
       if (initialData) {
-        // 编辑模式：回填数据
+        // 编辑模式：回填数据。密钥不反显（后端返回脱敏值 "****"），置空表示不修改。
         setForm({
           name: initialData.name,
           protocol: initialData.protocol as ProviderFormPayload['protocol'],
           base_url: initialData.base_url,
-          // 编辑模式不反显密钥（后端返回脱敏值 "****"），置空让用户按需重填。
-          // 留空提交时由 handleSubmit 跳过，后端也不会覆盖数据库中的密钥。
           api_key: '',
           model: initialData.model,
           temperature: initialData.temperature,
@@ -67,7 +57,6 @@ export function ProviderDialog({
           enabled: initialData.enabled,
         });
       } else {
-        // 新增模式：空白表单
         setForm(initialEmptyForm);
       }
       setErrorMessage(null);
@@ -86,8 +75,8 @@ export function ProviderDialog({
     setErrorMessage(null);
     try {
       const payload: Partial<ProviderFormPayload> = { ...form };
-      // 编辑模式下，密钥字段留空表示"不修改"——从 payload 中移除，
-      // JSON.stringify 会自动忽略 deleted 属性，后端 exclude_unset 也不会更新。
+      // 编辑模式下，密钥字段留空表示「不修改」——从 payload 中移除，
+      // 后端 exclude_unset 不会更新该字段。
       if (isEditMode && !payload.api_key?.trim()) {
         delete payload.api_key;
       }
@@ -100,37 +89,23 @@ export function ProviderDialog({
   }
 
   return (
-    <Dialog
+    <Modal
       open={open}
-      onClose={submitting ? () => {} : onCancel}
+      onCancel={submitting ? undefined : onCancel}
       title={isEditMode ? '编辑供应商' : '新增供应商'}
-      subtitle={isEditMode ? initialData.name : '目前支持 OpenAI 兼容、Anthropic、Custom 协议'}
-      maxWidthClass="max-w-xl"
-      footer={
-        <>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={submitting}
-            onClick={onCancel}
-          >
-            取消
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            disabled={!canSubmit}
-            onClick={() => void handleSubmit()}
-          >
-            {submitting ? '保存中…' : '保存'}
-          </Button>
-        </>
-      }
+      okText="保存"
+      cancelText="取消"
+      okButtonProps={{ disabled: !canSubmit, loading: submitting }}
+      cancelButtonProps={{ disabled: submitting }}
+      onOk={() => void handleSubmit()}
+      maskClosable={false}
+      destroyOnHidden
     >
-      <div className="space-y-3">
+      <div className="space-y-3 pt-2">
         <div className="space-y-1.5">
-          <Label htmlFor="provider-name">名称</Label>
+          <label className="text-[12px] font-medium text-zinc-600" htmlFor="provider-name">
+            名称
+          </label>
           <Input
             id="provider-name"
             value={form.name}
@@ -140,20 +115,22 @@ export function ProviderDialog({
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="provider-protocol">协议</Label>
+          <label className="text-[12px] font-medium text-zinc-600" htmlFor="provider-protocol">
+            协议
+          </label>
           <Select
             id="provider-protocol"
             value={form.protocol}
-            onChange={(event) => setForm({ ...form, protocol: event.target.value as ProviderFormPayload['protocol'] })}
-          >
-            {PROTOCOL_OPTIONS.map((opt) => (
-              <option key={opt} value={opt}>{opt}</option>
-            ))}
-          </Select>
+            options={PROTOCOL_OPTIONS}
+            style={{ width: '100%' }}
+            onChange={(value) => setForm({ ...form, protocol: value as ProviderFormPayload['protocol'] })}
+          />
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="provider-base-url">Base URL</Label>
+          <label className="text-[12px] font-medium text-zinc-600" htmlFor="provider-base-url">
+            Base URL
+          </label>
           <Input
             id="provider-base-url"
             value={form.base_url}
@@ -163,19 +140,23 @@ export function ProviderDialog({
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="provider-api-key">API Key</Label>
-          <PasswordInput
+          <label className="text-[12px] font-medium text-zinc-600" htmlFor="provider-api-key">
+            API Key
+          </label>
+          <Input.Password
             id="provider-api-key"
             value={form.api_key}
             onChange={(event) => setForm({ ...form, api_key: event.target.value })}
             placeholder={isEditMode ? '为空则不修改' : 'sk-...'}
-            toggleAriaLabel="切换 API Key 显示"
+            autoComplete="new-password"
           />
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <Label htmlFor="provider-model">模型</Label>
+            <label className="text-[12px] font-medium text-zinc-600" htmlFor="provider-model">
+              模型
+            </label>
             <Input
               id="provider-model"
               value={form.model}
@@ -184,7 +165,9 @@ export function ProviderDialog({
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="provider-max-tokens">Max Tokens</Label>
+            <label className="text-[12px] font-medium text-zinc-600" htmlFor="provider-max-tokens">
+              Max Tokens
+            </label>
             <Input
               id="provider-max-tokens"
               type="number"
@@ -195,29 +178,16 @@ export function ProviderDialog({
         </div>
 
         <div className="flex items-center justify-between rounded-lg border border-zinc-200 bg-zinc-50/50 px-3 py-2.5">
-          <div className="flex items-center gap-2.5">
-            <input
-              type="checkbox"
-              id="provider-enabled"
-              checked={form.enabled}
-              onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
-              className="size-4 rounded border-zinc-300 accent-indigo-600 focus:ring-indigo-500"
-            />
-            <Label htmlFor="provider-enabled" className="text-[13px] text-zinc-700">
-              启用供应商
-            </Label>
-          </div>
-          <span className={`text-[11px] font-medium ${form.enabled ? 'text-emerald-600' : 'text-zinc-400'}`}>
-            {form.enabled ? '● 已启用' : '○ 已停用'}
-          </span>
+          <span className="text-[13px] text-zinc-700">启用供应商</span>
+          <Switch
+            checked={form.enabled}
+            onChange={(checked) => setForm({ ...form, enabled: checked })}
+            aria-label="启用供应商"
+          />
         </div>
-      </div>
 
-      {errorMessage ? (
-        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700" role="alert">
-          {errorMessage}
-        </div>
-      ) : null}
-    </Dialog>
+        {errorMessage ? <Alert type="error" showIcon message={errorMessage} /> : null}
+      </div>
+    </Modal>
   );
 }

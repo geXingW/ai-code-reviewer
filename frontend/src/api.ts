@@ -692,6 +692,13 @@ export async function updateProvider(
   return parseJsonResponse<ProviderConfig>(response, true);
 }
 
+export async function deleteProvider(id: string): Promise<void> {
+  const response = await adminFetch(`/api/providers/${id}`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`删除供应商失败：HTTP ${response.status}`);
+  }
+}
+
 export type RuleListParams = {
   limit?: number;
   offset?: number;

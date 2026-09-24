@@ -17,13 +17,10 @@
     "@tailwindcss/vite": "^4.3.2",
     "@vitejs/plugin-react": "latest",
     "antd": "^6.6.5",
-    "clsx": "^2.1.1",
     "dayjs": "^1.11.23",
-    "lucide-react": "^1.23.0",
     "react": "latest",
     "react-dom": "latest",
     "react-router-dom": "^7.18.1",
-    "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.2",
     "typescript": "latest",
     "vite": "latest"
@@ -35,7 +32,6 @@
     "@types/node": "^26.1.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "class-variance-authority": "^0.7.1",
     "jsdom": "latest",
     "vitest": "latest"
   }

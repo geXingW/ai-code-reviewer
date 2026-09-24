@@ -1,13 +1,22 @@
-import { useMemo, useState } from 'react';
-import { Search } from 'lucide-react';
+/**
+ * 规则勾选面板（antd 版）：搜索 / 严重度 / 分类 / 标签 多维筛选 + 批量操作。
+ *
+ * 规则数据由调用方全量拉取（fetchRules 循环翻页），故本面板的本地筛选
+ * 是完整的（与列表页的服务端筛选场景不同）。
+ * 筛选合成：同维度多选 = OR，跨维度 = AND。已选的规则即便被筛除也保留在
+ * selectedRuleIds 中——批量按钮「取消全选」是唯一显式清空入口。
+ */
 
-import { RuleConfig } from '../api';
-import { Button } from './ui/button';
+import { useMemo, useState } from 'react';
+import { SearchOutlined } from '@ant-design/icons';
+import { Button, Checkbox, Input } from 'antd';
+
+import type { RuleConfig } from '../api';
 import {
   CATEGORY_ORDER,
-  FindingCategory,
+  type FindingCategory,
   SEVERITY_ORDER,
-  Severity,
+  type Severity,
   categoryDisplay,
   isKnownCategory,
   isKnownSeverity,
@@ -55,12 +64,6 @@ interface ChipProps {
 }
 
 function Chip({ active, disabled, onClick, children, ariaLabel }: ChipProps) {
-  const base =
-    'inline-flex items-center gap-1 px-2 py-[3px] rounded-full border text-[12px] leading-none transition-colors';
-  const activeCls = active
-    ? 'bg-zinc-900 text-white border-zinc-900 shadow-sm'
-    : 'bg-white text-zinc-600 border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50';
-  const disabledCls = disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer';
   return (
     <button
       type="button"
@@ -68,19 +71,17 @@ function Chip({ active, disabled, onClick, children, ariaLabel }: ChipProps) {
       aria-label={ariaLabel}
       disabled={disabled}
       onClick={onClick}
-      className={`${base} ${activeCls} ${disabledCls}`}
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-[3px] text-[12px] leading-none transition-colors ${
+        active
+          ? 'border-zinc-900 bg-zinc-900 text-white shadow-sm'
+          : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50'
+      } ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}
     >
       {children}
     </button>
   );
 }
 
-/**
- * 规则勾选面板：搜索 / 严重度 / 分类 / 标签 多维筛选 + 批量操作。
- *
- * 筛选合成：同维度多选 = OR，跨维度 = AND。已选的规则即便被筛除也保留在
- * selectedRuleIds 中——批量按钮"取消全选"是唯一显式清空入口。
- */
 export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }: RuleSelectorProps) {
   const [search, setSearch] = useState('');
   const [severityFilter, setSeverityFilter] = useState<Set<Severity>>(new Set());
@@ -140,15 +141,15 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
     });
   }, [rules, search, severityFilter, categoryFilter, tagFilter]);
 
-  // Chip 命中数：每个 chip 显示"当前筛选条件下若加上/只保留这个 chip 时"的规则数——
-  // 为了不让 chip 数字随其他维度剧烈跳动，chip count 只显示该维度独立命中的规则数（
-  // 忽略同维度其他 chip 的选中，但保留其他维度的过滤）。
   const severityCounts = useMemo(() => {
     const counts = new Map<Severity, number>();
     for (const s of SEVERITY_ORDER) counts.set(s, 0);
     for (const rule of rules) {
       if (!isKnownSeverity(rule.severity_default)) continue;
-      counts.set(rule.severity_default.toUpperCase() as Severity, (counts.get(rule.severity_default.toUpperCase() as Severity) ?? 0) + 1);
+      counts.set(
+        rule.severity_default.toUpperCase() as Severity,
+        (counts.get(rule.severity_default.toUpperCase() as Severity) ?? 0) + 1,
+      );
     }
     return counts;
   }, [rules]);
@@ -163,7 +164,6 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
     return counts;
   }, [rules]);
 
-  // 标签命中数：与其它维度一致，只统计该维度独立命中的规则数。
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const tag of allTags) counts.set(tag, 0);
@@ -239,9 +239,11 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
   if (rules.length === 0) {
     return (
       <div>
-        <label className="text-[12px] font-medium text-zinc-500 mb-2 block">启用规则</label>
+        <label className="mb-2 block text-[12px] font-medium text-zinc-500">启用规则</label>
         <div className="rounded-md border border-dashed border-zinc-200 bg-zinc-50/40">
-          <div className="p-4 text-[12px] text-zinc-400 text-center">暂无规则，请先到"审查规则"页面创建。</div>
+          <div className="p-4 text-center text-[12px] text-zinc-400">
+            暂无规则，请先到「审查规则」页面创建。
+          </div>
         </div>
       </div>
     );
@@ -249,24 +251,22 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
 
   return (
     <div>
-      <label className="text-[12px] font-medium text-zinc-500 mb-2 block">启用规则</label>
+      <label className="mb-2 block text-[12px] font-medium text-zinc-500">启用规则</label>
 
       {/* 搜索框 */}
-      <div className="relative mb-2.5">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-zinc-400" aria-hidden />
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="输入 rule_id 或标题关键字"
-          aria-label="搜索规则"
-          className="w-full rounded-md border border-[#E4E4E7] bg-white py-1.5 pl-9 pr-3 text-[13px] placeholder:text-zinc-400 hover:border-[#D4D4D8] focus:outline-none focus:ring-2 focus:ring-ring"
-        />
-      </div>
+      <Input
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        placeholder="输入 rule_id 或标题关键字"
+        aria-label="搜索规则"
+        allowClear
+        className="mb-2.5"
+        prefix={<SearchOutlined style={{ color: '#A1A1AA' }} />}
+      />
 
       {/* 严重度 chip */}
-      <div className="mb-2 flex items-center flex-wrap gap-1.5">
-        <span className="text-[11px] font-medium text-zinc-400 mr-0.5">严重度</span>
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        <span className="mr-0.5 text-[11px] font-medium text-zinc-400">严重度</span>
         {SEVERITY_ORDER.map((sev) => {
           const disp = severityDisplay(sev);
           const count = severityCounts.get(sev) ?? 0;
@@ -287,8 +287,8 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
       </div>
 
       {/* 分类 chip */}
-      <div className="mb-2 flex items-center flex-wrap gap-1.5">
-        <span className="text-[11px] font-medium text-zinc-400 mr-0.5">分类</span>
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        <span className="mr-0.5 text-[11px] font-medium text-zinc-400">分类</span>
         {CATEGORY_ORDER.map((cat) => {
           const disp = categoryDisplay(cat);
           const count = categoryCounts.get(cat) ?? 0;
@@ -310,8 +310,8 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
 
       {/* 标签 chip */}
       {allTags.length > 0 ? (
-        <div className="mb-2.5 flex items-center flex-wrap gap-1.5">
-          <span className="text-[11px] font-medium text-zinc-400 mr-0.5">标签</span>
+        <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
+          <span className="mr-0.5 text-[11px] font-medium text-zinc-400">标签</span>
           {allTags.map((tag) => {
             const count = tagCounts.get(tag) ?? 0;
             return (
@@ -331,63 +331,45 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
       ) : null}
 
       {/* 计数栏 + 批量按钮 */}
-      <div className="flex items-center justify-between mb-2 flex-wrap gap-2 rounded-md bg-zinc-50/70 px-2.5 py-1.5">
-        <div className="text-[11px] text-zinc-500 flex items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-zinc-50/70 px-2.5 py-1.5">
+        <div className="flex items-center gap-2 text-[11px] text-zinc-500">
           <span>
-            已选 <span className="text-zinc-800 font-semibold">{selectedRuleIds.length}</span> / 可见{' '}
-            <span className="text-zinc-800 font-semibold">{visibleRules.length}</span> / 总{' '}
-            <span className="text-zinc-800 font-semibold">{rules.length}</span>
+            已选 <span className="font-semibold text-zinc-800">{selectedRuleIds.length}</span> / 可见{' '}
+            <span className="font-semibold text-zinc-800">{visibleRules.length}</span> / 总{' '}
+            <span className="font-semibold text-zinc-800">{rules.length}</span>
           </span>
           {hasAnyFilter ? (
             <button
               type="button"
               onClick={clearAllFilters}
-              className="text-indigo-600 hover:text-indigo-800 underline underline-offset-2 text-[11px]"
+              className="text-[11px] text-indigo-600 underline underline-offset-2 hover:text-indigo-800"
             >
               清除所有筛选
             </button>
           ) : null}
         </div>
         <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={selectAllVisible}
-            disabled={visibleRules.length === 0}
-          >
+          <Button size="small" onClick={selectAllVisible} disabled={visibleRules.length === 0}>
             全选可见
           </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={clearAllSelected}
-            disabled={selectedRuleIds.length === 0}
-          >
+          <Button size="small" onClick={clearAllSelected} disabled={selectedRuleIds.length === 0}>
             取消全选
           </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={selectVisibleBlockers}
-            disabled={visibleRules.length === 0}
-          >
+          <Button size="small" onClick={selectVisibleBlockers} disabled={visibleRules.length === 0}>
             勾选可见 BLOCKER
           </Button>
         </div>
       </div>
 
       {/* 列表 */}
-      <div className="rounded-md border border-zinc-200 max-h-64 overflow-y-auto divide-y divide-zinc-100">
+      <div className="max-h-64 divide-y divide-zinc-100 overflow-y-auto rounded-md border border-zinc-200">
         {visibleRules.length === 0 ? (
-          <div className="p-3 text-[12px] text-zinc-500 flex items-center gap-2">
+          <div className="flex items-center gap-2 p-3 text-[12px] text-zinc-500">
             <span>当前筛选条件无匹配规则。</span>
             <button
               type="button"
               onClick={clearAllFilters}
-              className="text-indigo-600 hover:text-indigo-800 underline underline-offset-2 text-[11px]"
+              className="text-[11px] text-indigo-600 underline underline-offset-2 hover:text-indigo-800"
             >
               清除所有筛选
             </button>
@@ -400,22 +382,22 @@ export function RuleSelector({ rules, selectedRuleIds, onToggle, onBulkReplace }
             return (
               <label
                 key={rule.id}
-                className={`flex items-center gap-2 px-3 py-2 text-[13px] cursor-pointer transition-colors hover:bg-zinc-50 ${checked ? 'bg-indigo-50/40' : ''}`}
+                className={`flex cursor-pointer items-center gap-2 px-3 py-2 text-[13px] transition-colors hover:bg-zinc-50 ${
+                  checked ? 'bg-indigo-50/40' : ''
+                }`}
                 title={rule.prompt_snippet}
               >
-                <input
-                  type="checkbox"
-                  className="size-4 rounded border-zinc-300 accent-indigo-600"
+                <Checkbox
                   checked={checked}
                   onChange={(event) => onToggle(rule.id, event.target.checked)}
                   aria-label={`选中规则 ${rule.rule_id}`}
                 />
                 <span aria-hidden>{sevDisp.emoji}</span>
-                <span className="text-zinc-400 text-[11px] font-medium">[{sevDisp.label}]</span>
+                <span className="text-[11px] font-medium text-zinc-400">[{sevDisp.label}]</span>
                 <span aria-hidden>{catDisp.emoji}</span>
-                <span className="text-zinc-900 font-mono text-[12px]">{rule.rule_id}</span>
+                <span className="font-mono text-[12px] text-zinc-900">{rule.rule_id}</span>
                 <span className="text-zinc-300">·</span>
-                <span className="text-zinc-600 truncate">{rule.title}</span>
+                <span className="truncate text-zinc-600">{rule.title}</span>
               </label>
             );
           })
