@@ -22,7 +22,6 @@ import {
   getStoredAdminPermissions,
   getStoredAdminProjectIds,
   getStoredAdminUsername,
-  isAuthRequiredError,
   type CurrentUser,
   type HealthStatus,
 } from './api';
@@ -46,7 +45,6 @@ import { RolesPage } from './pages/RolesPage';
 function AppInner() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { message } = AntApp.useApp();
   const [adminToken, setAdminToken] = useState(() => getStoredAdminAccessToken());
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
@@ -107,21 +105,6 @@ function AppInner() {
       active = false;
     };
   }, [adminToken]);
-
-  // 统一错误处理：登录过期 → 清 token 回登录页；其余 → antd message 提示。
-  const handleError = useCallback(
-    (caught: unknown) => {
-      if (isAuthRequiredError(caught)) {
-        clearStoredAdminAccessToken();
-        setAdminToken('');
-        setCurrentUser(null);
-        message.warning(caught.message);
-        return;
-      }
-      message.error(caught instanceof Error ? caught.message : '未知错误');
-    },
-    [message],
-  );
 
   function handleLogout() {
     clearStoredAdminAccessToken();
