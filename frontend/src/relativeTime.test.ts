@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
-import { relativeTime } from './App';
+import { relativeTime } from './lib/format';
 
 afterEach(() => {
   vi.useRealTimers();

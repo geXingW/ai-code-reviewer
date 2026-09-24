@@ -1,26 +1,23 @@
 /**
- * 新增/编辑 GitLab 项目弹窗。
+ * 新增/编辑 GitLab 项目弹窗（antd 版）。
  *
- * 支持两种模式：
- * - 新增模式：initialData = null
- * - 编辑模式：initialData = ProjectConfig
- *
+ * 支持两种模式：新增（initialData = null）/ 编辑（initialData = ProjectConfig）。
  * 纯受控组件，不做接口调用，onSubmit 由父组件把 payload 交给后端。
+ * 含规则勾选面板（RuleSelector）与钉钉推送配置区（NotificationChannelSection）。
  */
 
 import { useEffect, useState } from 'react';
+import { Alert, Button, Checkbox, Input, Modal, Select, Switch } from 'antd';
 
-import { ProjectConfig, ProjectFormPayload, RuleConfig, ProjectRuleFormPayload } from '../../api';
-import { Button } from '../ui/button';
-import { Dialog } from '../ui/dialog';
-import { Input } from '../ui/input';
-import { Label } from '../ui/label';
-import { PasswordInput } from '../ui/password-input';
-import { Select } from '../ui/select';
+import type { ProjectConfig, ProjectFormPayload, ProjectRuleFormPayload, RuleConfig } from '../../api';
 import { RuleSelector } from '../RuleSelector';
 import { NotificationChannelSection } from '../NotificationChannelSection';
 
-const SEVERITY_OPTIONS = ['INFO', 'WARNING', 'BLOCKER'] as const;
+const SEVERITY_OPTIONS = [
+  { value: 'INFO', label: 'INFO' },
+  { value: 'WARNING', label: 'WARNING' },
+  { value: 'BLOCKER', label: 'BLOCKER' },
+];
 
 export interface ProjectDialogProps {
   open: boolean;
@@ -69,9 +66,7 @@ function FieldGroup({ title, children }: { title: string; children: React.ReactN
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 pt-1">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
-          {title}
-        </h3>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">{title}</h3>
         <div className="h-px flex-1 bg-zinc-100" />
       </div>
       <div className="space-y-3">{children}</div>
@@ -96,13 +91,11 @@ export function ProjectDialog({
   useEffect(() => {
     if (open) {
       if (initialData) {
-        // 编辑模式：回填数据
+        // 编辑模式：回填数据。密钥不反显（后端返回脱敏值 "****"），置空表示不修改。
         setForm({
           name: initialData.name,
           gitlab_project_id: initialData.gitlab_project_id,
           gitlab_base_url: initialData.gitlab_base_url,
-          // 编辑模式不反显密钥（后端返回脱敏值 "****"），置空让用户按需重填。
-          // 留空提交时由 handleSubmit 跳过，后端也不会覆盖数据库中的密钥。
           gitlab_access_token: '',
           webhook_secret: '',
           engine_id: initialData.engine_id || '',
@@ -116,7 +109,6 @@ export function ProjectDialog({
           rules: initialData.rules.map((r) => ({ rule_id: r.rule_id, enabled: r.enabled })),
         });
       } else {
-        // 新增模式：空白表单
         setForm(initialEmptyForm);
       }
       setErrorMessage(null);
@@ -135,8 +127,8 @@ export function ProjectDialog({
     setErrorMessage(null);
     try {
       const payload: Partial<ProjectFormPayload> = { ...form };
-      // 编辑模式下，密钥字段留空表示"不修改"——从 payload 中移除，
-      // JSON.stringify 会自动忽略 deleted 属性，后端 exclude_unset 也不会更新。
+      // 编辑模式下，密钥字段留空表示「不修改」——从 payload 中移除，
+      // 后端 exclude_unset 不会更新该字段。
       if (isEditMode) {
         if (!payload.gitlab_access_token?.trim()) {
           delete payload.gitlab_access_token;
@@ -154,39 +146,26 @@ export function ProjectDialog({
   }
 
   return (
-    <Dialog
+    <Modal
       open={open}
-      onClose={submitting ? () => {} : onCancel}
+      onCancel={submitting ? undefined : onCancel}
       title={isEditMode ? '编辑 GitLab 项目' : '新增 GitLab 项目'}
-      subtitle={isEditMode ? initialData.name : '接入项目后可通过 Webhook 自动触发 MR 审查'}
-      maxWidthClass="max-w-2xl"
-      footer={
-        <>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={submitting}
-            onClick={onCancel}
-          >
-            取消
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            disabled={!canSubmit}
-            onClick={() => void handleSubmit()}
-          >
-            {submitting ? '保存中…' : '保存'}
-          </Button>
-        </>
-      }
+      okText="保存"
+      cancelText="取消"
+      okButtonProps={{ disabled: !canSubmit, loading: submitting }}
+      cancelButtonProps={{ disabled: submitting }}
+      onOk={() => void handleSubmit()}
+      maskClosable={false}
+      destroyOnHidden
+      width={720}
     >
-      <div className="space-y-5">
+      <div className="space-y-5 pt-2">
         {/* ───────── 基础信息 ───────── */}
         <FieldGroup title="基础信息">
           <div className="space-y-1.5">
-            <Label htmlFor="project-name">项目名称</Label>
+            <label className="text-[12px] font-medium text-zinc-600" htmlFor="project-name">
+              项目名称
+            </label>
             <Input
               id="project-name"
               value={form.name}
@@ -196,7 +175,9 @@ export function ProjectDialog({
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="project-gitlab-id">GitLab Project ID</Label>
+            <label className="text-[12px] font-medium text-zinc-600" htmlFor="project-gitlab-id">
+              GitLab Project ID
+            </label>
             <Input
               id="project-gitlab-id"
               value={form.gitlab_project_id}
@@ -209,7 +190,9 @@ export function ProjectDialog({
         {/* ───────── GitLab 连接 ───────── */}
         <FieldGroup title="GitLab 连接">
           <div className="space-y-1.5">
-            <Label htmlFor="project-gitlab-base-url">GitLab Base URL</Label>
+            <label className="text-[12px] font-medium text-zinc-600" htmlFor="project-gitlab-base-url">
+              GitLab Base URL
+            </label>
             <Input
               id="project-gitlab-base-url"
               value={form.gitlab_base_url}
@@ -220,23 +203,27 @@ export function ProjectDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="project-token">GitLab Access Token</Label>
-              <PasswordInput
+              <label className="text-[12px] font-medium text-zinc-600" htmlFor="project-token">
+                GitLab Access Token
+              </label>
+              <Input.Password
                 id="project-token"
                 value={form.gitlab_access_token}
                 onChange={(event) => setForm({ ...form, gitlab_access_token: event.target.value })}
                 placeholder={isEditMode ? '为空则不修改' : 'glpat-...'}
-                toggleAriaLabel="切换 Access Token 显示"
+                autoComplete="new-password"
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="project-secret">Webhook Secret</Label>
-              <PasswordInput
+              <label className="text-[12px] font-medium text-zinc-600" htmlFor="project-secret">
+                Webhook Secret
+              </label>
+              <Input.Password
                 id="project-secret"
                 value={form.webhook_secret}
                 onChange={(event) => setForm({ ...form, webhook_secret: event.target.value })}
                 placeholder={isEditMode ? '为空则不修改' : '随机字符串'}
-                toggleAriaLabel="切换 Webhook Secret 显示"
+                autoComplete="new-password"
               />
             </div>
           </div>
@@ -246,43 +233,49 @@ export function ProjectDialog({
         <FieldGroup title="审查配置">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="project-engine">默认审查引擎</Label>
+              <label className="text-[12px] font-medium text-zinc-600" htmlFor="project-engine">
+                默认审查引擎
+              </label>
               <Select
                 id="project-engine"
-                value={form.engine_id}
-                onChange={(event) => setForm({ ...form, engine_id: event.target.value })}
-              >
-                {engineOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </Select>
+                value={form.engine_id || ''}
+                options={engineOptions}
+                style={{ width: '100%' }}
+                onChange={(value) => setForm({ ...form, engine_id: value })}
+              />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="project-provider">AI 供应商</Label>
+              <label className="text-[12px] font-medium text-zinc-600" htmlFor="project-provider">
+                AI 供应商
+              </label>
               <Select
                 id="project-provider"
-                value={form.provider_id}
-                onChange={(event) => setForm({ ...form, provider_id: event.target.value })}
-              >
-                {providerOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </Select>
+                value={form.provider_id || ''}
+                options={providerOptions}
+                style={{ width: '100%' }}
+                onChange={(value) => setForm({ ...form, provider_id: value })}
+              />
             </div>
           </div>
 
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="project-timeout">超时秒数</Label>
+              <label className="text-[12px] font-medium text-zinc-600" htmlFor="project-timeout">
+                超时秒数
+              </label>
               <Input
                 id="project-timeout"
                 type="number"
                 value={String(form.timeout_seconds)}
-                onChange={(event) => setForm({ ...form, timeout_seconds: Number(event.target.value) || 0 })}
+                onChange={(event) =>
+                  setForm({ ...form, timeout_seconds: Number(event.target.value) || 0 })
+                }
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="project-max-files">最大文件数</Label>
+              <label className="text-[12px] font-medium text-zinc-600" htmlFor="project-max-files">
+                最大文件数
+              </label>
               <Input
                 id="project-max-files"
                 type="number"
@@ -291,45 +284,36 @@ export function ProjectDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="project-severity">默认阻断级别</Label>
+              <label className="text-[12px] font-medium text-zinc-600" htmlFor="project-severity">
+                默认阻断级别
+              </label>
               <Select
                 id="project-severity"
                 value={form.default_block_severity}
-                onChange={(event) => setForm({ ...form, default_block_severity: event.target.value as ProjectFormPayload['default_block_severity'] })}
-              >
-                {SEVERITY_OPTIONS.map((opt) => (
-                  <option key={opt} value={opt}>{opt}</option>
-                ))}
-              </Select>
+                options={SEVERITY_OPTIONS}
+                style={{ width: '100%' }}
+                onChange={(value) =>
+                  setForm({ ...form, default_block_severity: value as ProjectFormPayload['default_block_severity'] })
+                }
+              />
             </div>
           </div>
 
-          {/* Commit 推送审查：复用「启用项目」的卡片风格 */}
           <div className="flex items-center justify-between rounded-lg border border-zinc-200 bg-zinc-50/50 px-3 py-2.5">
-            <div className="flex items-center gap-2.5">
-              <input
-                type="checkbox"
-                id="project-commit-review-enabled"
-                checked={form.commit_review_enabled}
-                onChange={(event) =>
-                  setForm({ ...form, commit_review_enabled: event.target.checked })
-                }
-                className="size-4 rounded border-zinc-300 accent-indigo-600 focus:ring-indigo-500"
-              />
-              <Label htmlFor="project-commit-review-enabled" className="text-[13px] text-zinc-700">
-                启用 commit 推送审查
-              </Label>
-            </div>
+            <Checkbox
+              checked={form.commit_review_enabled}
+              onChange={(event) => setForm({ ...form, commit_review_enabled: event.target.checked })}
+            >
+              启用 commit 推送审查
+            </Checkbox>
             <div className="flex items-center gap-2">
-              <Label
-                htmlFor="project-commit-review-max"
-                className={`text-[11px] ${form.commit_review_enabled ? 'text-zinc-500' : 'text-zinc-300'}`}
+              <span
+                className="text-[11px] text-zinc-400"
                 title="合并审查后该字段不再截断 commit，仅作兼容保留"
               >
-                单次推送最多审查 commit 数 (兼容保留)
-              </Label>
+                单次推送最多审查 commit 数（兼容保留）
+              </span>
               <Input
-                id="project-commit-review-max"
                 type="number"
                 min={1}
                 max={20}
@@ -342,7 +326,7 @@ export function ProjectDialog({
                     commit_review_max_per_push: Math.min(20, Math.max(1, parsed)),
                   });
                 }}
-                className={`w-20 text-right ${form.commit_review_enabled ? '' : 'opacity-50'}`}
+                style={{ width: 80, textAlign: 'right' }}
               />
             </div>
           </div>
@@ -381,29 +365,16 @@ export function ProjectDialog({
 
         {/* ───────── 启用项目 ───────── */}
         <div className="flex items-center justify-between rounded-lg border border-zinc-200 bg-zinc-50/50 px-3 py-2.5">
-          <div className="flex items-center gap-2.5">
-            <input
-              type="checkbox"
-              id="project-enabled"
-              checked={form.enabled}
-              onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
-              className="size-4 rounded border-zinc-300 accent-indigo-600 focus:ring-indigo-500"
-            />
-            <Label htmlFor="project-enabled" className="text-[13px] text-zinc-700">
-              启用项目
-            </Label>
-          </div>
-          <span className={`text-[11px] font-medium ${form.enabled ? 'text-emerald-600' : 'text-zinc-400'}`}>
-            {form.enabled ? '● 已启用' : '○ 已停用'}
-          </span>
+          <span className="text-[13px] text-zinc-700">启用项目</span>
+          <Switch
+            checked={form.enabled}
+            onChange={(checked) => setForm({ ...form, enabled: checked })}
+            aria-label="启用项目"
+          />
         </div>
-      </div>
 
-      {errorMessage ? (
-        <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700" role="alert">
-          {errorMessage}
-        </div>
-      ) : null}
-    </Dialog>
+        {errorMessage ? <Alert type="error" showIcon message={errorMessage} /> : null}
+      </div>
+    </Modal>
   );
 }

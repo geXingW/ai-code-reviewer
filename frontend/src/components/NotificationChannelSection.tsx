@@ -1,28 +1,23 @@
 /**
- * 项目钉钉推送配置区。
+ * 项目钉钉推送配置区（antd 版）。
  *
  * 作为 ProjectDialog 编辑模式下的独立子区块，直接调用通知渠道 CRUD API。
  * 通知渠道是项目的子资源（需先有 project_id 才能创建），因此仅在编辑
- * 模式下展示；新增项目模式由父组件提示"保存后可配置推送"。
- *
- * 后端在每次 Review 完成后按启用渠道推送汇总消息（标题 + MR 标题 +
- * Review ID + 问题/阻断数 + 详情链接），不推送逐条 finding。
+ * 模式下展示；新增项目模式由父组件提示「保存后可配置推送」。
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { App as AntApp, Button, Checkbox, Input, Popconfirm } from 'antd';
 
 import {
-  NotificationChannel,
-  NotificationChannelFormPayload,
+  type NotificationChannel,
+  type NotificationChannelFormPayload,
   createNotificationChannel,
   deleteNotificationChannel,
   fetchNotificationChannels,
+  isAuthRequiredError,
   updateNotificationChannel,
 } from '../api';
-import { Button } from './ui/button';
-import { Input } from './ui/input';
-import { Label } from './ui/label';
-import { PasswordInput } from './ui/password-input';
 
 interface NotificationChannelSectionProps {
   projectId: string;
@@ -42,9 +37,8 @@ const EMPTY_FORM: NewChannelForm = {
   enabled: true,
 };
 
-export function NotificationChannelSection({
-  projectId,
-}: NotificationChannelSectionProps) {
+export function NotificationChannelSection({ projectId }: NotificationChannelSectionProps) {
+  const { message } = AntApp.useApp();
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +54,9 @@ export function NotificationChannelSection({
       const list = await fetchNotificationChannels(projectId);
       setChannels(list);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '加载推送配置失败');
+      if (!isAuthRequiredError(caught)) {
+        setError(caught instanceof Error ? caught.message : '加载推送配置失败');
+      }
     } finally {
       setLoading(false);
     }
@@ -77,31 +73,27 @@ export function NotificationChannelSection({
       prev.map((c) => (c.id === channel.id ? { ...c, enabled: nextEnabled } : c)),
     );
     try {
-      await updateNotificationChannel(projectId, channel.id, {
-        enabled: nextEnabled,
-      });
+      await updateNotificationChannel(projectId, channel.id, { enabled: nextEnabled });
     } catch (caught) {
-      // 回滚
       setChannels((prev) =>
-        prev.map((c) =>
-          c.id === channel.id ? { ...c, enabled: channel.enabled } : c,
-        ),
+        prev.map((c) => (c.id === channel.id ? { ...c, enabled: channel.enabled } : c)),
       );
-      setError(caught instanceof Error ? caught.message : '切换状态失败');
+      if (!isAuthRequiredError(caught)) {
+        setError(caught instanceof Error ? caught.message : '切换状态失败');
+      }
     }
   }
 
   async function handleDelete(channel: NotificationChannel) {
-    if (!window.confirm(`确定删除推送渠道「${channel.name}」？`)) {
-      return;
-    }
     setChannels((prev) => prev.filter((c) => c.id !== channel.id));
     try {
       await deleteNotificationChannel(projectId, channel.id);
+      message.success('推送渠道已删除。');
     } catch (caught) {
-      // 回滚
       void loadChannels();
-      setError(caught instanceof Error ? caught.message : '删除失败');
+      if (!isAuthRequiredError(caught)) {
+        setError(caught instanceof Error ? caught.message : '删除失败');
+      }
     }
   }
 
@@ -124,8 +116,11 @@ export function NotificationChannelSection({
       setChannels((prev) => [...prev, created]);
       setForm(EMPTY_FORM);
       setShowForm(false);
+      message.success('推送渠道已添加。');
     } catch (caught) {
-      setFormError(caught instanceof Error ? caught.message : '添加失败');
+      if (!isAuthRequiredError(caught)) {
+        setFormError(caught instanceof Error ? caught.message : '添加失败');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -147,18 +142,14 @@ export function NotificationChannelSection({
               key={channel.id}
               className="flex items-center justify-between rounded-md border border-zinc-200 bg-white px-3 py-2"
             >
-              <div className="flex items-center gap-2.5">
-                <span className="text-[11px] rounded bg-indigo-50 px-1.5 py-0.5 font-medium text-indigo-600">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className="shrink-0 rounded bg-indigo-50 px-1.5 py-0.5 text-[11px] font-medium text-indigo-600">
                   钉钉
                 </span>
-                <span className="text-[13px] font-medium text-zinc-700">
-                  {channel.name}
-                </span>
-                <span className="text-[11px] text-zinc-400">
-                  {channel.webhook_url}
-                </span>
+                <span className="shrink-0 text-[13px] font-medium text-zinc-700">{channel.name}</span>
+                <span className="truncate text-[11px] text-zinc-400">{channel.webhook_url}</span>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex shrink-0 items-center gap-3">
                 <button
                   type="button"
                   onClick={() => void handleToggleEnabled(channel)}
@@ -168,13 +159,17 @@ export function NotificationChannelSection({
                 >
                   {channel.enabled ? '● 已启用' : '○ 已停用'}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void handleDelete(channel)}
-                  className="text-[11px] font-medium text-rose-500 hover:text-rose-600"
+                <Popconfirm
+                  title={`确定删除推送渠道「${channel.name}」？`}
+                  okText="删除"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={() => void handleDelete(channel)}
                 >
-                  删除
-                </button>
+                  <button type="button" className="text-[11px] font-medium text-rose-500 hover:text-rose-600">
+                    删除
+                  </button>
+                </Popconfirm>
               </div>
             </div>
           ))}
@@ -185,7 +180,9 @@ export function NotificationChannelSection({
       {showForm ? (
         <div className="space-y-3 rounded-md border border-dashed border-zinc-300 bg-zinc-50/50 p-3">
           <div className="space-y-1.5">
-            <Label htmlFor="channel-name">渠道名称</Label>
+            <label className="text-[12px] font-medium text-zinc-600" htmlFor="channel-name">
+              渠道名称
+            </label>
             <Input
               id="channel-name"
               value={form.name}
@@ -194,43 +191,38 @@ export function NotificationChannelSection({
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="channel-webhook">钉钉 Webhook 地址</Label>
-            <PasswordInput
+            <label className="text-[12px] font-medium text-zinc-600" htmlFor="channel-webhook">
+              钉钉 Webhook 地址
+            </label>
+            <Input.Password
               id="channel-webhook"
               value={form.webhook_url}
-              onChange={(event) =>
-                setForm({ ...form, webhook_url: event.target.value })
-              }
+              onChange={(event) => setForm({ ...form, webhook_url: event.target.value })}
               placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
-              toggleAriaLabel="切换 Webhook 地址显示"
+              autoComplete="off"
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="channel-secret">加签密钥（可选）</Label>
-            <PasswordInput
+            <label className="text-[12px] font-medium text-zinc-600" htmlFor="channel-secret">
+              加签密钥（可选）
+            </label>
+            <Input.Password
               id="channel-secret"
               value={form.secret}
               onChange={(event) => setForm({ ...form, secret: event.target.value })}
               placeholder="开启「加签」安全设置时填写"
-              toggleAriaLabel="切换密钥显示"
+              autoComplete="off"
             />
           </div>
           <div className="flex items-center justify-between">
-            <label className="flex items-center gap-2 text-[12px] text-zinc-600">
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={(event) =>
-                  setForm({ ...form, enabled: event.target.checked })
-                }
-                className="size-4 rounded border-zinc-300 accent-indigo-600 focus:ring-indigo-500"
-              />
+            <Checkbox
+              checked={form.enabled}
+              onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
+            >
               创建后立即启用
-            </label>
+            </Checkbox>
             <div className="flex items-center gap-2">
               <Button
-                variant="secondary"
-                size="sm"
                 disabled={submitting}
                 onClick={() => {
                   setShowForm(false);
@@ -240,18 +232,12 @@ export function NotificationChannelSection({
               >
                 取消
               </Button>
-              <Button
-                size="sm"
-                disabled={submitting}
-                onClick={() => void handleAddChannel()}
-              >
+              <Button type="primary" loading={submitting} onClick={() => void handleAddChannel()}>
                 {submitting ? '添加中…' : '添加渠道'}
               </Button>
             </div>
           </div>
-          {formError ? (
-            <p className="text-[12px] text-rose-600">{formError}</p>
-          ) : null}
+          {formError ? <p className="text-[12px] text-rose-600">{formError}</p> : null}
         </div>
       ) : (
         <button
@@ -263,9 +249,7 @@ export function NotificationChannelSection({
         </button>
       )}
 
-      {error ? (
-        <p className="text-[12px] text-rose-600">{error}</p>
-      ) : null}
+      {error ? <p className="text-[12px] text-rose-600">{error}</p> : null}
     </div>
   );
 }

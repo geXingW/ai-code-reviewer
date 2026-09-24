@@ -551,6 +551,47 @@ async function parseJsonResponse<T>(response: Response, authProtected = false): 
   return payload as T;
 }
 
+/**
+ * 列表接口查询串构造。null / undefined / 空串的参数直接丢弃——
+ * 后端 FastAPI 对缺省参数走默认值，避免前端误传空串触发 422（如 bool 型 enabled）。
+ * sort 使用后端 _ALLOWED_SORTS 约定：`-` 前缀表示降序。
+ */
+export type ListQuery = Record<string, string | number | boolean | null | undefined>;
+
+export function buildListQuery(params: ListQuery): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') {
+      continue;
+    }
+    search.set(key, String(value));
+  }
+  const qs = search.toString();
+  return qs ? `?${qs}` : '';
+}
+
+/** 按 limit=100 循环 offset 拉全量（后端单页上限 100）。 */
+async function fetchAllPages<T>(
+  path: string,
+  authProtected = true,
+): Promise<Page<T>> {
+  const pageSize = 100;
+  let offset = 0;
+  const items: T[] = [];
+  let total = 0;
+  while (true) {
+    const response = await adminFetch(`${path}${buildListQuery({ limit: pageSize, offset })}`);
+    const page = await parseJsonResponse<Page<T>>(response, authProtected);
+    items.push(...page.items);
+    total = page.total;
+    if (page.items.length < pageSize || items.length >= total) {
+      break;
+    }
+    offset += pageSize;
+  }
+  return { items, total, limit: pageSize, offset: 0 };
+}
+
 export async function loginAdmin(username: string, password: string): Promise<LoginResponse> {
   const response = await fetch('/api/auth/login', {
     method: 'POST',
@@ -600,9 +641,23 @@ export async function createReview(
   return parseJsonResponse<CreateReviewResponse>(response);
 }
 
-export async function fetchProviders(): Promise<Page<ProviderConfig>> {
-  const response = await adminFetch('/api/providers');
+export type ProviderListParams = {
+  limit?: number;
+  offset?: number;
+  q?: string;
+  enabled?: boolean;
+  sort?: string;
+};
+
+/** 服务端分页列表（q 模糊匹配 name，enabled 过滤，sort 见后端 _ALLOWED_SORTS）。 */
+export async function fetchProviders(params: ProviderListParams = {}): Promise<Page<ProviderConfig>> {
+  const response = await adminFetch(`/api/providers${buildListQuery(params)}`);
   return parseJsonResponse<Page<ProviderConfig>>(response, true);
+}
+
+/** 拉全量（下拉选项等需要完整列表的场景）。 */
+export function fetchProvidersAll(): Promise<Page<ProviderConfig>> {
+  return fetchAllPages<ProviderConfig>('/api/providers');
 }
 
 export async function createProvider(payload: ProviderFormPayload): Promise<ProviderConfig> {
@@ -637,26 +692,33 @@ export async function updateProvider(
   return parseJsonResponse<ProviderConfig>(response, true);
 }
 
+export async function deleteProvider(id: string): Promise<void> {
+  const response = await adminFetch(`/api/providers/${id}`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`删除供应商失败：HTTP ${response.status}`);
+  }
+}
+
+export type RuleListParams = {
+  limit?: number;
+  offset?: number;
+  q?: string;
+  enabled?: boolean;
+  sort?: string;
+};
+
+/** 服务端分页列表（q 模糊匹配 rule_id / title）。 */
+export async function fetchRulesPage(params: RuleListParams = {}): Promise<Page<RuleConfig>> {
+  const response = await adminFetch(`/api/rules${buildListQuery(params)}`);
+  return parseJsonResponse<Page<RuleConfig>>(response, true);
+}
+
 /**
- * 拉规则列表。规则关联面板要显示所有规则，后端 `limit` 上限 100，
+ * 拉规则全量。规则关联面板要显示所有规则，后端 `limit` 上限 100，
  * 超过 100 条时循环 offset 拿全。避免面板显示不全导致老 UI 漏勾选。
  */
 export async function fetchRules(): Promise<Page<RuleConfig>> {
-  const pageSize = 100;
-  let offset = 0;
-  const items: RuleConfig[] = [];
-  let total = 0;
-  while (true) {
-    const response = await adminFetch(`/api/rules?limit=${pageSize}&offset=${offset}`);
-    const page = await parseJsonResponse<Page<RuleConfig>>(response, true);
-    items.push(...page.items);
-    total = page.total;
-    if (page.items.length < pageSize || items.length >= total) {
-      break;
-    }
-    offset += pageSize;
-  }
-  return { items, total, limit: pageSize, offset: 0 };
+  return fetchAllPages<RuleConfig>('/api/rules');
 }
 
 // Issue #69：rule_id 可选，留空时由后端从标题自动生成 slug。
@@ -689,9 +751,23 @@ export async function deleteRule(id: string): Promise<void> {
   }
 }
 
-export async function fetchProjects(): Promise<Page<ProjectConfig>> {
-  const response = await adminFetch('/api/projects');
+export type ProjectListParams = {
+  limit?: number;
+  offset?: number;
+  q?: string;
+  enabled?: boolean;
+  sort?: string;
+};
+
+/** 服务端分页列表（q 模糊匹配 name / gitlab_project_id，RBAC 项目范围由后端裁剪）。 */
+export async function fetchProjects(params: ProjectListParams = {}): Promise<Page<ProjectConfig>> {
+  const response = await adminFetch(`/api/projects${buildListQuery(params)}`);
   return parseJsonResponse<Page<ProjectConfig>>(response, true);
+}
+
+/** 拉全量（项目下拉、用户可见项目勾选等场景）。 */
+export function fetchProjectsAll(): Promise<Page<ProjectConfig>> {
+  return fetchAllPages<ProjectConfig>('/api/projects');
 }
 
 export async function createProject(payload: ProjectFormPayload): Promise<ProjectConfig> {
@@ -746,14 +822,36 @@ export async function deleteProject(id: string): Promise<void> {
   }
 }
 
-export async function fetchReviewRecords(): Promise<Page<ReviewRecord>> {
-  const response = await adminFetch('/api/reviews/records');
+export type ReviewRecordListParams = {
+  limit?: number;
+  offset?: number;
+  project_id?: string;
+  status?: string;
+  mr_iid?: string | number;
+  sort?: string;
+};
+
+/** 服务端分页列表（project_id / status / mr_iid 过滤，sort 支持 created_at/finding_count 等）。 */
+export async function fetchReviewRecords(
+  params: ReviewRecordListParams = {},
+): Promise<Page<ReviewRecord>> {
+  const response = await adminFetch(`/api/reviews/records${buildListQuery(params)}`);
   return parseJsonResponse<Page<ReviewRecord>>(response, true);
 }
 
-export async function fetchFindings(fpStatus?: string): Promise<Page<FindingRecord>> {
-  const suffix = fpStatus ? `?fp_status=${encodeURIComponent(fpStatus)}` : '';
-  const response = await adminFetch(`/api/findings${suffix}`);
+export type FindingListParams = {
+  limit?: number;
+  offset?: number;
+  review_id?: string;
+  severity?: string;
+  fp_status?: string;
+  file_path?: string;
+  sort?: string;
+};
+
+/** 服务端分页列表（file_path 为 ilike 模糊匹配，severity/fp_status 为精确过滤）。 */
+export async function fetchFindings(params: FindingListParams = {}): Promise<Page<FindingRecord>> {
+  const response = await adminFetch(`/api/findings${buildListQuery(params)}`);
   return parseJsonResponse<Page<FindingRecord>>(response, true);
 }
 
@@ -788,8 +886,17 @@ export async function resolveFinding(
   return parseJsonResponse<FindingRecord>(response, true);
 }
 
-export async function fetchPendingFalsePositives(): Promise<Page<FindingRecord>> {
-  const response = await adminFetch('/api/false-positives/pending');
+export type PendingFalsePositiveParams = {
+  limit?: number;
+  offset?: number;
+  sort?: string;
+};
+
+/** 服务端分页列表（固定 fp_status=PENDING，后端默认按 created_at 升序）。 */
+export async function fetchPendingFalsePositives(
+  params: PendingFalsePositiveParams = {},
+): Promise<Page<FindingRecord>> {
+  const response = await adminFetch(`/api/false-positives/pending${buildListQuery(params)}`);
   return parseJsonResponse<Page<FindingRecord>>(response, true);
 }
 
@@ -817,13 +924,35 @@ export async function rejectFalsePositive(
   return parseJsonResponse<FindingRecord>(response, true);
 }
 
-export async function fetchNegativeExamples(): Promise<Page<NegativeExample>> {
-  const response = await adminFetch('/api/negative-examples');
+export type NegativeExampleListParams = {
+  limit?: number;
+  offset?: number;
+  rule_id?: string;
+  project_id?: string;
+  sort?: string;
+};
+
+/** 服务端分页列表（rule_id / project_id 过滤；后端无关键字搜索参数）。 */
+export async function fetchNegativeExamples(
+  params: NegativeExampleListParams = {},
+): Promise<Page<NegativeExample>> {
+  const response = await adminFetch(`/api/negative-examples${buildListQuery(params)}`);
   return parseJsonResponse<Page<NegativeExample>>(response, true);
 }
 
-export async function fetchEngineConfigs(): Promise<Page<EngineConfig>> {
-  const response = await adminFetch('/api/engines/configs');
+export type EngineConfigListParams = {
+  limit?: number;
+  offset?: number;
+  q?: string;
+  enabled?: boolean;
+  sort?: string;
+};
+
+/** 服务端分页列表（q 模糊匹配引擎名）。 */
+export async function fetchEngineConfigs(
+  params: EngineConfigListParams = {},
+): Promise<Page<EngineConfig>> {
+  const response = await adminFetch(`/api/engines/configs${buildListQuery(params)}`);
   return parseJsonResponse<Page<EngineConfig>>(response, true);
 }
 
@@ -1187,6 +1316,15 @@ export async function assignProjects(
 export async function fetchRoles(offset = 0, limit = 50): Promise<Page<Role>> {
   const response = await adminFetch(`/api/roles?offset=${offset}&limit=${limit}`);
   return parseJsonResponse<Page<Role>>(response, true);
+}
+
+/**
+ * 拉角色全量（角色下拉等场景）。后端 roles 接口 limit 上限 100，
+ * 必须循环翻页——此前 UsersPage 一次传 limit=200 会 422 且被静默吞掉，
+ * 导致下拉里只剩「未分配」。
+ */
+export function fetchRolesAll(): Promise<Page<Role>> {
+  return fetchAllPages<Role>('/api/roles');
 }
 
 export async function fetchRole(id: string): Promise<Role> {
