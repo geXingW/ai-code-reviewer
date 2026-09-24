@@ -1,21 +1,38 @@
-import * as React from 'react';
-import {
-  AlertTriangle,
-  Boxes,
-  Cpu,
-  Filter,
-  FolderGit2,
-  LayoutDashboard,
-  ListChecks,
-  ScrollText,
-  Shield,
-  ShieldCheck,
-  Sparkles,
-  Users,
-  type LucideIcon,
-} from 'lucide-react';
+/**
+ * 管理台外壳（antd 版）：Sider 导航 + Header 工具栏 + Content 滚动区。
+ *
+ * - 侧栏 Menu 保留三组导航与 RBAC `page:*` 权限过滤；
+ * - 顶栏搜索为真搜索（⌘K / Ctrl+K 唤起 GlobalSearchModal，跨实体服务端查询）；
+ * - 通知铃铛接真实数据：Badge 显示误报待审核总数，点击跳转误报队列；
+ * - 用户区为 Dropdown，退出登录需二次确认。
+ */
 
-import { cn } from '@/lib/utils';
+import * as React from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  AlertOutlined,
+  AppstoreOutlined,
+  AuditOutlined,
+  BellOutlined,
+  CloudServerOutlined,
+  DeploymentUnitOutlined,
+  ExperimentOutlined,
+  FileDoneOutlined,
+  FileTextOutlined,
+  FilterOutlined,
+  GitlabOutlined,
+  LinkOutlined,
+  LogoutOutlined,
+  SearchOutlined,
+  SafetyCertificateOutlined,
+  SafetyOutlined,
+  TeamOutlined,
+  UserOutlined,
+} from '@ant-design/icons';
+import { App as AntApp, Badge, Breadcrumb, Button, Dropdown, Layout, Menu } from 'antd';
+
+import { fetchPendingFalsePositives } from '../../api';
+import { GlobalSearchModal } from '../GlobalSearchModal';
 
 export type PageKey =
   | 'dashboard'
@@ -35,7 +52,7 @@ export type PageKey =
 interface NavItem {
   key: PageKey;
   label: string;
-  icon: LucideIcon;
+  icon: React.ComponentType<{ style?: React.CSSProperties }>;
 }
 
 interface NavSection {
@@ -43,9 +60,45 @@ interface NavSection {
   items: NavItem[];
 }
 
+/** 导航分组：工作台 5 项 + 配置 6 项 + 系统管理 2 项（顺序即侧栏展示顺序）。 */
+export const NAV_SECTIONS: NavSection[] = [
+  {
+    label: '工作台',
+    items: [
+      { key: 'dashboard', label: '仪表盘', icon: AppstoreOutlined },
+      { key: 'reviews', label: '审查记录', icon: FileDoneOutlined },
+      { key: 'falsePositives', label: '误报队列', icon: FilterOutlined },
+      { key: 'negativeExamples', label: '负样本库', icon: ExperimentOutlined },
+      { key: 'findings', label: '问题与误报', icon: AlertOutlined },
+    ],
+  },
+  {
+    label: '配置',
+    items: [
+      { key: 'providers', label: '模型供应商', icon: CloudServerOutlined },
+      { key: 'global-prompt', label: '全局提示词', icon: FileTextOutlined },
+      { key: 'rules', label: '审查规则', icon: AuditOutlined },
+      { key: 'projects', label: 'GitLab 项目', icon: GitlabOutlined },
+      { key: 'user-mappings', label: '用户映射', icon: LinkOutlined },
+      { key: 'engines', label: '引擎配置', icon: DeploymentUnitOutlined },
+    ],
+  },
+  {
+    label: '系统管理',
+    items: [
+      { key: 'users', label: '用户管理', icon: UserOutlined },
+      { key: 'roles', label: '角色管理', icon: SafetyCertificateOutlined },
+    ],
+  },
+];
+
+export const ALL_NAV_ITEMS: Array<NavItem> = NAV_SECTIONS.flatMap((section) => section.items);
+
 interface AppShellProps {
   activePage: PageKey;
   onNavigate: (page: PageKey) => void;
+  /** 带初始筛选条件跳转（⌘K 搜索结果落地）；未传时退化为普通跳转。 */
+  onNavigateWithFilters?: (page: PageKey, filters: Record<string, string>) => void;
   health: { status: string; version?: string } | null;
   onLogout: () => void;
   children: React.ReactNode;
@@ -54,236 +107,229 @@ interface AppShellProps {
   permissions?: string[];
 }
 
-/**
- * 侧栏导航分组：工作台 4 项 + 配置 4 项（顺序即侧栏展示顺序）。
- * 类型联合 PageKey 保持不变，仅数组顺序按分组重排。
- */
-const NAV_SECTIONS: NavSection[] = [
-  {
-    label: '工作台',
-    items: [
-      { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard },
-      { key: 'reviews', label: '审查记录', icon: ScrollText },
-      { key: 'falsePositives', label: '误报队列', icon: Filter },
-      { key: 'negativeExamples', label: '负样本库', icon: Sparkles },
-      { key: 'findings', label: '问题与误报', icon: AlertTriangle },
-    ],
-  },
-  {
-    label: '配置',
-    items: [
-      { key: 'providers', label: '模型供应商', icon: Boxes },
-      { key: 'global-prompt', label: '全局提示词', icon: ScrollText },
-      { key: 'rules', label: '审查规则', icon: ListChecks },
-      { key: 'projects', label: 'GitLab 项目', icon: FolderGit2 },
-      { key: 'user-mappings', label: '用户映射', icon: Users },
-      { key: 'engines', label: '引擎配置', icon: Cpu },
-    ],
-  },
-  {
-    label: '系统管理',
-    items: [
-      { key: 'users', label: '用户管理', icon: Users },
-      { key: 'roles', label: '角色管理', icon: Shield },
-    ],
-  },
-];
+const isMac =
+  typeof navigator !== 'undefined' && /mac|iphone|ipad/i.test(navigator.platform ?? navigator.userAgent);
 
-/**
- * Linear 风格管理台外壳：侧栏 224px（w-56）+ 顶栏 44px（h-11）。
- * 主 CTA 黑、Indigo 仅作激活态点缀；边框极淡、无阴影、靠留白分层。
- * 业务面板作为 children 注入主内容滚动区，自身样式不动。
- */
-export function AppShell({ activePage, onNavigate, health, onLogout, children, currentUser, permissions }: AppShellProps) {
+export function AppShell({
+  activePage,
+  onNavigate,
+  onNavigateWithFilters,
+  health,
+  onLogout,
+  children,
+  currentUser,
+  permissions,
+}: AppShellProps) {
+  const { modal } = AntApp.useApp();
+  const [searchOpen, setSearchOpen] = useState(false);
+  // 通知角标：误报待审核总数。切页时刷新一次，处理后回到队列页数字即更新。
+  const [pendingFpCount, setPendingFpCount] = useState<number | null>(null);
+
   const healthy = health?.status === 'ok';
-  const statusDotClass = !health
-    ? 'bg-zinc-300'
-    : healthy
-      ? 'bg-emerald-500'
-      : 'bg-rose-500';
   const versionLabel = health?.version ? ` · v${health.version}` : '';
-  const currentLabel =
-    NAV_SECTIONS.flatMap((section) => section.items).find((item) => item.key === activePage)
-      ?.label ?? '';
-  // PR-2 RBAC：按权限过滤导航项。permissions 为空（未传入）时显示全部菜单。
-  const hasPermission = (pageKey: PageKey): boolean => {
-    if (!permissions || permissions.length === 0) return true;
-    return permissions.includes(`page:${pageKey}`);
-  };
+  const currentLabel = ALL_NAV_ITEMS.find((item) => item.key === activePage)?.label ?? '';
 
-  function handleUserClick() {
-    if (typeof window !== 'undefined' && window.confirm('确定退出登录？')) {
-      onLogout();
+  // PR-2 RBAC：按权限过滤导航项。permissions 为空（未传入）时显示全部菜单。
+  const hasPermission = useCallback(
+    (pageKey: PageKey): boolean => {
+      if (!permissions || permissions.length === 0) return true;
+      return permissions.includes(`page:${pageKey}`);
+    },
+    [permissions],
+  );
+
+  useEffect(() => {
+    let active = true;
+    fetchPendingFalsePositives({ limit: 1 })
+      .then((page) => {
+        if (active) {
+          setPendingFpCount(page.total);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setPendingFpCount(null);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [activePage]);
+
+  // ⌘K / Ctrl+K 唤起全局搜索。
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const menuItems = useMemo(() => {
+    return NAV_SECTIONS.map((section) => {
+      const visibleItems = section.items.filter((item) => hasPermission(item.key));
+      return {
+        key: section.label,
+        label: section.label,
+        type: 'group' as const,
+        children: visibleItems.map((item) => ({
+          key: item.key,
+          icon: <item.icon />,
+          label: item.label,
+        })),
+      };
+    }).filter((section) => section.children.length > 0);
+  }, [hasPermission]);
+
+  function handleUserMenuClick({ key }: { key: string }) {
+    if (key === 'logout') {
+      modal.confirm({
+        title: '确定退出登录？',
+        content: '退出后需要重新输入用户名和密码。',
+        okText: '退出',
+        cancelText: '取消',
+        onOk: onLogout,
+      });
+    }
+  }
+
+  function handleSearchNavigate(page: PageKey, filters?: Record<string, string>) {
+    if (filters && Object.keys(filters).length > 0 && onNavigateWithFilters) {
+      onNavigateWithFilters(page, filters);
+    } else {
+      onNavigate(page);
     }
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[#FAFAFA] font-sans text-foreground">
-      {/* ─────────────── 侧栏 ─────────────── */}
-      <aside className="flex w-56 shrink-0 flex-col border-r border-zinc-200 bg-white">
-        {/* Workspace header */}
-        <div className="flex h-11 items-center gap-2 border-b border-zinc-200 px-3">
-          <div className="flex size-6 items-center justify-center rounded-md bg-linear-to-br from-indigo-500 to-indigo-700">
-            <ShieldCheck size={14} strokeWidth={2.5} className="text-white" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-semibold leading-tight text-zinc-900">
-              AI Code Reviewer
-            </div>
-            <div className="flex items-center gap-1.5 leading-tight">
-              <span className={cn('size-1.5 shrink-0 rounded-full', statusDotClass)} />
-              <span className="truncate text-[11px] text-zinc-500">production{versionLabel}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Nav */}
-        <nav aria-label="管理页面导航" className="flex-1 space-y-4 overflow-y-auto p-3">
-          {NAV_SECTIONS.map((section) => {
-            const visibleItems = section.items.filter((item) => hasPermission(item.key));
-            if (visibleItems.length === 0) return null; // 整组无可见项则隐藏
-            return (
-              <div key={section.label}>
-                <div className="mb-2 px-2 text-[11px] font-medium uppercase tracking-[0.06em] text-zinc-400">
-                  {section.label}
-                </div>
-                <div className="space-y-0.5">
-                  {visibleItems.map((item) => {
-                    const Icon = item.icon;
-                    const active = activePage === item.key;
-                    return (
-                      <button
-                        key={item.key}
-                        type="button"
-                        onClick={() => onNavigate(item.key)}
-                        className={cn(
-                          'flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] transition-colors',
-                          active
-                            ? 'bg-black/[0.06] font-medium text-zinc-900'
-                            : 'text-zinc-600 hover:bg-black/5 hover:text-zinc-900',
-                        )}
-                      >
-                        <Icon
-                          size={14}
-                          strokeWidth={1.75}
-                          className={cn('shrink-0', active ? 'text-[#4F46E5] opacity-100' : 'opacity-70')}
-                        />
-                        <span>{item.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-        </nav>
-
-        {/* User footer */}
-        <div className="border-t border-zinc-200 p-2">
-          <button
-            type="button"
-            onClick={handleUserClick}
-            className="flex w-full items-center gap-2 rounded-md p-1.5 text-left transition-colors hover:bg-zinc-50"
-          >
-            <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-indigo-500 text-[11px] font-medium text-white">
-              {(currentUser?.display_name || currentUser?.username || 'A').charAt(0).toUpperCase()}
+    <Layout style={{ minHeight: '100vh' }}>
+      <Layout.Sider
+        width={224}
+        theme="light"
+        style={{ borderRight: '1px solid #E4E4E7', display: 'flex', flexDirection: 'column' }}
+      >
+        <div className="flex h-full flex-col">
+          {/* Workspace header */}
+          <div className="flex h-12 shrink-0 items-center gap-2 border-b border-zinc-200 px-4">
+            <div className="flex size-6 items-center justify-center rounded-md bg-linear-to-br from-indigo-500 to-indigo-700">
+              <SafetyOutlined style={{ color: '#fff', fontSize: 13 }} />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-[12px] font-medium leading-tight text-zinc-900">
-                {currentUser?.display_name || currentUser?.username || 'admin'}
+              <div className="truncate text-[13px] font-semibold leading-tight text-zinc-900">
+                AI Code Reviewer
               </div>
-              <div className="truncate text-[11px] leading-tight text-zinc-500">
-                {currentUser?.username ? `@${currentUser.username}` : 'Bearer Token'}
+              <div className="flex items-center gap-1.5 leading-tight">
+                <span
+                  aria-hidden
+                  className="inline-block size-1.5 shrink-0 rounded-full"
+                  style={{
+                    background: !health ? '#D4D4D8' : healthy ? '#10B981' : '#EF4444',
+                  }}
+                />
+                <span className="truncate text-[11px] text-zinc-500">
+                  {`production${versionLabel}`}
+                </span>
               </div>
             </div>
-            <MoreHorizontalIcon className="size-3.5 shrink-0 text-zinc-400" />
-          </button>
-        </div>
-      </aside>
-
-      {/* ─────────────── 主区 ─────────────── */}
-      <main className="flex min-w-0 flex-1 flex-col">
-        {/* Topbar */}
-        <header className="flex h-11 items-center gap-3 border-b border-zinc-200 bg-white px-4">
-          <div className="flex items-center gap-1.5 text-[13px]">
-            <span className="text-zinc-500">工作台</span>
-            <ChevronRightIcon className="size-3.5 text-zinc-300" />
-            <span className="font-medium text-zinc-900">{currentLabel}</span>
           </div>
+
+          {/* Nav */}
+          <Menu
+            mode="inline"
+            items={menuItems}
+            selectedKeys={[activePage]}
+            onClick={({ key }) => onNavigate(key as PageKey)}
+            className="min-h-0 flex-1 overflow-y-auto"
+            style={{ borderInlineEnd: 'none', paddingTop: 8 }}
+          />
+
+          {/* User footer */}
+          <div className="shrink-0 border-t border-zinc-200 p-2">
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [{ key: 'logout', icon: <LogoutOutlined />, label: '退出登录' }],
+                onClick: handleUserMenuClick,
+              }}
+            >
+              <button type="button" className="flex w-full items-center gap-2 rounded-md p-1.5 text-left transition-colors hover:bg-zinc-50">
+                <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-indigo-500 text-[11px] font-medium text-white">
+                  {(currentUser?.display_name || currentUser?.username || 'A').charAt(0).toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[12px] font-medium leading-tight text-zinc-900">
+                    {currentUser?.display_name || currentUser?.username || 'admin'}
+                  </div>
+                  <div className="truncate text-[11px] leading-tight text-zinc-500">
+                    {currentUser?.username ? `@${currentUser.username}` : 'Bearer Token'}
+                  </div>
+                </div>
+                <TeamOutlined className="shrink-0 text-[11px] text-zinc-400" />
+              </button>
+            </Dropdown>
+          </div>
+        </div>
+      </Layout.Sider>
+
+      <Layout style={{ height: '100vh' }}>
+        <Layout.Header
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            borderBottom: '1px solid #E4E4E7',
+          }}
+        >
+          <Breadcrumb
+            items={[{ title: '工作台' }, { title: currentLabel }]}
+            className="text-[13px]"
+          />
 
           <div className="flex-1" />
 
-          {/* Search（dummy，暂不实现搜索） */}
-          <div className="relative">
-            <SearchIcon className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-zinc-400" />
-            <input
-              type="text"
-              aria-label="搜索"
-              placeholder="搜索…"
-              className="h-8 w-56 rounded-md border border-[#E4E4E7] bg-white pl-8 pr-12 text-[13px] text-foreground placeholder:text-zinc-400 hover:border-[#D4D4D8] focus-visible:border-[#6366F1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
-            <kbd className="absolute right-2 top-1/2 -translate-y-1/2 rounded border border-b-2 border-[#E4E4E7] bg-[#F4F4F5] px-1.5 py-0.5 font-mono text-[11px] text-zinc-500">
-              ⌘K
-            </kbd>
-          </div>
-
-          {/* Bell */}
+          {/* 真搜索：点击或 ⌘K 打开命令面板，服务端跨实体查询 */}
           <button
             type="button"
-            aria-label="通知"
-            className="inline-flex size-[26px] items-center justify-center rounded-md text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900"
+            aria-label="搜索"
+            onClick={() => setSearchOpen(true)}
+            className="flex h-8 w-56 items-center gap-2 rounded-md border border-[#E4E4E7] bg-white px-2.5 text-left text-[13px] text-zinc-400 transition-colors hover:border-[#D4D4D8]"
           >
-            <BellIcon className="size-3.5" />
+            <SearchOutlined className="shrink-0" />
+            <span className="flex-1 truncate">搜索…</span>
+            <kbd className="rounded border border-[#E4E4E7] bg-[#F4F4F5] px-1.5 py-0.5 font-mono text-[11px] text-zinc-500">
+              {isMac ? '⌘K' : 'Ctrl K'}
+            </kbd>
           </button>
-        </header>
 
-        {/* Content scroll area */}
-        <div className="flex-1 overflow-y-auto">
-          <div className="p-6">{children}</div>
-        </div>
-      </main>
-    </div>
-  );
-}
+          {/* 真通知：误报待审核数角标，点击进入误报队列 */}
+          <Badge count={pendingFpCount ?? 0} size="small" offset={[2, -2]}>
+            <Button
+              type="text"
+              aria-label="通知"
+              icon={<BellOutlined />}
+              onClick={() => onNavigate('falsePositives')}
+            />
+          </Badge>
+        </Layout.Header>
 
-/* ─────────────── 顶栏 / 用户区 inline 图标（与 mockup 一致，避免新增 lucide 依赖） ─────────────── */
+        <Layout.Content style={{ overflowY: 'auto' }}>
+          <div style={{ padding: 24 }}>{children}</div>
+        </Layout.Content>
+      </Layout>
 
-function SearchIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} className={className}>
-      <path
-        d="M21 21l-4.35-4.35M17 10a7 7 0 11-14 0 7 7 0 0114 0z"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+      <GlobalSearchModal
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onNavigate={handleSearchNavigate}
+        navItems={ALL_NAV_ITEMS.filter((item) => hasPermission(item.key)).map((item) => ({
+          key: item.key,
+          label: item.label,
+          icon: item.icon,
+        }))}
       />
-    </svg>
-  );
-}
-
-function BellIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} className={className}>
-      <path
-        d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function ChevronRightIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} className={className}>
-      <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function MoreHorizontalIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} className={className}>
-      <path d="M12 6v.01M12 12v.01M12 18v.01" strokeLinecap="round" />
-    </svg>
+    </Layout>
   );
 }
