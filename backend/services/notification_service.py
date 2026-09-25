@@ -115,6 +115,25 @@ def _format_created_at(raw: str) -> str:
     return dt.astimezone(_CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _kv(label: str, value: str | None) -> str | None:
+    """渲染 ``- 标签: 值`` 字段行；值为空（缺失 / 纯空白）时返回 ``None``。
+
+    「提交信息 / 审查摘要」区块的字段都是"有值才渲染"的逐行降级模式，
+    统一在这里收口：调用方声明字段清单后 ``filter`` 掉 ``None`` 即可，
+    替代成串的 ``if value: lines.append(...)``。
+    """
+
+    text = str(value or "").strip()
+    return f"- {label}: {text}" if text else None
+
+
+def _link(label: str, url: str | None) -> str | None:
+    """渲染 ``- [文案](链接)`` 行；链接为空时返回 ``None``。"""
+
+    text = str(url or "").strip()
+    return f"- [{label}]({text})" if text else None
+
+
 class NotificationService:
     """按项目渠道推送 Review 完成通知。
 
@@ -369,14 +388,12 @@ class NotificationService:
         # 审查对象类型：默认 MR；commit push 审查传 "commit"，标题用 Commit 短 SHA。
         review_kind = str(review_data.get("review_kind") or "mr")
 
-        label_prefix = "Commit" if review_kind == "commit" else "MR"
-        mr_label = f"{label_prefix} {mr_iid}" if mr_iid is not None else "未知"
-        if status_value == "engine_error":
-            title = f"【AI Code Review】{mr_label} 审查异常"
-        elif has_blocker:
-            title = f"【AI Code Review】{mr_label} 审查完成 - 存在阻断"
-        else:
-            title = f"【AI Code Review】{mr_label} 审查完成 - 无阻断"
+        title = self._build_title(
+            review_kind=review_kind,
+            mr_iid=mr_iid,
+            status_value=status_value,
+            has_blocker=has_blocker,
+        )
 
         lines = [f"### {title}", ""]
 
@@ -423,6 +440,29 @@ class NotificationService:
         return title, text
 
     @staticmethod
+    def _build_title(
+        *,
+        review_kind: str,
+        mr_iid: object,
+        status_value: str,
+        has_blocker: bool,
+    ) -> str:
+        """构造通知标题：``【AI Code Review】<Commit|MR> <标识> <结论>``。
+
+        commit push 审查（``review_kind="commit"``）用 Commit 短 SHA 作标识，
+        MR 审查用 ``MR <iid>``；标识缺失时降级「未知」。结论三选一：审查异常 /
+        存在阻断 / 无阻断。
+        """
+
+        label_prefix = "Commit" if review_kind == "commit" else "MR"
+        mr_label = f"{label_prefix} {mr_iid}" if mr_iid is not None else "未知"
+        if status_value == "engine_error":
+            return f"【AI Code Review】{mr_label} 审查异常"
+        if has_blocker:
+            return f"【AI Code Review】{mr_label} 审查完成 - 存在阻断"
+        return f"【AI Code Review】{mr_label} 审查完成 - 无阻断"
+
+    @staticmethod
     def _build_mr_section(
         *,
         mr_title: str,
@@ -452,19 +492,15 @@ class NotificationService:
             return NotificationService._build_commits_section(commits)
         if not (mr_title or author or created_at or gitlab_web_url or detail_url):
             return []
-        lines = ["**📋 提交信息**", ""]
-        if mr_title:
-            lines.append(f"- 标题: {mr_title}")
-        if author:
-            lines.append(f"- 创建人: {author}")
-        if created_at:
-            lines.append(f"- 创建时间: {_format_created_at(created_at)}")
-        if gitlab_web_url:
-            link_label = "查看提交详情" if review_kind == "commit" else "查看MR详情"
-            lines.append(f"- [{link_label}]({gitlab_web_url})")
-        # if detail_url:
-        #     lines.append(f"- [查看完整审查详情]({detail_url})")
-        return lines
+        link_label = "查看提交详情" if review_kind == "commit" else "查看MR详情"
+        # detail_url 渲染已下线（v0.0.2），仅保留参数参与区块的空值判断。
+        field_lines = [
+            _kv("标题", mr_title),
+            _kv("创建人", author),
+            _kv("创建时间", _format_created_at(created_at) if created_at else None),
+            _link(link_label, gitlab_web_url),
+        ]
+        return ["**📋 提交信息**", "", *(line for line in field_lines if line)]
 
     @staticmethod
     def _build_commits_section(commits: list[dict[str, Any]]) -> list[str]:
@@ -480,24 +516,28 @@ class NotificationService:
 
         lines = ["**📋 提交信息**", ""]
         for index, commit in enumerate(commits, start=1):
-            commit_sha = str(commit.get("id") or "")[:8]
-            title = str(commit.get("title") or "").strip()
-            author_name = str(commit.get("author_name") or "")
-            created_at = str(commit.get("timestamp") or "")
-            url = str(commit.get("url") or "")
-
-            header = f"**{index}. {commit_sha}"
-            if title:
-                header += f" {title}"
-            lines.append(header + "**")
-            if author_name:
-                lines.append(f"- 提交者: @{author_name}")
-            if created_at:
-                lines.append(f"- 时间: {_format_created_at(created_at)}")
-            if url:
-                lines.append(f"- [查看提交详情]({url})")
-            lines.append("")
+            lines.extend(NotificationService._render_commit_entry(index, commit))
         return lines
+
+    @staticmethod
+    def _render_commit_entry(index: int, commit: dict[str, Any]) -> list[str]:
+        """渲染单条 commit 展示组：加粗标题行 + 字段行 + 组尾空行。"""
+
+        commit_sha = str(commit.get("id") or "")[:8]
+        title = str(commit.get("title") or "").strip()
+        author_name = str(commit.get("author_name") or "")
+        created_at = str(commit.get("timestamp") or "")
+        url = str(commit.get("url") or "")
+
+        header = f"**{index}. {commit_sha}"
+        if title:
+            header += f" {title}"
+        field_lines = [
+            _kv("提交者", f"@{author_name}" if author_name else None),
+            _kv("时间", _format_created_at(created_at) if created_at else None),
+            _link("查看提交详情", url),
+        ]
+        return [header + "**", *(line for line in field_lines if line), ""]
 
     @staticmethod
     def _build_summary_section(
@@ -509,16 +549,20 @@ class NotificationService:
     ) -> list[str]:
         """构造「📋 审查摘要」区块；各字段缺失时逐行降级跳过。"""
 
-        lines = ["**📋 审查摘要**", ""]
-        if changed_files_count > 0:
-            lines.append(f"- 变更规模：涉及 {changed_files_count} 个文件")
-        result_line = NotificationService._build_result_line(
-            findings_summary,
-            finding_count,
-            blocker_count,
-        )
-        lines.append(f"- 总体评价：{result_line}")
-        return lines
+        field_lines = [
+            _kv("变更规模", f"涉及 {changed_files_count} 个文件")
+            if changed_files_count > 0
+            else None,
+            _kv(
+                "总体评价",
+                NotificationService._build_result_line(
+                    findings_summary,
+                    finding_count,
+                    blocker_count,
+                ),
+            ),
+        ]
+        return ["**📋 审查摘要**", "", *(line for line in field_lines if line)]
 
     @staticmethod
     def _build_result_line(
@@ -562,29 +606,38 @@ class NotificationService:
                 continue
             max_items = _MAX_ITEMS_PER_SEVERITY[severity]
             shown = items if max_items is None else items[:max_items]
-            lines.append("")
-            lines.append(f"**{badge} {label}问题 ({len(items)})**")
-            lines.append("")
+            lines.extend(["", f"**{badge} {label}问题 ({len(items)})**", ""])
             for index, item in enumerate(shown, start=1):
-                title_text = str(item.get("title") or "")
-                file_path = str(item.get("file_path") or "")
-                line_number = item.get("line_number")
-                location = f"{file_path}:{line_number}" if line_number else file_path
-                lines.append(f"**{index}. {title_text}**")
-                lines.append("")
-                lines.append(
-                    f"- 问题类型：{NotificationService._format_category(item.get('category'))}"
-                )
-                lines.append(
-                    f"- 严重程度：{NotificationService._format_severity(item.get('severity'))}"
-                )
-                lines.append(f"- 相关文件：`{file_path}`")
-                lines.append(f"- 代码位置：`{location}`")
-                lines.append("")
+                lines.extend(NotificationService._render_finding_item(item, index))
             omitted = len(items) - len(shown)
             if omitted > 0:
                 lines.append(f"...（还有 {omitted} 条，详见详情页）")
         return lines
+
+    @staticmethod
+    def _render_finding_item(item: dict[str, Any], index: int) -> list[str]:
+        """渲染单条问题的展示段落：加粗标题 + 字段行 + 段尾空行。"""
+
+        title_text = str(item.get("title") or "")
+        file_path = str(item.get("file_path") or "")
+        line_number = item.get("line_number")
+        location = f"{file_path}:{line_number}" if line_number else file_path
+        category = NotificationService._format_category(item.get("category"))
+        severity = NotificationService._format_severity(item.get("severity"))
+        return [
+            f"**{index}. {title_text}**",
+            "",
+            *filter(
+                None,
+                [
+                    _kv("问题类型", category),
+                    _kv("严重程度", severity),
+                    _kv("相关文件", f"`{file_path}`"),
+                    _kv("代码位置", f"`{location}`"),
+                ],
+            ),
+            "",
+        ]
 
     @staticmethod
     def _format_category(category_raw: object) -> str:

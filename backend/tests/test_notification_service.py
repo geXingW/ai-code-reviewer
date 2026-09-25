@@ -171,8 +171,8 @@ def test_build_message_contains_mr_link_and_grouped_findings() -> None:
     assert "🟡 警告问题 (1)" in text
     assert "**1. SQL 注入风险**" in text
     assert "**2. 硬编码密钥**" in text
-    assert "- 代码位置：`auth/login.py:45`" in text
-    assert "- 代码位置：`config/database.py:12`" in text
+    assert "- 代码位置: `auth/login.py:45`" in text
+    assert "- 代码位置: `config/database.py:12`" in text
     assert text.index("🔴 阻断问题 (2)") < text.index("🟡 警告问题 (1)")
     # 详情页链接不再渲染进正文
     assert "[查看完整审查详情](http://x/reviews/r-1)" not in text
@@ -273,8 +273,8 @@ def test_build_message_renders_summary_section() -> None:
     assert "📋 审查摘要" in text
     # PR概述已移除（MR 标题放在「提交信息」区块，避免重复）
     assert "PR概述" not in text
-    assert "- 变更规模：涉及 3 个文件" in text
-    assert "- 总体评价：🔴 阻断 1 个" in text
+    assert "- 变更规模: 涉及 3 个文件" in text
+    assert "- 总体评价: 🔴 阻断 1 个" in text
 
 
 def test_build_message_summary_omits_scale_when_zero_files() -> None:
@@ -293,7 +293,7 @@ def test_build_message_summary_omits_scale_when_zero_files() -> None:
     )
     assert "📋 审查摘要" in text
     assert "变更规模" not in text
-    assert "- 总体评价：" in text
+    assert "- 总体评价:" in text
 
 
 def test_build_message_truncates_warning_and_info_to_five_items() -> None:
