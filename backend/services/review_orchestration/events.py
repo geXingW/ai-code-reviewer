@@ -75,6 +75,8 @@ class GitLabCommitEvent:
         author_name: 同上，显示名。
         created_at: commit 时间（ISO 或 Ruby ``to_s`` 字符串，webhook
             ``commit.timestamp`` 原样透传）；缺失时 ``""``，通知侧不展示。
+        web_url: commit 页面链接（webhook ``commit.url`` 原样透传，形如
+            ``{gitlab_base}/{project_path}/-/commit/{sha}``）；缺失时 ``None``。
     """
 
     project_id: int
@@ -86,6 +88,7 @@ class GitLabCommitEvent:
     author_username: str | None = None
     author_name: str | None = None
     created_at: str = ""
+    web_url: str | None = None
 
     @property
     def project_uuid(self) -> UUID:
@@ -108,8 +111,11 @@ class GitLabPushEvent:
         branch: push 目标分支名（``ref`` 去掉 ``refs/heads/`` 前缀）。
         before_sha: push 前 ref 指向的 commit SHA（新建分支时为 40 个 0）。
         after_sha: push 后 ref 指向的 commit SHA（head commit）。
-        commits: ``[{"id": sha, "title": ..., "message": ...}, ...]``，
-            保持 payload 的时间序（旧 -> 新）。
+        commits: ``[{"id": sha, "title": ..., "message": ..., "url": ...,
+            "author_name": ...}, ...]``，保持 payload 的时间序（旧 -> 新）；
+            ``author_name`` 为 commit 作者显示名（webhook ``commit.author.name``，
+            push webhook 的 commit 对象只有 name/email 没有 username），
+            通知侧「提交信息」区块逐 commit 列出并 @ 用。
         author_username: push 触发者的 GitLab 用户名；缺失时 ``None``。
         author_name: 同上，显示名。
         created_at: 本次 push 的代表时间（head commit 的 ``timestamp`` 原样
@@ -153,6 +159,19 @@ class GitLabPushEvent:
             if title:
                 return title
         return ""
+
+    @property
+    def web_url(self) -> str | None:
+        """head commit 的 GitLab 页面链接（commits 最后一跳的 ``url``）。
+
+        与 :class:`GitLabCommitEvent.web_url` 语义对齐，让 MR / commit / push
+        三条审查链路的通知复用同一个 duck-typing 字段；缺失时返回 ``None``。"""
+
+        for commit in reversed(self.commits):
+            url = str(commit.get("url") or "").strip()
+            if url:
+                return url
+        return None
 
 
 # provider / rules / history 三个 resolve helper 只依赖 event.project_id，

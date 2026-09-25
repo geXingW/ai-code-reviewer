@@ -32,7 +32,8 @@ class CommitReviewResult:
             **不落库**）；跳过路径下为 None。
         project_uuid: 项目内部 UUID 投影。
         status: ``done`` / ``engine_error`` / ``skipped_merge_commit`` /
-            ``skipped_root_commit`` / ``skipped_disabled``。
+            ``skipped_root_commit`` / ``skipped_disabled`` /
+            ``skipped_no_policy``。
         finding_count: engine 产出（或空审时 0）的 finding 数。
         has_blocker: 是否命中阻断策略。
         note_id: 汇总评论的 GitLab comment id。

@@ -223,23 +223,56 @@ class NotificationService:
             )
             return []
 
+    @staticmethod
+    def _collect_authors(review_data: dict[str, Any]) -> list[str]:
+        """收集本次审查需要真实 @ 的提交人（去重、保序），供 atMobiles 解析使用。
+
+        顺序：commits 各 commit 作者（旧 -> 新）+ push 触发者 / MR 创建人。
+        commit 作者取 ``commit.author_name``（push webhook 的 commit 对象只有
+        name/email 没有 username，尽力按 gitlab_username 查映射，查不到跳过）；
+        触发者优先 ``mr_author_username``（与 user_mappings 查询键一致），
+        缺失时回退 ``mr_author_name``。空字符串全部跳过；返回空列表表示无
+        提交人可 @。
+        """
+
+        authors: list[str] = []
+        commits = review_data.get("commits")
+        if isinstance(commits, list):
+            for commit in commits:
+                if not isinstance(commit, dict):
+                    continue
+                name = str(commit.get("author_name") or "").strip()
+                if name and name not in authors:
+                    authors.append(name)
+        trigger = (
+            str(review_data.get("mr_author_username") or "").strip()
+            or str(review_data.get("mr_author_name") or "").strip()
+        )
+        if trigger and trigger not in authors:
+            authors.append(trigger)
+        return authors
+
     async def _resolve_at_mobiles(
         self,
         gitlab_project_id: int,
         review_data: dict[str, Any],
     ) -> list[str]:
-        """解析要 @ 的手机号列表（MR 创建人的钉钉绑定手机号）。
+        """解析要 @ 的手机号列表（本次审查**所有提交人**的钉钉绑定手机号）。
 
-        - ``review_data["mr_author_username"]`` 缺失 / ``session_factory`` 未注入：
-          返回空列表（MVP 兼容、MR 无作者信息时不 @ 人）。
+        - ``review_data`` 中无提交人 / ``session_factory`` 未注入：返回空列表
+          （MVP 兼容、无作者信息时不 @ 人）。
+        - 提交人集合由 :meth:`_collect_authors` 给出：push 触发者 / MR 创建人
+          （``mr_author_username``，与 user_mappings 查询键一致）+ 多 commit
+          push 各 commit 作者（``commits[].author_name``，尽力按
+          gitlab_username 匹配）；查询键重复自动去重，手机号同样去重。
         - Project 未注册：返回空。
-        - 映射表查不到该 GitLab 用户名：**fail-silent**，记 debug 日志返回空，
-          绝不因「没配置映射」阻断通知。
+        - 映射表查不到某个 GitLab 用户名：**fail-silent**，记 debug 日志跳过
+          该用户，绝不因「没配置映射」阻断通知；其余用户继续解析。
         - DB 异常：记 warning 返回空，不影响推送。
         """
 
-        author_username = review_data.get("mr_author_username")
-        if not author_username or self._session_factory is None:
+        usernames = self._collect_authors(review_data)
+        if not usernames or self._session_factory is None:
             return []
         try:
             async with self._session_factory() as session:
@@ -250,27 +283,31 @@ class NotificationService:
                 if project is None:
                     return []
                 mapping_repo = UserMappingRepository(session)
-                mapping = await mapping_repo.get_by_gitlab_username(
-                    project.id,
-                    str(author_username),
-                )
-                if mapping is None:
-                    logger.debug(
-                        "no user mapping for mr author; skipping @ mention",
-                        extra={
-                            "gitlab_project_id": gitlab_project_id,
-                            "gitlab_username": author_username,
-                        },
+                mobiles: list[str] = []
+                for username in usernames:
+                    mapping = await mapping_repo.get_by_gitlab_username(
+                        project.id,
+                        username,
                     )
-                    return []
-                return [mapping.dingtalk_mobile]
+                    if mapping is None:
+                        logger.debug(
+                            "no user mapping for review author; skipping @ mention",
+                            extra={
+                                "gitlab_project_id": gitlab_project_id,
+                                "gitlab_username": username,
+                            },
+                        )
+                        continue
+                    if mapping.dingtalk_mobile not in mobiles:
+                        mobiles.append(mapping.dingtalk_mobile)
+                return mobiles
         except Exception:
             logger.warning(
-                "failed to resolve at-mobiles for mr author; pushing without @",
+                "failed to resolve at-mobiles for review authors; pushing without @",
                 exc_info=True,
                 extra={
                     "gitlab_project_id": gitlab_project_id,
-                    "gitlab_username": author_username,
+                    "gitlab_usernames": usernames,
                 },
             )
             return []
@@ -278,20 +315,28 @@ class NotificationService:
     def _build_review_message(self, review_data: dict[str, Any]) -> tuple[str, str]:
         """构造消息标题与 markdown 正文。
 
-        正文分两层：``提交信息`` 区块（MR / commit 维度信息，任一字段缺失时
-        逐行降级，全缺失时整个区块跳过）+ ``AI Review 结果`` 区块（审查摘要、
-        按严重级别分组的问题列表、详情页链接），区块与每条问题之间用空行分隔，
-        便于钉钉端阅读。
+        正文分两层：``提交信息`` 区块（MR / commit 维度信息与审查详情页链接，
+        任一字段缺失时逐行降级，全缺失时整个区块跳过）+ ``AI Review 结果``
+        区块（审查摘要、按严重级别分组的问题列表），区块与每条问题之间用空行
+        分隔，便于钉钉端阅读。
 
         ``review_data`` 约定字段：``review_id`` / ``mr_iid`` / ``mr_title`` /
         ``finding_count`` / ``has_blocker`` / ``blocker_count`` / ``detail_url`` /
-        ``status``（``"done"`` / ``"engine_error"``），以及可选字段：
+        ``status``（``"done"`` / ``"engine_error"``）/ ``review_kind``（``"mr"``
+        默认 / ``"commit"``，决定标题与标签前缀），以及可选字段：
 
-        - ``mr_web_url: str | None``：MR 跳转链接，「提交信息」区块用。
+        - ``gitlab_web_url: str | None``：GitLab 页面链接（MR 审查为 MR 链接、
+          commit push 审查为 head commit 链接），「提交信息」区块用。
         - ``mr_author_username`` / ``mr_author_name``：MR 创建人信息
-          （@ 人由 :meth:`_resolve_at_mobiles` 处理，这里用于显示创建人）。
+          （@ 人由 :meth:`_resolve_at_mobiles` 处理，这里用于正文显示）。
         - ``mr_created_at: str``：MR / commit 创建时间（ISO 或 Ruby ``to_s``
           字符串），可能为空；展示时统一转北京时间。
+        - ``commits: list[dict] | None``：多 commit push 审查的完整 commit
+          列表，形如 ``[{"id", "title", "message", "timestamp", "url",
+          "author_name"}, ...]``（时间序，旧 -> 新）。非空时「提交信息」区块
+          逐条列出每个 commit（短 SHA + 标题 / 提交者 @作者名 / 时间 / 提交
+          详情链接），参照 AI-Codereview-Gitlab 的多提交展示方式；为
+          ``None``（MR / 单 commit 审查）时回退单条展示。
         - ``findings_summary: list[dict] | None``：按严重级别分组的精简 finding
           列表，形如 ``[{"severity": "BLOCKER", "items": [{"title",
           "file_path", "line_number", "severity", "category"}, ...]}, ...]``。
@@ -308,7 +353,7 @@ class NotificationService:
         status_value = str(review_data.get("status") or "done")
         mr_iid = review_data.get("mr_iid")
         mr_title = str(review_data.get("mr_title") or "")
-        mr_web_url = review_data.get("mr_web_url")
+        gitlab_web_url = review_data.get("gitlab_web_url")
         finding_count = int(review_data.get("finding_count") or 0)
         blocker_count = int(review_data.get("blocker_count") or 0)
         has_blocker = bool(review_data.get("has_blocker"))
@@ -318,22 +363,32 @@ class NotificationService:
         mr_author_name = str(review_data.get("mr_author_name") or "")
         mr_author_username = str(review_data.get("mr_author_username") or "")
         mr_created_at = str(review_data.get("mr_created_at") or "")
+        # 多 commit push 审查的完整 commit 列表（含各 commit 作者名）；
+        # 非空时「提交信息」区块逐条列出并 @ 各作者，None 回退单条展示。
+        commits = review_data.get("commits")
+        # 审查对象类型：默认 MR；commit push 审查传 "commit"，标题用 Commit 短 SHA。
+        review_kind = str(review_data.get("review_kind") or "mr")
 
-        mr_label = f"!{mr_iid}" if mr_iid is not None else "未知"
+        label_prefix = "Commit" if review_kind == "commit" else "MR"
+        mr_label = f"{label_prefix} {mr_iid}" if mr_iid is not None else "未知"
         if status_value == "engine_error":
-            title = f"【AI Code Review】MR {mr_label} 审查异常"
+            title = f"【AI Code Review】{mr_label} 审查异常"
         elif has_blocker:
-            title = f"【AI Code Review】MR {mr_label} 审查完成 - 存在阻断"
+            title = f"【AI Code Review】{mr_label} 审查完成 - 存在阻断"
         else:
-            title = f"【AI Code Review】MR {mr_label} 审查完成 - 无阻断"
+            title = f"【AI Code Review】{mr_label} 审查完成 - 无阻断"
 
         lines = [f"### {title}", ""]
 
         mr_section = self._build_mr_section(
             mr_title=mr_title,
-            author=mr_author_name or mr_author_username,
+            # @ 优先 GitLab 用户名（与 user_mappings 的查询键一致）。
+            author=mr_author_username or mr_author_name,
             created_at=mr_created_at,
-            web_url=mr_web_url,
+            gitlab_web_url=gitlab_web_url,
+            detail_url=detail_url,
+            review_kind=review_kind,
+            commits=commits,
         )
         if mr_section:
             lines.extend(mr_section)
@@ -356,13 +411,11 @@ class NotificationService:
                 lines.extend(["", "**📋 关键问题清单**"])
                 lines.extend(self._build_findings_section(findings_summary))
 
-        if detail_url:
-            lines.append("")
-            lines.append(f"[查看完整审查详情]({detail_url})")
-
         text = "\n".join(lines)
         if len(text) > _MAX_MESSAGE_LENGTH:
             # 超长会被钉钉整条拒绝；截断保底，细节引导到详情页。
+            # 截断保留头部：标题与「提交信息」区块（含 @创建人）始终完整；
+            # 真实 @手机号由钉钉客户端在截断后的正文末尾追加，同样不会被截掉。
             text = (
                 text[:_MAX_MESSAGE_LENGTH]
                 + "\n\n...（消息过长已截断，详见详情页）"
@@ -375,16 +428,29 @@ class NotificationService:
         mr_title: str,
         author: str,
         created_at: str,
-        web_url: str | None,
+        gitlab_web_url: str | None,
+        detail_url: str | None,
+        review_kind: str = "mr",
+        commits: list[dict[str, Any]] | None = None,
     ) -> list[str]:
-        """构造「提交信息」区块；四个字段全为空时返回空列表（跳过整个区块）。
+        """构造「提交信息」区块；六个字段全为空时返回空列表（跳过整个区块）。
 
         ``created_at`` 来自 GitLab webhook（ISO 或 Ruby ``to_s`` 字符串，常带
         ``UTC`` 后缀 / 时区偏移），展示时统一转换为北京时间（UTC+8）并去掉
         时区后缀，避免国内用户看到 ``10:31:01 UTC`` 这类反直觉的时间。
+        ``author`` 用 GitLab 用户名（与 user_mappings 查询键一致），位于区块
+        头部，超长截断（保留头部）不会被截掉。
+        ``detail_url`` 为审查详情页链接，渲染在区块末尾，供快速跳转完整结果。
+        ``gitlab_web_url`` 按 ``review_kind`` 区分链接文案（MR / 提交详情）。
+        ``commits`` 非空（多 commit push 审查）时跳过单条字段展示，改为逐条
+        列出每个 commit（参照 AI-Codereview-Gitlab：短 SHA + 标题 / 提交者
+        @作者名 / 时间 / 提交详情链接），每个 commit 的作者以 @ 形式展示，
+        不依赖 user_mappings 映射配置。
         """
 
-        if not (mr_title or author or created_at or web_url):
+        if commits:
+            return NotificationService._build_commits_section(commits)
+        if not (mr_title or author or created_at or gitlab_web_url or detail_url):
             return []
         lines = ["**📋 提交信息**", ""]
         if mr_title:
@@ -393,8 +459,44 @@ class NotificationService:
             lines.append(f"- 创建人: {author}")
         if created_at:
             lines.append(f"- 创建时间: {_format_created_at(created_at)}")
-        if web_url:
-            lines.append(f"- [查看MR详情]({web_url})")
+        if gitlab_web_url:
+            link_label = "查看提交详情" if review_kind == "commit" else "查看MR详情"
+            lines.append(f"- [{link_label}]({gitlab_web_url})")
+        # if detail_url:
+        #     lines.append(f"- [查看完整审查详情]({detail_url})")
+        return lines
+
+    @staticmethod
+    def _build_commits_section(commits: list[dict[str, Any]]) -> list[str]:
+        """多 commit push 审查的「提交信息」区块：逐条列出每个 commit。
+
+        参照 AI-Codereview-Gitlab 的展示方式（每条 commit 一组：提交信息 /
+        提交者 / 时间 / 提交详情链接），适配本项目的 markdown 风格：每条
+        commit 以 ``**N. 短SHA 标题**`` 开头，组内字段化展示，组间空行分隔；
+        提交者渲染为 ``@作者名``（来自 webhook ``commit.author.name``），即使
+        未配置 user_mappings 也展示，且位于正文头部，超长截断（保留头部）
+        不会被截掉；真实 @高亮由 atMobiles（所有提交人中配置了映射的）负责。
+        """
+
+        lines = ["**📋 提交信息**", ""]
+        for index, commit in enumerate(commits, start=1):
+            commit_sha = str(commit.get("id") or "")[:8]
+            title = str(commit.get("title") or "").strip()
+            author_name = str(commit.get("author_name") or "")
+            created_at = str(commit.get("timestamp") or "")
+            url = str(commit.get("url") or "")
+
+            header = f"**{index}. {commit_sha}"
+            if title:
+                header += f" {title}"
+            lines.append(header + "**")
+            if author_name:
+                lines.append(f"- 提交者: @{author_name}")
+            if created_at:
+                lines.append(f"- 时间: {_format_created_at(created_at)}")
+            if url:
+                lines.append(f"- [查看提交详情]({url})")
+            lines.append("")
         return lines
 
     @staticmethod

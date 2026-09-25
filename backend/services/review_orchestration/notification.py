@@ -55,6 +55,7 @@ async def _push_review_notification(
             gitlab_project_id=event.project_id,
             review_data={
                 "review_id": str(review_id),
+                "review_kind": "mr",
                 "mr_iid": event.mr_iid,
                 "mr_title": event.title,
                 "finding_count": finding_count,
@@ -67,7 +68,7 @@ async def _push_review_notification(
                 "status": status_value,
                 "mr_author_username": event.author_username,
                 "mr_author_name": event.author_name,
-                "mr_web_url": event.web_url,
+                "gitlab_web_url": event.web_url,
                 "findings_summary": _build_findings_summary(findings or []),
                 "mr_created_at": event.created_at,
                 "changed_files_count": changed_files_count,
@@ -92,18 +93,27 @@ async def _push_commit_review_notification(
     """推送 commit 审查完成通知（best-effort，失败不影响主流程）。
 
     参照 :meth:`_push_review_notification`，但 commit 审查没有 MR 上下文，
-    ``mr_iid`` / ``mr_title`` 等 MR 语义字段用 commit 信息替代。
+    ``mr_iid`` / ``mr_title`` 等 MR 语义字段用 commit 信息替代，并标记
+    ``review_kind="commit"`` 供通知侧区分标题（Commit 短 SHA 而非 MR 编号）；
+    ``gitlab_web_url`` 取 head commit 的页面链接（webhook ``commit.url``）。
+    push 事件（含 ``commits`` 属性）还会把完整 commit 列表透传给通知侧，
+    供「提交信息」区块逐条列出并 @ 各 commit 作者（参照
+    AI-Codereview-Gitlab 的多提交展示方式）；单 commit 事件无此字段，
+    通知侧回退单条展示。
     未注入 ``notification_service`` 时直接跳过；任何异常（含推送失败）都被
     吞成 warning 日志，绝不阻断 commit 审查主流程。
     """
 
     if notification_service is None:
+        logger.info("Notification service is not injected")
         return
+    logger.info("Pushing commit review notification")
     try:
         await notification_service.send_review_completed(
             gitlab_project_id=event.project_id,
             review_data={
                 "review_id": str(review_id),
+                "review_kind": "commit",          # 通知侧用 Commit 短 SHA 标题
                 "mr_iid": event.commit_sha[:8],  # commit 短 SHA 作为标识
                 "mr_title": event.title,          # commit message 首行
                 "finding_count": finding_count,
@@ -116,10 +126,13 @@ async def _push_commit_review_notification(
                 "status": status_value,
                 "mr_author_username": event.author_username,
                 "mr_author_name": event.author_name,
-                "mr_web_url": None,  # commit 没有 MR 链接
+                "gitlab_web_url": event.web_url,  # head commit 的 GitLab 链接
                 "findings_summary": _build_findings_summary(findings or []),
                 "mr_created_at": event.created_at,
                 "changed_files_count": 0,
+                # 多 commit push 通知：逐条列出并 @ 各 commit 作者；
+                # 单 commit 事件无该属性，通知侧回退单条展示。
+                "commits": getattr(event, "commits", None),
             },
         )
     except Exception as exc:

@@ -11,12 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.block_policy import (
-    BlockPolicyLike,
-    build_default_block_policies,
-    compute_has_blocker,
-    match_block_policy,
-)
+from core.block_policy import BlockPolicyLike, compute_has_blocker
 from core.diff_filter import DiffFilterConfig
 from core.summary_builder import build_review_summary_note
 from engines import ReviewContext
@@ -60,6 +55,7 @@ from services.review_orchestration.planning import (
     _fetch_changes_for_plan,
     _plan_review,
 )
+from services.review_orchestration.policy import resolve_policy_or_skip
 from services.review_orchestration.resolution import (
     _resolve_history,
     _resolve_provider,
@@ -150,12 +146,21 @@ class ReviewOrchestrator:
 
         started_at = time.perf_counter()
         review_id = uuid4()
-        block_policy = match_block_policy(
-            self._block_policies or build_default_block_policies(event.project_uuid),
-            event.target_branch,
+        matched = resolve_policy_or_skip(
+            block_policies=self._block_policies,
+            project_uuid=event.project_uuid,
+            project_id=event.project_id,
+            branch=event.target_branch,
         )
-        policy_applied = f"{block_policy.branch_pattern} -> {block_policy.block_severity}"
-        logger.info("Applying policy", extra={"policy_applied": policy_applied})
+        if matched is None:
+            return OrchestratorResult(
+                review_id=None,
+                project_uuid=event.project_uuid,
+                status="skipped_no_policy",
+                finding_count=0,
+                has_blocker=False,
+            )
+        block_policy, policy_applied = matched
 
         # 按 (project, mr_iid) 决定这次是全量 / 增量 / 复用。
         plan = await _plan_review(
@@ -385,6 +390,8 @@ class ReviewOrchestrator:
         行为规则（管线在 :class:`CommitReviewHandler`，此处只做委托）：
           - 项目级 ``project.commit_review_enabled=False`` -> skipped_disabled
             （查不到 Project--无 DB / 未注册--时回退全局 settings 开关）；
+          - 分支未匹配任何 block policy -> skipped_no_policy（只记日志，
+            不评论、不设 status、不通知）；
           - merge commit（parent_ids >1）-> skipped_merge_commit；根提交
             （parent_ids 为空）-> skipped_root_commit，均无评论无通知；
           - diff 过滤后为空 -> 0 findings + 汇总评论"无可审查变更" + 通知；
@@ -411,6 +418,8 @@ class ReviewOrchestrator:
 
         行为规则（管线在 :class:`PushReviewHandler`，此处只做委托）：
           - 项目级 ``project.commit_review_enabled=False`` -> skipped_disabled；
+          - 分支未匹配任何 block policy -> skipped_no_policy（只记日志，
+            不评论、不设 status、不通知）；
           - compare 失败 / 异常 -> skipped_no_changes（记 warning，不误报失败）；
           - diff 过滤后为空 -> 0 findings + 汇总评论"无可审查变更" + success status；
           - engine 异常 -> commit status failed + 审查失败评论，绝不静默通过。

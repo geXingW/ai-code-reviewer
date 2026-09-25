@@ -29,7 +29,11 @@ async def seed_engine() -> None:
 
 
 async def seed_block_policies() -> None:
-    """Insert global default block policy templates if they do not exist."""
+    """Insert global default block policy templates if they do not exist.
+
+    与 ``core.block_policy._DEFAULT_POLICY_TEMPLATES`` 语义一致：只覆盖主干 /
+    发布分支，不配置 `*` 兜底 -- 未匹配到策略的分支不触发审核。
+    """
 
     policies = [
         {
@@ -40,20 +44,32 @@ async def seed_block_policies() -> None:
         },
         {
             "priority": 2,
-            "branch_pattern": "release/*",
+            "branch_pattern": "main",
             "block_severity": "BLOCKER",
             "require_all_resolved": False,
         },
         {
             "priority": 3,
+            "branch_pattern": "develop",
+            "block_severity": "BLOCKER",
+            "require_all_resolved": False,
+        },
+        {
+            "priority": 4,
+            "branch_pattern": "release/*",
+            "block_severity": "BLOCKER",
+            "require_all_resolved": False,
+        },
+        {
+            "priority": 5,
             "branch_pattern": "hotfix/*",
             "block_severity": "BLOCKER",
             "require_all_resolved": False,
         },
         {
-            "priority": 99,
-            "branch_pattern": "*",
-            "block_severity": "NONE",
+            "priority": 6,
+            "branch_pattern": "test",
+            "block_severity": "BLOCKER",
             "require_all_resolved": False,
         },
     ]

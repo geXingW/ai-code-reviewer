@@ -116,11 +116,12 @@ async def test_orchestrator_notifies_on_success() -> None:
     assert kwargs["gitlab_project_id"] == 999
     review_data = kwargs["review_data"]
     assert review_data["status"] == "done"
+    assert review_data["review_kind"] == "mr"
     assert review_data["finding_count"] == 1
     assert review_data["mr_iid"] == 42
     assert review_data["mr_title"] == "test MR"
     # 扩展字段：MR 链接 / 作者信息（供 @ 创建人）/ 分组 finding 摘要。
-    assert review_data["mr_web_url"] == "http://gitlab.example.com/mr/42"
+    assert review_data["gitlab_web_url"] == "http://gitlab.example.com/mr/42"
     assert review_data["mr_author_username"] == "alice"
     assert review_data["mr_author_name"] == "Alice Zhang"
     assert review_data["findings_summary"] == [
@@ -165,7 +166,7 @@ async def test_orchestrator_notifies_on_engine_error_with_empty_summary() -> Non
     assert review_data["status"] == "engine_error"
     assert review_data["finding_count"] == 0
     assert review_data["findings_summary"] == []
-    assert review_data["mr_web_url"] == "http://gitlab.example.com/mr/42"
+    assert review_data["gitlab_web_url"] == "http://gitlab.example.com/mr/42"
     assert review_data["mr_author_username"] == "alice"
 
 

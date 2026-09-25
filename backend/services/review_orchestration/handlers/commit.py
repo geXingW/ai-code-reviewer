@@ -29,6 +29,8 @@ class CommitReviewHandler(ReviewCommitStyleHandler[GitLabCommitEvent]):
     行为规则：
       - 项目级 ``project.commit_review_enabled=False`` -> skipped_disabled
         （查不到 Project--无 DB / 未注册--时回退全局 settings 开关）；
+      - 分支未匹配任何 block policy -> skipped_no_policy（只记日志，
+        不评论、不设 status、不通知）；
       - merge commit（parent_ids >1）-> skipped_merge_commit；根提交
         （parent_ids 为空）-> skipped_root_commit，均无评论无通知；
       - diff 过滤后为空 -> 0 findings + 汇总评论"无可审查变更" + 通知；

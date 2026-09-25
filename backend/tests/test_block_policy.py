@@ -48,11 +48,10 @@ def test_match_block_policy_uses_priority_order_and_fnmatch_patterns() -> None:
     assert match_block_policy(policies, "feature/x").block_severity == "NONE"
 
 
-def test_match_block_policy_raises_when_no_policy_matches() -> None:
-    """A missing fallback is a configuration error and should fail loudly."""
+def test_match_block_policy_returns_none_when_no_policy_matches() -> None:
+    """未命中任何策略时返回 None（feature 等分支默认跳过审查），不再抛异常。"""
 
-    with pytest.raises(ValueError, match="No block policy matched"):
-        match_block_policy([BP(1, "master", "BLOCKER")], "feature/x")
+    assert match_block_policy([BP(1, "master", "BLOCKER")], "feature/x") is None
 
 
 @pytest.mark.parametrize(
@@ -99,7 +98,7 @@ def test_engine_error_blocking_is_controlled_by_policy_flag_and_threshold() -> N
 
 
 def test_default_block_policy_seed_templates_match_issue_contract() -> None:
-    """New project defaults should protect main branches incl. test and allow others."""
+    """New project defaults protect main branches incl. test; no catch-all fallback."""
 
     project_id = uuid4()
     defaults = build_default_block_policies(project_id=project_id)
@@ -111,10 +110,17 @@ def test_default_block_policy_seed_templates_match_issue_contract() -> None:
         (4, "release/*", BlockSeverity.BLOCKER.value),
         (5, "hotfix/*", BlockSeverity.BLOCKER.value),
         (6, "test", BlockSeverity.BLOCKER.value),
-        (99, "*", BlockSeverity.NONE.value),
     ]
     assert all(p.project_id == project_id for p in defaults)
     assert all(p.block_on_engine_error is False for p in defaults)
+
+
+def test_default_policies_do_not_match_feature_branches() -> None:
+    """默认模板刻意不配置 `*` 兜底：feature 分支不命中任何策略（跳过审查）。"""
+
+    defaults = build_default_block_policies(project_id=uuid4())
+    assert match_block_policy(defaults, "feature/x") is None
+    assert match_block_policy(defaults, "fix/sync-v002") is None
 
 
 def test_default_policies_include_main_and_develop() -> None:
@@ -126,7 +132,7 @@ def test_default_policies_include_main_and_develop() -> None:
 
 
 def test_match_block_policy_main_targets_blocker() -> None:
-    """target_branch=main 应命中 BLOCKER，不能掉到 `*` 兜底。"""
+    """target_branch=main 应命中 BLOCKER，不能漏配。"""
 
     defaults = build_default_block_policies(project_id=uuid4())
     matched = match_block_policy(defaults, "main")
@@ -135,7 +141,7 @@ def test_match_block_policy_main_targets_blocker() -> None:
 
 
 def test_match_block_policy_develop_targets_blocker() -> None:
-    """target_branch=develop 应命中 BLOCKER，不能掉到 `*` 兜底。"""
+    """target_branch=develop 应命中 BLOCKER，不能漏配。"""
 
     defaults = build_default_block_policies(project_id=uuid4())
     matched = match_block_policy(defaults, "develop")

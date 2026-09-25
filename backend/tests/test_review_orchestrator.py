@@ -278,9 +278,11 @@ async def test_orchestrator_posts_blocking_status_when_default_policy_blocks_mas
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_allows_blocker_on_feature_branch_by_default_policy() -> None:
-    """Default catch-all policy is NONE, so feature branches should not be blocked."""
+async def test_orchestrator_skips_review_when_no_policy_matches() -> None:
+    """默认模板无 `*` 兜底：feature 分支未命中任何策略 -> skipped_no_policy，
+    不跑 engine、不评论、不设 status。"""
 
+    engine = _RecordingEngine()
     gitlab = _FakeGitLabClient(changes={"changes": []})
     orchestrator = ReviewOrchestrator(
         gitlab_client=gitlab,
@@ -290,9 +292,12 @@ async def test_orchestrator_allows_blocker_on_feature_branch_by_default_policy()
 
     result = await orchestrator.review_merge_request(_event(target_branch="feature/demo"))
 
+    assert result.status == "skipped_no_policy"
+    assert result.finding_count == 0
     assert result.has_blocker is False
-    assert result.finding_count == 1
-    assert gitlab.statuses[0]["state"] == "success"
+    assert engine.contexts == []
+    assert gitlab.notes == []
+    assert gitlab.statuses == []
 
 
 @pytest.mark.asyncio
