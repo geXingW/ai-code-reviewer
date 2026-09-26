@@ -286,6 +286,29 @@ export type FindingRecord = {
   review_created_at?: string | null;
 };
 
+// agent 执行轨迹事件（llm-agent 引擎的中间过程留痕），对应后端
+// schemas/agent_trace.py 的 AgentTraceEventRead，GET /api/reviews/{id}/agent-trace。
+export type AgentTraceEventType =
+  | 'run_started'
+  | 'llm_response'
+  | 'tool_executed'
+  | 'run_finished'
+  | 'run_failed';
+
+export type AgentTraceEvent = {
+  id: string;
+  review_id: string;
+  seq: number;
+  turn: number | null;
+  event_type: AgentTraceEventType;
+  tool_name?: string | null;
+  // ok / timeout / error / malformed_arguments / unknown_tool / budget_exhausted
+  status?: string | null;
+  duration_ms?: number | null;
+  payload?: Record<string, unknown> | null;
+  created_at?: string;
+};
+
 export type NegativeExample = {
   id: string;
   rule_id: string;
@@ -860,6 +883,14 @@ export async function fetchReviewFindings(reviewId: string): Promise<FindingReco
   const response = await adminFetch(`/api/findings${suffix}`);
   const page = await parseJsonResponse<Page<FindingRecord>>(response, true);
   return page.items;
+}
+
+/** 拉取一次 review 的 agent 执行轨迹（按 seq 升序）。非 agent 引擎或无轨迹时为空数组。 */
+export async function fetchReviewAgentTrace(reviewId: string): Promise<AgentTraceEvent[]> {
+  const response = await adminFetch(
+    `/api/reviews/${encodeURIComponent(reviewId)}/agent-trace`,
+  );
+  return parseJsonResponse<AgentTraceEvent[]>(response, true);
 }
 
 export async function markFalsePositive(

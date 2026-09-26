@@ -1,5 +1,6 @@
 """SQLAlchemy ORM models for the AI code reviewer backend."""
 
+from models.agent_trace_event import AgentTraceEvent
 from models.audit_log import AuditLog
 from models.engine import Engine
 from models.finding import Finding
@@ -20,6 +21,7 @@ from models.user_mapping import UserMapping
 from models.user_project_assignment import UserProjectAssignment
 
 __all__ = [
+    "AgentTraceEvent",
     "AuditLog",
     "Engine",
     "Finding",
