@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
+import engines.llm_agent.engine as engine_module
 from core.config import Settings
 from engines.llm_agent.engine import LLMAgentEngine
+from engines.llm_agent.trace import AgentRunTracer, build_tracer
 from engines.types import DiffHunk, ProviderConfig, ReviewContext
+from llm import LLMError
 from llm.base import ChatMessage, ChatResponse, ToolCall, ToolSpec
 
 
@@ -149,6 +153,39 @@ def _tool_call_response(name: str = "read_file", arguments: str = "{}") -> ChatR
 
 def _settings(**overrides: Any) -> Settings:
     return Settings(llm_filter_enabled=False, **overrides)
+
+
+# ---- agent trace ----------------------------------------------------------------
+
+
+@dataclass
+class _RecordingSink:
+    """TraceSink 测试替身：把事件攒进列表供断言。"""
+
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+    async def emit(self, event: dict[str, Any]) -> None:
+        self.events.append(event)
+
+
+def _install_trace_recorder(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """把 engine.build_tracer 替换为带 recording sink 的 tracer，返回事件列表。"""
+
+    sink = _RecordingSink()
+
+    def fake_build_tracer(review_id: UUID, settings: Settings) -> AgentRunTracer:
+        return AgentRunTracer(
+            review_id=review_id,
+            sinks=[sink],
+            content_max_chars=settings.agent_trace_content_max_chars,
+        )
+
+    monkeypatch.setattr(engine_module, "build_tracer", fake_build_tracer)
+    return sink.events
+
+
+def _events_of(events: list[dict[str, Any]], event_type: str) -> list[dict[str, Any]]:
+    return [event for event in events if event["event_type"] == event_type]
 
 
 @pytest.mark.asyncio
@@ -433,3 +470,250 @@ async def test_agent_finding_out_of_diff_is_dropped() -> None:
     findings = await engine.review(_ctx(repo_reader=_FakeRepoReader()))
 
     assert findings == []
+
+
+# ---- agent trace 事件断言 --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_trace_records_full_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """完整生命周期：run_started -> 每轮 llm_response/tool_executed -> run_finished。"""
+
+    events = _install_trace_recorder(monkeypatch)
+    reader = _FakeRepoReader(files={"app/auth.py": "def login(): ...\n"})
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}'),
+            _final_response('{"findings": []}'),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+    ctx = _ctx(repo_reader=reader)
+
+    await engine.review(ctx)
+
+    assert [event["event_type"] for event in events] == [
+        "run_started",
+        "llm_response",
+        "tool_executed",
+        "llm_response",
+        "run_finished",
+    ]
+    # seq 从 1 起严格递增，review_id 全程一致。
+    assert [event["seq"] for event in events] == [1, 2, 3, 4, 5]
+    assert {event["review_id"] for event in events} == {str(ctx.review_id)}
+
+    started = events[0]["payload"]
+    assert started["model"] == "reviewer-1"
+    assert started["max_turns"] == 8
+    assert "read_file" in started["tool_names"]
+    assert started["budget_max_chars"] == 120000
+    assert started["system_prompt_chars"] > 0
+    assert started["user_prompt_chars"] > 0
+
+    first_response = events[1]
+    assert first_response["turn"] == 0
+    assert first_response["payload"]["tool_calls"] == [
+        {"id": "call-1", "name": "read_file", "arguments": '{"file_path": "app/auth.py"}'}
+    ]
+    assert first_response["duration_ms"] is not None
+
+    tool_event = events[2]
+    assert tool_event["tool_name"] == "read_file"
+    assert tool_event["status"] == "ok"
+    assert tool_event["payload"]["arguments"] == {"file_path": "app/auth.py"}
+    assert tool_event["payload"]["output"] == "def login(): ...\n"
+    assert tool_event["duration_ms"] is not None
+    assert tool_event["payload"]["budget_used"] == len("def login(): ...\n")
+
+    final_response = events[3]
+    assert final_response["turn"] == 1
+    assert final_response["payload"]["tool_calls"] == []
+    assert final_response["payload"]["is_closeout"] is False
+
+    finished = events[4]["payload"]
+    assert finished["findings_count"] == 0
+    assert finished["findings_before_filter"] == 0
+    assert finished["turns_used"] == 2
+    assert finished["filter_applied"] is False
+    assert "findings" in (finished["final_text"] or "")
+
+
+@pytest.mark.asyncio
+async def test_agent_trace_records_error_statuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """非法工具/非法参数在 trace 里保留具体 status，且审查照常收口。"""
+
+    events = _install_trace_recorder(monkeypatch)
+    reader = _FakeRepoReader()
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response("nonexistent_tool", "{}"),
+            _tool_call_response("read_file", "not-json"),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    tool_events = _events_of(events, "tool_executed")
+    assert [event["status"] for event in tool_events] == [
+        "unknown_tool",
+        "malformed_arguments",
+    ]
+    assert tool_events[0]["payload"]["output"].startswith("[error] unknown tool")
+    assert tool_events[1]["payload"]["output"].startswith("[error] malformed arguments")
+    assert reader.calls == []
+    assert _events_of(events, "run_finished"), "错误观察不应中断 run_finished"
+
+
+@pytest.mark.asyncio
+async def test_agent_trace_records_budget_exhausted_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = _install_trace_recorder(monkeypatch)
+    reader = _FakeRepoReader(files={"app/auth.py": "x" * 50})
+    exhausted_response = ChatResponse(
+        content="checking two things",
+        model="reviewer-1",
+        tool_calls=[
+            ToolCall(id="call-1", name="read_file", arguments='{"file_path": "app/auth.py"}'),
+            ToolCall(id="call-2", name="search_code", arguments='{"query": "login"}'),
+        ],
+    )
+    client = _FakeAgentClient(responses=[exhausted_response, _final_response()])
+    engine = LLMAgentEngine(
+        client=client,
+        settings=_settings(agent_max_turns=4, agent_total_context_max_chars=10),
+    )
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    tool_events = _events_of(events, "tool_executed")
+    assert [event["status"] for event in tool_events] == ["ok", "budget_exhausted"]
+    assert tool_events[1]["payload"]["output"].startswith("[error] context budget exhausted")
+
+
+@pytest.mark.asyncio
+async def test_agent_trace_records_timeout_and_error_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """工具抛异常 -> error；超时 -> timeout，都能从 trace 看出真实原因。"""
+
+    events = _install_trace_recorder(monkeypatch)
+
+    @dataclass
+    class _SlowAndExplodingReader:
+        calls: list = field(default_factory=list)
+
+        async def read_file(self, file_path: str, ref: str, *, max_chars: int = 8000) -> str:
+            self.calls.append(file_path)
+            if len(self.calls) == 1:
+                raise RuntimeError("gitlab down")
+            await asyncio.sleep(1.0)
+            return "never"
+
+        async def list_tree(self, path: str, ref: str, *, recursive: bool = False) -> str:
+            return ""
+
+        async def blame(self, file_path: str, ref: str, *, max_chars: int = 6000) -> str:
+            return ""
+
+        async def search(self, query: str, *, max_chars: int = 4000) -> str:
+            return ""
+
+        async def commit_history(
+            self, file_path: str, ref: str, limit: int = 10, *, max_chars: int = 3000
+        ) -> str:
+            return ""
+
+    reader = _SlowAndExplodingReader()
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response("read_file", '{"file_path": "a.py"}'),
+            _tool_call_response("read_file", '{"file_path": "b.py"}'),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings(agent_tool_timeout_seconds=0.1))
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    tool_events = _events_of(events, "tool_executed")
+    assert [event["status"] for event in tool_events] == ["error", "timeout"]
+    assert "gitlab down" in tool_events[0]["payload"]["output"]
+    assert "timed out" in tool_events[1]["payload"]["output"]
+
+
+@pytest.mark.asyncio
+async def test_agent_trace_run_failed_on_invalid_final_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = _install_trace_recorder(monkeypatch)
+    client = _FakeAgentClient(
+        responses=[ChatResponse(content="not json", model="reviewer-1")]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    await engine.review(_ctx(repo_reader=_FakeRepoReader()))
+
+    assert events[-1]["event_type"] == "run_failed"
+    assert events[-1]["payload"]["reason"] == "invalid_final_json"
+    assert _events_of(events, "run_finished") == []
+
+
+@pytest.mark.asyncio
+async def test_agent_trace_run_failed_on_llm_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    @dataclass
+    class _FailingClient:
+        async def complete_with_tools(self, **kwargs: Any) -> ChatResponse:
+            raise LLMError("provider unreachable")
+
+        async def complete(self, **kwargs: Any) -> str:
+            return '{"findings": []}'
+
+    events = _install_trace_recorder(monkeypatch)
+    engine = LLMAgentEngine(client=_FailingClient(), settings=_settings())
+
+    await engine.review(_ctx(repo_reader=_FakeRepoReader()))
+
+    assert [event["event_type"] for event in events] == ["run_started", "run_failed"]
+    assert events[-1]["payload"]["reason"] == "llm_error"
+    assert "provider unreachable" in (events[-1]["payload"]["error"] or "")
+
+
+@pytest.mark.asyncio
+async def test_agent_trace_marks_forced_closeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    events = _install_trace_recorder(monkeypatch)
+    reader = _FakeRepoReader()
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}'),
+            _tool_call_response("search_code", '{"query": "login"}'),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings(agent_max_turns=2))
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    llm_events = _events_of(events, "llm_response")
+    assert [event["payload"]["is_closeout"] for event in llm_events] == [False, False, True]
+    finished = _events_of(events, "run_finished")[0]["payload"]
+    assert finished["turns_used"] == 2
+
+
+def test_build_tracer_sinks_follow_settings() -> None:
+    review_id = uuid4()
+    both = build_tracer(
+        review_id, Settings(agent_trace_enabled=True, agent_trace_db_enabled=True)
+    )
+    assert [type(sink).__name__ for sink in both.sinks] == ["LogSink", "DbSink"]
+    log_only = build_tracer(
+        review_id, Settings(agent_trace_enabled=True, agent_trace_db_enabled=False)
+    )
+    assert [type(sink).__name__ for sink in log_only.sinks] == ["LogSink"]
+    none = build_tracer(
+        review_id, Settings(agent_trace_enabled=False, agent_trace_db_enabled=False)
+    )
+    assert none.sinks == []

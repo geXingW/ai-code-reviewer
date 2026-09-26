@@ -54,6 +54,8 @@ from repositories import (
     UserMappingRepository,
     UserRepository,
 )
+from repositories.agent_trace import AgentTraceEventRepository
+from schemas.agent_trace import AgentTraceEventRead
 from schemas.engine import EngineCreate, EngineRead, EngineUpdate
 from schemas.finding import FindingCreate, FindingRead, FindingUpdate
 from schemas.global_setting import (
@@ -1007,6 +1009,20 @@ async def get_review_record(review_id: UUID, db: DbSession) -> ReviewRead:
 
     review = await _get_or_404(db, Review, review_id, "Review")
     return _review_to_read(review)
+
+
+@router.get(
+    "/reviews/{review_id}/agent-trace",
+    response_model=list[AgentTraceEventRead],
+    dependencies=[Depends(_require_permission("page:reviews"))],
+)
+async def get_review_agent_trace(review_id: UUID, db: DbSession) -> list[AgentTraceEventRead]:
+    """Return the llm-agent execution trace events of one review, ordered by seq."""
+
+    await _get_or_404(db, Review, review_id, "Review")
+    repository = AgentTraceEventRepository(db)
+    events = await repository.list_by_review(review_id)
+    return [AgentTraceEventRead.model_validate(event) for event in events]
 
 
 @router.patch(

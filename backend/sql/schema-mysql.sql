@@ -4,6 +4,23 @@
 -- 使用方式：数据库为空库时手动执行本文件，应用启动不再自动建表。
 -- 注意：所有建库脚本均不包含外键约束，表间关联由应用层维护。
 
+CREATE TABLE agent_trace_events (
+	id CHAR(32) NOT NULL, 
+	review_id CHAR(32) NOT NULL, 
+	seq INTEGER NOT NULL, 
+	turn INTEGER, 
+	event_type VARCHAR(40) NOT NULL, 
+	tool_name VARCHAR(100), 
+	status VARCHAR(30), 
+	duration_ms INTEGER, 
+	payload JSON, 
+	created_at DATETIME NOT NULL, 
+	updated_at DATETIME NOT NULL, 
+	PRIMARY KEY (id)
+);
+
+CREATE INDEX ix_agent_trace_events_review_seq ON agent_trace_events (review_id, seq);
+
 CREATE TABLE audit_logs (
 	id CHAR(32) NOT NULL, 
 	actor VARCHAR(255), 

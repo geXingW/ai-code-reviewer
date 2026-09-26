@@ -22,6 +22,7 @@ import {
   type ProjectConfig,
   type ReviewRecord,
 } from '../api';
+import { AgentTraceDrawer } from '../components/AgentTraceDrawer';
 import { usePagedList, useDebouncedValue } from '../hooks/usePagedList';
 import { relativeTime } from '../lib/format';
 import {
@@ -70,6 +71,7 @@ export function ReviewRecordsPage({ initialFilters }: ReviewRecordsPageProps) {
   const { message } = AntApp.useApp();
   const [projects, setProjects] = useState<ProjectConfig[]>([]);
   const [expanded, setExpanded] = useState<Record<string, ExpandedFindings>>({});
+  const [traceReviewId, setTraceReviewId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -272,22 +274,38 @@ export function ReviewRecordsPage({ initialFilters }: ReviewRecordsPageProps) {
             if (state.error) {
               return <Alert type="error" showIcon message={state.error} />;
             }
-            if (state.items.length === 0) {
-              return <div className="py-2 text-[12px] text-zinc-500">暂无问题</div>;
-            }
             return (
-              <div className="divide-y divide-zinc-100">
-                {state.items.map((finding) => (
-                  <div key={finding.id} className="flex items-start justify-between gap-3 py-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-medium text-zinc-900">{finding.title}</div>
-                      <div className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">
-                        {finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id}
+              <div>
+                <div className="pb-2">
+                  <Button
+                    size="small"
+                    type="link"
+                    className="!px-0"
+                    onClick={() => setTraceReviewId(record.id)}
+                  >
+                    执行轨迹
+                  </Button>
+                  <span className="ml-2 text-[11px] text-zinc-400">
+                    查看 agent 调查过程：每轮模型响应与工具调用参数/输出
+                  </span>
+                </div>
+                {state.items.length === 0 ? (
+                  <div className="py-2 text-[12px] text-zinc-500">暂无问题</div>
+                ) : (
+                  <div className="divide-y divide-zinc-100">
+                    {state.items.map((finding) => (
+                      <div key={finding.id} className="flex items-start justify-between gap-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13px] font-medium text-zinc-900">{finding.title}</div>
+                          <div className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">
+                            {finding.file_path}:{finding.line_number ?? '-'} · {finding.rule_id}
+                          </div>
+                        </div>
+                        <SeverityTag severity={finding.severity} />
                       </div>
-                    </div>
-                    <SeverityTag severity={finding.severity} />
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
             );
           },
@@ -302,6 +320,7 @@ export function ReviewRecordsPage({ initialFilters }: ReviewRecordsPageProps) {
       <div className="pt-1 text-[12px] text-zinc-400">
         共 {total} 条历史审查（服务端分页，每页 {pagination.pageSize} 条）
       </div>
+      <AgentTraceDrawer reviewId={traceReviewId} onClose={() => setTraceReviewId(null)} />
     </Card>
   );
 }

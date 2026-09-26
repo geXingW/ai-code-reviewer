@@ -35,6 +35,16 @@ from engines.llm_agent.tools import (
     parse_tool_arguments,
     tool_to_spec,
 )
+from engines.llm_agent.trace import (
+    STATUS_BUDGET_EXHAUSTED,
+    STATUS_ERROR,
+    STATUS_MALFORMED_ARGUMENTS,
+    STATUS_OK,
+    STATUS_TIMEOUT,
+    STATUS_UNKNOWN_TOOL,
+    AgentRunTracer,
+    build_tracer,
+)
 from engines.llm_engine.engine import (
     LLMDirectEngine,
     _load_global_prompt,
@@ -291,10 +301,12 @@ class LLMAgentEngine(ReviewEngine):
             return []
 
         started_at = time.perf_counter()
+        tracer = build_tracer(ctx.review_id, self._settings)
         try:
-            findings = await self._run_agent_loop(ctx)
+            findings = await self._run_agent_loop(ctx, tracer)
         except NotImplementedError as exc:
             # custom 等不支持原生 tools 的 provider：明确降级而不是误报失败。
+            await tracer.run_failed(reason="provider_without_tools", error=str(exc))
             logger.warning(
                 "llm-agent: provider does not support native tool calling, "
                 "degrading to empty findings (review_id=%s): %s",
@@ -303,6 +315,7 @@ class LLMAgentEngine(ReviewEngine):
             )
             return []
         except LLMError as exc:
+            await tracer.run_failed(reason="llm_error", error=str(exc))
             logger.warning(
                 "llm-agent: LLM call failed, returning no findings "
                 "(review_id=%s): %s",
@@ -311,8 +324,16 @@ class LLMAgentEngine(ReviewEngine):
             )
             return []
 
+        findings_before_filter = len(findings)
         if self._settings.llm_filter_enabled:
             findings = await self._filter_engine._filter_findings(ctx, findings)
+
+        if not tracer.failed:
+            await tracer.run_finished(
+                findings_count=len(findings),
+                filter_applied=self._settings.llm_filter_enabled,
+                findings_before_filter=findings_before_filter,
+            )
 
         logger.info(
             "llm-agent review finished: %d finding(s), review_id=%s, took %dms",
@@ -347,7 +368,11 @@ class LLMAgentEngine(ReviewEngine):
 
     # ---- agent loop ----
 
-    async def _run_agent_loop(self, ctx: ReviewContext) -> list[Finding]:
+    async def _run_agent_loop(
+        self,
+        ctx: ReviewContext,
+        tracer: AgentRunTracer,
+    ) -> list[Finding]:
         """执行多轮工具调用循环，返回解析后的 findings。"""
 
         settings = self._settings
@@ -362,9 +387,19 @@ class LLMAgentEngine(ReviewEngine):
             ChatMessage(role="user", content=await self._build_user_prompt(ctx)),
         ]
         budget = _ObservationBudget(max_chars=settings.agent_total_context_max_chars)
+        await tracer.run_started(
+            provider_type=ctx.provider.provider_type,
+            model=ctx.provider.model,
+            max_turns=settings.agent_max_turns,
+            tool_names=[tool.name for tool in tools],
+            system_prompt_chars=len(system_prompt),
+            user_prompt_chars=len(messages[0].content),
+            budget_max_chars=budget.max_chars,
+        )
 
         final_text: str | None = None
         for turn in range(settings.agent_max_turns):
+            call_started = time.perf_counter()
             response = await self._client.complete_with_tools(
                 provider=ctx.provider,
                 messages=messages,
@@ -372,8 +407,22 @@ class LLMAgentEngine(ReviewEngine):
                 timeout_seconds=self._timeout_seconds,
                 system_prompt=system_prompt,
             )
+            tracer.turns_used = turn + 1
+            await tracer.llm_response(
+                turn=turn,
+                content=response.content,
+                tool_calls=[
+                    {"id": call.id, "name": call.name, "arguments": call.arguments}
+                    for call in response.tool_calls
+                ],
+                usage=dict(response.usage),
+                model=response.model,
+                message_count=len(messages),
+                duration_ms=int((time.perf_counter() - call_started) * 1000),
+            )
             if not response.tool_calls:
                 final_text = response.content
+                tracer.final_text = final_text
                 break
 
             messages.append(
@@ -387,6 +436,8 @@ class LLMAgentEngine(ReviewEngine):
                 response.tool_calls,
                 tools_by_name,
                 budget,
+                tracer,
+                turn,
             )
             messages.extend(observations)
 
@@ -396,6 +447,7 @@ class LLMAgentEngine(ReviewEngine):
                 # user/assistant 交替，兼容 Anthropic 的消息序列校验），
                 # 然后不带 tools 再要一次最终 JSON。
                 _append_force_final(observations[-1])
+                call_started = time.perf_counter()
                 response = await self._client.complete_with_tools(
                     provider=ctx.provider,
                     messages=messages,
@@ -403,7 +455,18 @@ class LLMAgentEngine(ReviewEngine):
                     timeout_seconds=self._timeout_seconds,
                     system_prompt=system_prompt,
                 )
+                await tracer.llm_response(
+                    turn=turn,
+                    content=response.content,
+                    tool_calls=[],
+                    usage=dict(response.usage),
+                    model=response.model,
+                    message_count=len(messages),
+                    duration_ms=int((time.perf_counter() - call_started) * 1000),
+                    is_closeout=True,
+                )
                 final_text = response.content
+                tracer.final_text = final_text
                 break
 
         if final_text is None:
@@ -411,6 +474,7 @@ class LLMAgentEngine(ReviewEngine):
                 "llm-agent: loop ended without final JSON (review_id=%s)",
                 ctx.review_id,
             )
+            await tracer.run_failed(reason="no_final_json")
             return []
 
         try:
@@ -422,6 +486,7 @@ class LLMAgentEngine(ReviewEngine):
                 ctx.review_id,
                 exc,
             )
+            await tracer.run_failed(reason="invalid_final_json", error=str(exc))
             return []
 
     async def _execute_tool_calls(
@@ -429,6 +494,8 @@ class LLMAgentEngine(ReviewEngine):
         calls: list[ToolCall],
         tools_by_name: dict[str, Any],
         budget: _ObservationBudget,
+        tracer: AgentRunTracer,
+        turn: int,
     ) -> list[ChatMessage]:
         """执行一批工具调用；失败/超时/非法参数都归一化为错误观察。"""
 
@@ -441,34 +508,60 @@ class LLMAgentEngine(ReviewEngine):
                     f"[error] malformed arguments for {call.name} "
                     f"(must be a JSON object): {call.arguments[:200]}"
                 )
+                status = STATUS_MALFORMED_ARGUMENTS
+                duration_ms = None
             else:
                 tool = tools_by_name.get(call.name)
                 if tool is None:
                     available = ", ".join(sorted(tools_by_name))
                     output = f"[error] unknown tool: {call.name} (available: {available})"
+                    status = STATUS_UNKNOWN_TOOL
+                    duration_ms = None
                 elif budget.exhausted:
                     output = (
                         "[error] context budget exhausted; do not investigate "
                         "further and output the final findings JSON now"
                     )
+                    status = STATUS_BUDGET_EXHAUSTED
+                    duration_ms = None
                 else:
-                    output = await self._run_tool(call.name, tool, args)
+                    tool_started = time.perf_counter()
+                    output, status = await self._run_tool(call.name, tool, args)
+                    duration_ms = int((time.perf_counter() - tool_started) * 1000)
+            # 先按回填口径截断/记账，trace 记录的是模型实际看到的观察内容。
             output = budget.record(self._clip(output, max_chars))
+            await tracer.tool_executed(
+                turn=turn,
+                call_id=call.id,
+                name=call.name,
+                raw_arguments=call.arguments,
+                arguments=args,
+                output=output,
+                status=status,
+                duration_ms=duration_ms,
+                budget_used=budget.used,
+                budget_max_chars=budget.max_chars,
+            )
             results.append(
                 ChatMessage(role="tool", tool_call_id=call.id, content=output),
             )
         return results
 
-    async def _run_tool(self, name: str, tool: AgentTool, args: dict[str, Any]) -> str:
-        """带超时执行单个工具；异常归一化为错误字符串。"""
+    async def _run_tool(
+        self,
+        name: str,
+        tool: AgentTool,
+        args: dict[str, Any],
+    ) -> tuple[str, str]:
+        """带超时执行单个工具；异常归一化为错误观察，返回 ``(观察, 状态)``。"""
 
         timeout = self._settings.agent_tool_timeout_seconds
         try:
-            return await asyncio.wait_for(tool.execute(args), timeout=timeout)
+            return await asyncio.wait_for(tool.execute(args), timeout=timeout), STATUS_OK
         except TimeoutError:  # noqa: UP041 - asyncio.wait_for 抛的是同一异常
-            return f"[error] tool {name} timed out after {timeout:.0f}s"
+            return f"[error] tool {name} timed out after {timeout:.0f}s", STATUS_TIMEOUT
         except Exception as exc:  # noqa: BLE001 - 工具失败必须以观察形式回填
-            return f"[error] tool {name} failed: {exc}"
+            return f"[error] tool {name} failed: {exc}", STATUS_ERROR
 
     def _clip(self, text: str, max_chars: int) -> str:
         if len(text) <= max_chars:

@@ -190,6 +190,35 @@ class Settings(BaseSettings):
             ),
         ),
     ] = 15.0
+    # feat/agent-trace：执行轨迹观测（stdout 结构化日志 + agent_trace_events 落库）。
+    agent_trace_enabled: Annotated[
+        bool,
+        Field(
+            description=(
+                "llm-agent 引擎执行轨迹开关：为每轮模型响应、工具调用参数/输出/"
+                "耗时输出结构化日志（大字段截短）。默认开启。"
+            ),
+        ),
+    ] = True
+    agent_trace_db_enabled: Annotated[
+        bool,
+        Field(
+            description=(
+                "执行轨迹是否写入 agent_trace_events 表（需先执行建表 DDL）。"
+                "写入失败自动闩锁关闭本进程后续写入，不影响审查流程。默认开启。"
+            ),
+        ),
+    ] = True
+    agent_trace_content_max_chars: Annotated[
+        int,
+        Field(
+            gt=0,
+            description=(
+                "trace 事件里单个大字段（模型回复文本、工具输出）的最大字符数，"
+                "超出截断。默认 20000；stdout 日志另行截到更短，完整内容走数据库。"
+            ),
+        ),
+    ] = 20000
     cors_origins: Annotated[
         list[str],
         Field(description="Allowed CORS origins."),

@@ -1,0 +1,44 @@
+-- agent 执行轨迹表（2026-09-26）
+-- 为 llm-agent 引擎增加中间过程留痕：每轮模型响应、工具调用参数/输出/耗时。
+-- 现有部署库按方言手动执行对应段落；新库直接使用重新导出的 schema-*.sql 即可。
+
+-- ===== PostgreSQL =====
+-- CREATE TABLE agent_trace_events (
+-- 	id UUID NOT NULL,
+-- 	review_id UUID NOT NULL,
+-- 	seq INTEGER NOT NULL,
+-- 	turn INTEGER,
+-- 	event_type VARCHAR(40) NOT NULL,
+-- 	tool_name VARCHAR(100),
+-- 	status VARCHAR(30),
+-- 	duration_ms INTEGER,
+-- 	payload JSON,
+-- 	created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+-- 	updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+-- 	PRIMARY KEY (id)
+-- );
+-- CREATE INDEX ix_agent_trace_events_review_seq ON agent_trace_events (review_id, seq);
+
+-- ===== MySQL =====
+-- CREATE TABLE agent_trace_events (
+-- 	id CHAR(32) NOT NULL,
+-- 	review_id CHAR(32) NOT NULL,
+-- 	seq INTEGER NOT NULL,
+-- 	turn INTEGER,
+-- 	event_type VARCHAR(40) NOT NULL,
+-- 	tool_name VARCHAR(100),
+-- 	status VARCHAR(30),
+-- 	duration_ms INTEGER,
+-- 	payload JSON,
+-- 	created_at DATETIME NOT NULL,
+-- 	updated_at DATETIME NOT NULL,
+-- 	PRIMARY KEY (id)
+-- );
+-- CREATE INDEX ix_agent_trace_events_review_seq ON agent_trace_events (review_id, seq);
+
+-- 说明：
+-- 1) review_id 无外键：reviews 行要到审查结束才写入，trace 事件在执行中途
+--    即时插入，外键约束会导致插入失败；孤儿事件（审查中断/项目未注册）对
+--    排查恰恰有价值。
+-- 2) created_at/updated_at 由应用层写入（TimestampMixin Python 默认值），
+--    与其余表保持一致，因此这里不建数据库层 DEFAULT。
