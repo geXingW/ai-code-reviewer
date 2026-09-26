@@ -27,6 +27,7 @@
 
 ### Fixed
 
+- **建库脚本 MySQL 语法错误**：`scripts/export_schema_sql.py` 编译 DDL 时未传目标方言，SQLAlchemy 退回默认方言渲染——`global_settings.key`（MySQL 保留字）未加反引号导致 `schema-mysql.sql` 执行报 `You have an error in your SQL syntax`，`BOOLEAN DEFAULT x NOT NULL` 属性顺序也不合 MySQL 语法，PostgreSQL 文件被渲染成 `DATETIME` / `CHAR(32)` 等非法类型。现显式按目标方言编译（MySQL：`` `key` ``、`BOOL NOT NULL DEFAULT x`；PostgreSQL：原生 `UUID` / `TIMESTAMP WITH TIME ZONE`），两份 `backend/sql/schema-*.sql` 已重新生成，并新增 `tests/test_schema_export.py` 回归测试。
 - **供应商编辑误覆盖 API Key**：编辑供应商时不再反显脱敏值 `****`，改为留空则不修改，与项目编辑中 GitLab Access Token / Webhook Secret 的行为保持一致；此前保存未编辑的密钥会被脱敏占位符覆盖，导致供应商鉴权失效。
 
 ## [0.1.0] - TBD
