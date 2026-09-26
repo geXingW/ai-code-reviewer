@@ -20,7 +20,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from sqlalchemy import ForeignKeyConstraint, UniqueConstraint, create_mock_engine
+from sqlalchemy import ForeignKeyConstraint, MetaData, UniqueConstraint, create_mock_engine
 from sqlalchemy.sql.ddl import BaseDDLElement
 
 # 保证从 backend/ 目录外运行时也能导入包
@@ -38,11 +38,14 @@ _DIALECTS: dict[str, str] = {
 }
 
 
-def render_schema_sql(dialect: str) -> str:
+def render_schema_sql(dialect: str, metadata: MetaData | None = None) -> str:
     """Render the full DDL for ``Base.metadata`` targeting ``dialect``.
 
     Args:
         dialect: SQLAlchemy dialect name (``mysql`` or ``postgresql``).
+        metadata: 供渲染的元数据；缺省用全局 ``Base.metadata``。注意渲染前
+            会移除其中的外键约束并清空唯一约束名（原地修改），调用方需要
+            保留原元数据时应传入 ``Base.metadata.copy()``。
 
     Returns:
         str: Complete ``CREATE TABLE`` / ``CREATE INDEX`` statements.
@@ -56,12 +59,13 @@ def render_schema_sql(dialect: str) -> str:
         raise ValueError(msg)
 
     statements: list[str] = []
+    target = metadata if metadata is not None else Base.metadata
 
     # 生成的 SQL 不包含外键约束（表间关联由应用层维护），且
     # 唯一约束不带 CONSTRAINT 命名前缀（保留唯一性语义，仅去掉关键字）：
     # 编译前移除 ForeignKeyConstraint、清空 UniqueConstraint 名称。
     # 仅影响本进程内的编译过程，不落地到任何真实数据库。
-    for table in Base.metadata.tables.values():
+    for table in target.tables.values():
         fks = [c for c in table.constraints if isinstance(c, ForeignKeyConstraint)]
         table.constraints.difference_update(fks)
         for constraint in table.constraints:
@@ -71,11 +75,14 @@ def render_schema_sql(dialect: str) -> str:
             column.foreign_keys.clear()
 
     def _collect(sql: BaseDDLElement, *_args: object, **_kwargs: object) -> None:
-        statements.append(str(sql.compile(compile_kwargs={"literal_binds": True})).strip() + ";")
+        # 必须显式传入目标方言：缺省时 SQLAlchemy 退回默认方言编译，
+        # MySQL 保留字（如 global_settings.key）不会被加反引号，生成的 SQL 无法执行。
+        compiled = sql.compile(dialect=engine.dialect, compile_kwargs={"literal_binds": True})
+        statements.append(str(compiled).strip() + ";")
 
     # mock engine：只触发 DDL 编译，不建立真实连接
     engine = create_mock_engine(_DIALECTS[dialect], executor=_collect)
-    Base.metadata.create_all(engine, checkfirst=False)
+    target.create_all(engine, checkfirst=False)
 
     return "\n\n".join(statements)
 
