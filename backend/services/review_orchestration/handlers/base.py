@@ -26,12 +26,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from core.block_policy import (
-    BlockPolicyLike,
-    build_default_block_policies,
-    compute_has_blocker,
-    match_block_policy,
-)
+from core.block_policy import BlockPolicyLike, compute_has_blocker
 from core.diff_filter import DiffFilterConfig
 from engines import DiffHunk, Finding, ProviderConfig, ReviewContext, RuleSpec
 from engines.registry import EngineRegistry
@@ -51,6 +46,7 @@ from services.review_orchestration.gitlab_feedback import (
     _post_commit_finding_comments,
 )
 from services.review_orchestration.notification import _push_commit_review_notification
+from services.review_orchestration.policy import resolve_policy_or_skip
 from services.review_orchestration.resolution import (
     _resolve_history,
     _resolve_provider,
@@ -97,9 +93,9 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
     固定管线顺序（子类不许重写 :meth:`handle` 改流程），差异通过抽象钩子注入：
 
     1. ``_resolve_commit_review_enabled`` -- 项目级开关，关 -> skipped_disabled；
-    2. ``_fetch_changes`` -- 取 diff（抽象钩子），merge/root 跳过或空 -> 短路；
-    3. ``build_diff_hunks`` -- diff 过滤；
-    4. block policy 匹配；
+    2. block policy 匹配 -- 未命中任何策略（如 feature 分支）-> skipped_no_policy；
+    3. ``_fetch_changes`` -- 取 diff（抽象钩子），merge/root 跳过或空 -> 短路；
+    4. ``build_diff_hunks`` -- diff 过滤；
     5. 空 diff 短路（汇总评论 + success status + 通知，顺序固定）；
     6. rules / provider / history 解析 + repo_reader；
     7. ``_build_context`` -- ReviewContext 构建（抽象钩子）；
@@ -148,6 +144,22 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
                 status="skipped_disabled",
             )
 
+        # 策略匹配在取 diff 之前：未命中任何 block policy 的分支（如 feature/*）
+        # 直接跳过，不白拉一次 compare / commit diff。
+        matched = resolve_policy_or_skip(
+            block_policies=self._block_policies,
+            project_uuid=event.project_uuid,
+            project_id=event.project_id,
+            branch=event.branch,
+        )
+        if matched is None:
+            return CommitReviewResult(
+                review_id=None,
+                project_uuid=event.project_uuid,
+                status="skipped_no_policy",
+            )
+        block_policy, policy_applied = matched
+
         outcome = await self._fetch_changes(event)
         if outcome.skip_status is not None:
             return CommitReviewResult(
@@ -163,13 +175,6 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
                 status="skipped_no_changes",
             )
         hunks = build_diff_hunks(changes, self._diff_filter_config)
-
-        block_policy = match_block_policy(
-            self._block_policies or build_default_block_policies(event.project_uuid),
-            event.branch,
-        )
-        policy_applied = f"{block_policy.branch_pattern} -> {block_policy.block_severity}"
-        logger.info("Applying policy", extra={"policy_applied": policy_applied})
 
         if not hunks:
             # 空提交 / 全部被 ignore_paths 过滤 -> 0 findings + 汇总评论 + 通知。

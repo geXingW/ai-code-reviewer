@@ -73,8 +73,9 @@ _SEVERITY_RANK: dict[Severity, int] = {
 }
 # 新项目首次注册时用于 seed `project_block_policies` 的默认模板。
 # 已存在的项目不会被自动升级：只影响未来新建项目。
-# main / develop 与 master 同级视为主干分支，避免 GitLab 默认分支
-# 为 main 的项目命中 `*` 兜底导致 BLOCKER 被忽略。
+# main / develop 与 master 同级视为主干分支。刻意不配置 `*` 兜底：
+# 未匹配到策略的分支（如 feature/*）默认不触发 MR / commit 审核，
+# 避免同一批提交在 feature push 与合并到主干后重复审核。
 _DEFAULT_POLICY_TEMPLATES: tuple[tuple[int, str, BlockSeverity], ...] = (
     (1, "master", BlockSeverity.BLOCKER),
     (2, "main", BlockSeverity.BLOCKER),
@@ -82,20 +83,18 @@ _DEFAULT_POLICY_TEMPLATES: tuple[tuple[int, str, BlockSeverity], ...] = (
     (4, "release/*", BlockSeverity.BLOCKER),
     (5, "hotfix/*", BlockSeverity.BLOCKER),
     (6, "test", BlockSeverity.BLOCKER),
-    (99, "*", BlockSeverity.NONE),
 )
 
 
 def match_block_policy(
     policies: Iterable[BlockPolicyLike],
     target_branch: str,
-) -> MatchedPolicy:
+) -> MatchedPolicy | None:
     """Return the first policy whose branch glob matches ``target_branch``.
 
-    Policies are evaluated by ascending ``priority``. A catch-all ``*`` policy is
-    expected for normal project configuration; when no rule matches, the helper
-    raises ``ValueError`` so callers can surface a configuration problem instead
-    of silently allowing a merge.
+    Policies are evaluated by ascending ``priority``. When no rule matches,
+    returns ``None`` so callers can decide to skip the review (e.g. feature
+    branches without a policy are not reviewed) instead of failing loudly.
     """
     logger.info(
         "Matching block policy for target branch",
@@ -137,8 +136,11 @@ def match_block_policy(
             )
             return policy
 
-    logger.info("No block policy matched target branch", extra={"target_branch": target_branch})
-    raise ValueError(f"No block policy matched target branch: {target_branch}")
+    logger.info(
+        "No block policy matched target branch; review will be skipped",
+        extra={"target_branch": target_branch},
+    )
+    return None
 
 
 def compute_has_blocker(

@@ -64,7 +64,10 @@ class _FakeSessionFactory:
 
 
 def test_build_message_done_with_blocker() -> None:
-    """有阻断的完成消息：标题带「存在阻断」，正文含 finding / blocker 计数与详情链接。"""
+    """有阻断的完成消息：标题带「存在阻断」，正文含 finding / blocker 计数。
+
+    详情页链接（``detail_url``）自 v0.0.2 起不再渲染进正文。
+    """
 
     svc = NotificationService(session_factory=None)
     title, text = svc._build_review_message(
@@ -79,10 +82,11 @@ def test_build_message_done_with_blocker() -> None:
             "status": "done",
         },
     )
-    assert "MR !42" in title
+    assert "MR 42" in title
     assert "存在阻断" in title
     assert "3" in text and "2" in text
-    assert "http://x/reviews/r-1" in text
+    # detail_url 仍传入但不渲染（区块末尾展示已注释）。
+    assert "http://x/reviews/r-1" not in text
     assert "feat: add login" in text
 
 
@@ -112,7 +116,7 @@ def test_build_message_engine_error() -> None:
         {"review_id": "r-1", "mr_iid": 7, "status": "engine_error"},
     )
     assert "审查异常" in title
-    assert "MR !7" in title
+    assert "MR 7" in title
     assert "引擎执行失败" in text
 
 
@@ -136,7 +140,7 @@ def test_build_message_contains_mr_link_and_grouped_findings() -> None:
             "blocker_count": 2,
             "detail_url": "http://x/reviews/r-1",
             "status": "done",
-            "mr_web_url": "https://gitlab.example.com/group/project/-/merge_requests/42",
+            "gitlab_web_url": "https://gitlab.example.com/group/project/-/merge_requests/42",
             "mr_author_username": "alice",
             "findings_summary": [
                 {
@@ -167,11 +171,11 @@ def test_build_message_contains_mr_link_and_grouped_findings() -> None:
     assert "🟡 警告问题 (1)" in text
     assert "**1. SQL 注入风险**" in text
     assert "**2. 硬编码密钥**" in text
-    assert "- 代码位置：`auth/login.py:45`" in text
-    assert "- 代码位置：`config/database.py:12`" in text
+    assert "- 代码位置: `auth/login.py:45`" in text
+    assert "- 代码位置: `config/database.py:12`" in text
     assert text.index("🔴 阻断问题 (2)") < text.index("🟡 警告问题 (1)")
-    # 详情链接仍在
-    assert "[查看完整审查详情](http://x/reviews/r-1)" in text
+    # 详情页链接不再渲染进正文
+    assert "[查看完整审查详情](http://x/reviews/r-1)" not in text
 
 
 def test_build_message_renders_mr_section() -> None:
@@ -188,7 +192,7 @@ def test_build_message_renders_mr_section() -> None:
             "mr_title": "运单完结时自动结束星标功能",
             "mr_author_name": "wangyl",
             "mr_created_at": "2026-08-18 16:59:45",
-            "mr_web_url": "http://gitlab.example.com/project/-/merge_requests/42",
+            "gitlab_web_url": "http://gitlab.example.com/project/-/merge_requests/42",
         },
     )
     assert "**📋 提交信息**" in text
@@ -269,8 +273,8 @@ def test_build_message_renders_summary_section() -> None:
     assert "📋 审查摘要" in text
     # PR概述已移除（MR 标题放在「提交信息」区块，避免重复）
     assert "PR概述" not in text
-    assert "- 变更规模：涉及 3 个文件" in text
-    assert "- 总体评价：🔴 阻断 1 个" in text
+    assert "- 变更规模: 涉及 3 个文件" in text
+    assert "- 总体评价: 🔴 阻断 1 个" in text
 
 
 def test_build_message_summary_omits_scale_when_zero_files() -> None:
@@ -289,7 +293,7 @@ def test_build_message_summary_omits_scale_when_zero_files() -> None:
     )
     assert "📋 审查摘要" in text
     assert "变更规模" not in text
-    assert "- 总体评价：" in text
+    assert "- 总体评价:" in text
 
 
 def test_build_message_truncates_warning_and_info_to_five_items() -> None:
@@ -627,6 +631,140 @@ async def test_resolve_at_mobiles_empty_when_session_factory_none() -> None:
 
     svc = NotificationService(session_factory=None)
     assert await svc._resolve_at_mobiles(123, {"mr_author_username": "alice"}) == []
+
+
+# --------------------------------------------------------------------------- #
+# @ 所有相关人（多提交人解析，v0.0.2 同步）
+# --------------------------------------------------------------------------- #
+
+
+def test_collect_authors_merges_commit_authors_and_trigger_in_order() -> None:
+    """commit 作者（旧 -> 新）在前、触发者在后，去重保序，空值跳过。"""
+
+    review_data = {
+        "commits": [
+            {"author_name": "bob"},
+            {"author_name": "alice"},
+            {"author_name": "bob"},  # 重复跳过
+            {"author_name": ""},     # 空值跳过
+            "not-a-dict",            # 非法项跳过
+        ],
+        "mr_author_username": "carol",
+        "mr_author_name": "Carol Li",
+    }
+    assert NotificationService._collect_authors(review_data) == ["bob", "alice", "carol"]
+
+
+def test_collect_authors_falls_back_to_trigger_display_name() -> None:
+    """触发者无 username 时回退显示名；无 commits 时只取触发者。"""
+
+    review_data = {"mr_author_name": "Carol Li"}
+    assert NotificationService._collect_authors(review_data) == ["Carol Li"]
+    assert NotificationService._collect_authors({}) == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_at_mobiles_resolves_every_author_and_dedupes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """逐个提交人查映射：查不到的 fail-silent 跳过，手机号去重。"""
+
+    svc = NotificationService(session_factory=MagicMock())
+    monkeypatch.setattr(
+        ProjectRepository,
+        "get_by_gitlab_project_id",
+        AsyncMock(return_value=SimpleNamespace(id="proj-uuid")),
+    )
+
+    async def fake_mapping(project_id: object, username: str) -> SimpleNamespace | None:
+        # bob 未配置映射 -> 跳过；alice / carol 命中且手机号相同 -> 去重。
+        if username == "bob":
+            return None
+        return _fake_mapping("13800138000")
+
+    monkeypatch.setattr(
+        UserMappingRepository,
+        "get_by_gitlab_username",
+        AsyncMock(side_effect=fake_mapping),
+    )
+
+    result = await svc._resolve_at_mobiles(
+        123,
+        {
+            "commits": [{"author_name": "bob"}, {"author_name": "alice"}],
+            "mr_author_username": "carol",
+        },
+    )
+
+    assert result == ["13800138000"]
+
+
+# --------------------------------------------------------------------------- #
+# commit / push 审查通知（review_kind 与多 commit 展示，v0.0.2 同步）
+# --------------------------------------------------------------------------- #
+
+
+def test_build_message_commit_kind_uses_commit_label() -> None:
+    """``review_kind="commit"`` 时标题用 ``Commit <短SHA>`` 前缀而非 MR 编号。"""
+
+    svc = NotificationService(session_factory=None)
+    title, _ = svc._build_review_message(
+        {
+            "review_id": "r-1",
+            "review_kind": "commit",
+            "mr_iid": "c0ffee00",
+            "mr_title": "feat: demo",
+            "finding_count": 0,
+            "has_blocker": False,
+            "status": "done",
+            "gitlab_web_url": "http://gitlab.example.com/group/demo/-/commit/c0ffee00",
+        },
+    )
+    assert "Commit c0ffee00" in title
+    assert "MR" not in title
+
+
+def test_build_message_renders_commits_section_for_push_review() -> None:
+    """多 commit push 审查：逐条列出 commit（短 SHA / 提交者 @ / 时间 / 链接）。"""
+
+    svc = NotificationService(session_factory=None)
+    _, text = svc._build_review_message(
+        {
+            "review_id": "r-1",
+            "review_kind": "commit",
+            "mr_iid": "a1b2c3d4",
+            "finding_count": 0,
+            "has_blocker": False,
+            "status": "done",
+            "commits": [
+                {
+                    "id": "a1b2c3d4e5f6",
+                    "title": "first commit",
+                    "message": "first commit",
+                    "timestamp": "2026-08-24T10:00:00+08:00",
+                    "url": "http://gitlab.example.com/group/demo/-/commit/a1b2c3d4",
+                    "author_name": "bob",
+                },
+                {
+                    "id": "e5f6a7b8",
+                    "title": "second commit",
+                    "message": "second commit",
+                    "timestamp": "",
+                    "url": "",
+                    "author_name": "alice",
+                },
+            ],
+        },
+    )
+    assert "**1. a1b2c3d4 first commit**" in text
+    assert "- 提交者: @bob" in text
+    assert "- [查看提交详情](http://gitlab.example.com/group/demo/-/commit/a1b2c3d4)" in text
+    assert "**2. e5f6a7b8 second commit**" in text
+    assert "- 提交者: @alice" in text
+    # 无时间 / 无链接的字段行跳过：两组 commit 只有一行「时间」。
+    assert text.count("- 时间:") == 1
+    # 多 commit 模式下不再渲染单条字段行。
+    assert "- 标题:" not in text
 
 
 # --------------------------------------------------------------------------- #

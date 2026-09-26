@@ -170,6 +170,25 @@ class _FakeNotificationService:
         )
 
 
+@dataclass(frozen=True)
+class _Policy:
+    """block policy 测试替身（与 ORM 属性对齐）。"""
+
+    priority: int
+    branch_pattern: str
+    block_severity: str
+    block_on_engine_error: bool = False
+
+
+# 默认模板在迁移后不再带 `*` 兜底（feature 分支直接 skipped_no_policy）。
+# 管线功能测试关注的是编排行为本身，这里注入与旧默认模板等价的策略集合，
+# 让 feature/x 继续走完整管线；skip 语义由专门的 skipped_no_policy 测试覆盖。
+_DEFAULT_TEST_POLICIES: list[_Policy] = [
+    _Policy(priority=1, branch_pattern="master", block_severity="BLOCKER"),
+    _Policy(priority=99, branch_pattern="*", block_severity="NONE"),
+]
+
+
 _DIFF_APP_PY = {
     "new_path": "app.py",
     "old_path": "app.py",
@@ -229,6 +248,7 @@ def _orchestrator(
     engine: _StaticEngine,
     session_factory: object | None = None,
     notification_service: _FakeNotificationService | None = None,
+    block_policies: list[_Policy] | None = None,
 ) -> ReviewOrchestrator:
     registry = EngineRegistry()
     registry.register(engine)
@@ -236,6 +256,7 @@ def _orchestrator(
         gitlab_client=gitlab,  # type: ignore[arg-type]
         engine_registry=registry,
         default_engine="static-engine",
+        block_policies=block_policies if block_policies is not None else _DEFAULT_TEST_POLICIES,
         session_factory=session_factory,  # type: ignore[arg-type]
         notification_service=notification_service,  # type: ignore[arg-type]
     )
@@ -509,11 +530,14 @@ async def test_review_commit_pushes_notification_on_completion() -> None:
     assert data["finding_count"] == 1
     assert data["has_blocker"] is False
     assert data["blocker_count"] == 0
+    assert data["review_kind"] == "commit"
     assert data["mr_iid"] == "c0ffee00"  # commit 短 SHA 替代 MR iid
     assert data["mr_title"] == "feat: demo"
     assert data["mr_author_username"] == "alice"
     assert data["mr_author_name"] == "Alice Zhang"
-    assert data["mr_web_url"] is None
+    # 单 commit 事件没有 commits 属性 -> 通知侧透传 None（回退单条展示）。
+    assert data["commits"] is None
+    assert data["gitlab_web_url"] is None
     # 1 条 WARNING finding 进了摘要。
     assert len(data["findings_summary"]) == 1
     assert data["findings_summary"][0]["severity"] == "WARNING"
@@ -770,6 +794,89 @@ async def test_review_push_blocker_on_master_fails_status() -> None:
     assert result.has_blocker is True
     assert gitlab.statuses[0]["state"] == "failed"
     assert gitlab.statuses[0]["commit_sha"] == "a" * 40
+
+
+@pytest.mark.asyncio
+async def test_review_push_notification_carries_commits_and_web_url() -> None:
+    """push 合并审查通知：透传完整 commit 列表（含作者名 / 链接）供多 commit 展示。"""
+
+    gitlab = _client()
+    engine = _StaticEngine([_finding(line_number=2)])
+    notifier = _FakeNotificationService()
+    orchestrator = _orchestrator(gitlab, engine, notification_service=notifier)
+
+    commits = [
+        {
+            "id": "sha-1",
+            "title": "first",
+            "message": "first",
+            "timestamp": "2026-08-24T10:00:00+08:00",
+            "url": "http://gitlab.example.com/group/demo/-/commit/sha-1",
+            "author_name": "bob",
+        },
+        {
+            "id": "sha-2",
+            "title": "second",
+            "message": "second",
+            "timestamp": "2026-08-24T11:00:00+08:00",
+            "url": "http://gitlab.example.com/group/demo/-/commit/sha-2",
+            "author_name": "alice",
+        },
+    ]
+    await orchestrator.review_push(_push_event(branch="master", commits=commits))
+
+    assert len(notifier.calls) == 1
+    data = notifier.calls[0]["review_data"]
+    assert data["review_kind"] == "commit"
+    assert data["gitlab_web_url"] == commits[-1]["url"]  # head commit 链接
+    assert data["commits"] == commits  # 原样透传，通知侧逐条列出并 @ 各作者
+
+
+@pytest.mark.asyncio
+async def test_review_push_notification_on_empty_diff_skips_policy_first() -> None:
+    """push 通知在空 diff 短路路径同样带 commits 透传（与正常完成一致）。"""
+
+    gitlab = _client(diffs=[])
+    engine = _StaticEngine([])
+    notifier = _FakeNotificationService()
+    orchestrator = _orchestrator(gitlab, engine, notification_service=notifier)
+
+    await orchestrator.review_push(_push_event(branch="master"))
+
+    assert len(notifier.calls) == 1
+    data = notifier.calls[0]["review_data"]
+    assert data["commits"] == _push_event(branch="master").commits
+
+
+@pytest.mark.asyncio
+async def test_review_commit_skips_when_no_policy_matches() -> None:
+    """未命中任何 block policy 的分支 -> skipped_no_policy，不取 diff、不评论。"""
+
+    gitlab = _client()
+    engine = _StaticEngine([])
+    orchestrator = _orchestrator(gitlab, engine, block_policies=[])
+
+    result = await orchestrator.review_commit(_commit_event(branch="feature/x"))
+
+    assert result.status == "skipped_no_policy"
+    assert result.review_id is None
+    assert gitlab.api_calls == []  # 策略匹配在取 diff 之前，compare/get_commit 都不调
+    assert engine.contexts == []
+
+
+@pytest.mark.asyncio
+async def test_review_push_skips_when_no_policy_matches() -> None:
+    """push 合并审查同样在取 diff 前按策略过滤。"""
+
+    gitlab = _client()
+    engine = _StaticEngine([])
+    orchestrator = _orchestrator(gitlab, engine, block_policies=[])
+
+    result = await orchestrator.review_push(_push_event(branch="feature/x"))
+
+    assert result.status == "skipped_no_policy"
+    assert gitlab.api_calls == []
+    assert engine.contexts == []
 
 
 @pytest.mark.asyncio

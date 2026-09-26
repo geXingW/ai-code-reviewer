@@ -59,8 +59,11 @@ class _PushEventInfo:
         project_id: 数值型 GitLab 项目 ID。
         project_path: 带命名空间的项目路径。
         branch: push 目标分支名（``ref`` 去掉 ``refs/heads/`` 前缀）。
-        commits: ``[{"id": sha, "title": ..., "message": ...}, ...]``，
-            保持 payload 的时间序（旧 -> 新）。
+        commits: ``[{"id": sha, "title": ..., "message": ..., "url": ...,
+            "author_name": ...}, ...]``，``url`` 为 commit 在 GitLab 的页面链接
+            （通知「提交信息」区块用），``author_name`` 为 commit 作者显示名
+            （来自 ``commit.author.name``，push webhook 的 commit 对象只有
+            name/email 没有 username），保持 payload 的时间序（旧 -> 新）。
         before_sha: push 前 ref 指向的 commit SHA（新建分支时为 40 个 0）。
         after_sha: push 后 ref 指向的 commit SHA（即 head commit）。
         pusher_username: 触发 push 的用户名；缺失时 ``None``。
@@ -157,14 +160,19 @@ def _handle_push_hook(
 
     from core.config import get_settings
 
+    logger.info("_handle_push_hook", extra={"payload": payload})
     settings = get_settings()
     if not settings.commit_review_enabled:
+        logger.info("_handle_push_hook", extra={"reason": "commit_review_disabled"})
         return GitLabWebhookResponse(processed=False, reason="commit_review_disabled")
     if not project.commit_review_enabled:
+        logger.info("_handle_push_hook", extra={"reason": "commit_review_disabled"})
         return GitLabWebhookResponse(processed=False, reason="commit_review_disabled")
 
     push_info = _parse_push_event(payload)
+    logger.info("_handle_push_hook", extra={"push_info": push_info})
     if push_info is None:
+        logger.info("_handle_push_hook", extra={"reason": "ignored_event"})
         return GitLabWebhookResponse(processed=False, reason="ignored_event")
 
     background_tasks.add_task(_process_push_commits, push_info, project)
@@ -206,12 +214,20 @@ def _parse_push_event(payload: dict[str, Any]) -> _PushEventInfo | None:
     for item in raw_commits:
         if not isinstance(item, Mapping):
             continue
+        author = item.get("author")
         commits.append(
             {
                 "id": str(item.get("id") or ""),
                 "title": str(item.get("title") or ""),
                 "message": str(item.get("message") or ""),
                 "timestamp": str(item.get("timestamp") or ""),
+                # commit 页面链接（GitLab push webhook 自带），通知侧展示用。
+                "url": str(item.get("url") or ""),
+                # commit 作者显示名（``commit.author.name``）；push webhook 的
+                # commit 对象只有 name/email 没有 username，通知侧 @ 文本用它。
+                "author_name": (
+                    str(author.get("name") or "") if isinstance(author, Mapping) else ""
+                ) or None,
             }
         )
     if not commits:
@@ -235,7 +251,8 @@ async def _process_push_commits(push_info: _PushEventInfo, project: Project) -> 
     """后台合并审查：一次 push 拉取所有 commit 变更合并后单次审查。
 
     失败仅 except + log（不重试、不阻断），与逐 commit 时代的容错语义一致。
-    本期不做钉钉推送（push 审查保持无通知），notification_service 传 None。
+    审查完成后按项目配置的渠道推送钉钉通知（notification_service 复用同一
+    sessionmaker）。
     """
 
     load_builtin_engines()
@@ -252,7 +269,8 @@ async def _process_push_commits(push_info: _PushEventInfo, project: Project) -> 
         default_engine=settings.default_review_engine,
         block_policies=project.block_policies,
         session_factory=db.AsyncSessionLocal,
-        notification_service=None,
+        # 通知服务复用同一 sessionmaker，按项目渠道推送 push 审查结果。
+        notification_service=NotificationService(db.AsyncSessionLocal),
     )
     event = GitLabPushEvent(
         project_id=push_info.project_id,

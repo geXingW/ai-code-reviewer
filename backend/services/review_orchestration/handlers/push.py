@@ -32,6 +32,8 @@ class PushReviewHandler(ReviewCommitStyleHandler[GitLabPushEvent]):
 
     行为规则：
       - 项目级 ``project.commit_review_enabled=False`` -> skipped_disabled；
+      - 分支未匹配任何 block policy -> skipped_no_policy（只记日志，
+        不评论、不设 status、不通知）；
       - compare 失败 / 异常 -> skipped_no_changes（记 warning，不误报失败）；
       - diff 过滤后为空 -> 0 findings + 汇总评论"无可审查变更" + success status；
       - engine 异常 -> commit status failed + 审查失败评论，绝不静默通过。

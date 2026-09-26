@@ -1285,6 +1285,15 @@ async def _recompute_mr_block_status(finding: Finding, db: AsyncSession) -> None
         if not policies:
             policies = build_default_block_policies(project.id)
         block_policy = match_block_policy(policies, latest_review.target_branch)
+        if block_policy is None:
+            logger.warning(
+                "no block policy matched target branch; skip MR block status recompute",
+                extra={
+                    "project_id": str(project.id),
+                    "target_branch": latest_review.target_branch,
+                },
+            )
+            return
         has_blocker, blocker_count = compute_has_blocker(open_findings, block_policy)
 
         # 只在状态确实变化时才更新 DB + GitLab，避免无谓的 API 调用。
