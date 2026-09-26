@@ -12,7 +12,7 @@ export type User = {
   role_id: string | null;
   role_name: string | null;
   enabled: boolean;
-  assigned_project_ids: string[];
+  project_ids: string[];
   created_at: string;
   updated_at: string;
 };

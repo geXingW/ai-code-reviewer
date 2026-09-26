@@ -50,7 +50,7 @@ function toForm(user: User): UserFormState {
     display_name: user.display_name ?? '',
     role_id: user.role_id ?? '',
     enabled: user.enabled,
-    project_ids: [...user.assigned_project_ids],
+    project_ids: [...(user.project_ids ?? [])],
   };
 }
 
@@ -138,7 +138,7 @@ export function UsersPage() {
       title: '分配项目数',
       key: 'project_count',
       width: 110,
-      render: (_, record) => <span className="text-zinc-500">{record.assigned_project_ids.length}</span>,
+      render: (_, record) => <span className="text-zinc-500">{record.project_ids?.length ?? 0}</span>,
     },
     {
       title: '状态',
