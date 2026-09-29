@@ -268,6 +268,8 @@ async def _process_push_commits(push_info: _PushEventInfo, project: Project) -> 
         engine_registry=get_engine_registry(),
         default_engine=settings.default_review_engine,
         block_policies=project.block_policies,
+        # 项目级 diff 忽略路径，进 DiffFilterConfig（fnmatch 匹配 new/old_path）。
+        ignore_paths=_project_ignore_paths(project),
         session_factory=db.AsyncSessionLocal,
         # 通知服务复用同一 sessionmaker，按项目渠道推送 push 审查结果。
         notification_service=NotificationService(db.AsyncSessionLocal),
@@ -341,6 +343,8 @@ async def review_merge_request_event(
         engine_registry=get_engine_registry(),
         default_engine=settings.default_review_engine,
         block_policies=project.block_policies,
+        # 项目级 diff 忽略路径，进 DiffFilterConfig（fnmatch 匹配 new/old_path）。
+        ignore_paths=_project_ignore_paths(project),
         session_factory=effective_session_factory,
         # 通知服务复用同一 sessionmaker，按项目渠道推送 Review 完成结果。
         notification_service=NotificationService(effective_session_factory),
@@ -367,6 +371,16 @@ def _extract_project_id(payload: dict[str, Any]) -> int:
             detail=f"Invalid GitLab merge request payload: {exc}",
         ) from exc
     return project_id
+
+
+def _project_ignore_paths(project: Project) -> tuple[str, ...]:
+    """项目级 diff 忽略路径，透传给 orchestrator 的 ``DiffFilterConfig``。
+
+    JSON 列不校验元素类型，逐项转 str 兜底；列值为空 / None 时返回空元组，
+    即不过滤任何路径。
+    """
+
+    return tuple(str(pattern) for pattern in (project.ignore_paths or ()))
 
 
 async def _resolve_project(project_id: int) -> Project | None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -11,7 +12,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from api import gitlab_webhook
 from api.gitlab_webhook import _PushEventInfo
 from models.project import Project
-from services.review_orchestrator import GitLabMergeRequestEvent, OrchestratorResult
+from services.review_orchestrator import (
+    CommitReviewResult,
+    GitLabMergeRequestEvent,
+    GitLabPushEvent,
+    OrchestratorResult,
+)
 
 
 async def _create_test_project(
@@ -24,6 +30,7 @@ async def _create_test_project(
     enabled: bool = True,
     commit_review_enabled: bool = True,
     commit_review_max_per_push: int = 10,
+    ignore_paths: list[str] | None = None,
 ) -> Project:
     """Create a Project record directly for webhook tests."""
 
@@ -36,6 +43,7 @@ async def _create_test_project(
         enabled=enabled,
         commit_review_enabled=commit_review_enabled,
         commit_review_max_per_push=commit_review_max_per_push,
+        ignore_paths=ignore_paths,
     )
     async with session_factory() as session:
         session.add(project)
@@ -551,3 +559,120 @@ async def test_push_hook_still_validates_project_secret(
     )
 
     assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# 项目级 ignore_paths 接线（DiffFilterConfig）
+# ---------------------------------------------------------------------------
+
+
+class _CtorSpyOrchestrator:
+    """记录 ReviewOrchestrator 构造参数，两种审查入口都返回 done 摘要。"""
+
+    instances: list[dict[str, object]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        type(self).instances.append(kwargs)
+
+    async def review_merge_request(
+        self, event: GitLabMergeRequestEvent
+    ) -> OrchestratorResult:
+        return OrchestratorResult(
+            review_id=None,
+            project_uuid=event.project_uuid,
+            status="done",
+            finding_count=0,
+            has_blocker=False,
+        )
+
+    async def review_push(self, event: GitLabPushEvent) -> CommitReviewResult:
+        return CommitReviewResult(
+            review_id=uuid4(),
+            project_uuid=event.project_uuid,
+            status="done",
+            finding_count=0,
+            has_blocker=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_mr_review_receives_project_ignore_paths(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MR 审查构造 orchestrator 时传入项目级 ignore_paths。"""
+
+    await _create_test_project(
+        db_session_factory, ignore_paths=["docs/*", "*.md"]
+    )
+    _CtorSpyOrchestrator.instances = []
+    monkeypatch.setattr(gitlab_webhook, "ReviewOrchestrator", _CtorSpyOrchestrator)
+
+    response = await db_client.post(
+        "/api/webhooks/gitlab",
+        headers={
+            "X-Gitlab-Event": "Merge Request Hook",
+            "X-Gitlab-Token": "test-webhook-secret",
+        },
+        json=_minimal_mr_payload(),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["processed"] is True
+    assert len(_CtorSpyOrchestrator.instances) == 1
+    kwargs = _CtorSpyOrchestrator.instances[0]
+    assert kwargs["ignore_paths"] == ("docs/*", "*.md")
+    # block_policies 等既有项目级配置不受影响。
+    assert kwargs["block_policies"] is not None
+
+
+@pytest.mark.asyncio
+async def test_mr_review_defaults_to_empty_ignore_paths(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """项目未配置 ignore_paths 时传空元组（不过滤任何路径，行为与现状一致）。"""
+
+    await _create_test_project(db_session_factory)
+    _CtorSpyOrchestrator.instances = []
+    monkeypatch.setattr(gitlab_webhook, "ReviewOrchestrator", _CtorSpyOrchestrator)
+
+    response = await db_client.post(
+        "/api/webhooks/gitlab",
+        headers={
+            "X-Gitlab-Event": "Merge Request Hook",
+            "X-Gitlab-Token": "test-webhook-secret",
+        },
+        json=_minimal_mr_payload(),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["processed"] is True
+    assert _CtorSpyOrchestrator.instances[0]["ignore_paths"] == ()
+
+
+@pytest.mark.asyncio
+async def test_push_review_receives_project_ignore_paths(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Push 合并审查同样把项目级 ignore_paths 传给 orchestrator。"""
+
+    await _create_test_project(db_session_factory, ignore_paths=["generated/*"])
+    _CtorSpyOrchestrator.instances = []
+    monkeypatch.setattr(gitlab_webhook, "ReviewOrchestrator", _CtorSpyOrchestrator)
+
+    response = await db_client.post(
+        "/api/webhooks/gitlab",
+        headers={"X-Gitlab-Event": "Push Hook", "X-Gitlab-Token": "test-webhook-secret"},
+        json=_push_payload(),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["processed"] is True
+    # 后台任务在响应后执行 -> ctor 已被真实 _process_push_commits 调用。
+    assert len(_CtorSpyOrchestrator.instances) == 1
+    assert _CtorSpyOrchestrator.instances[0]["ignore_paths"] == ("generated/*",)

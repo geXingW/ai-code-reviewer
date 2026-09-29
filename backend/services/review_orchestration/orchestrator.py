@@ -57,6 +57,7 @@ from services.review_orchestration.planning import (
 )
 from services.review_orchestration.policy import resolve_policy_or_skip
 from services.review_orchestration.resolution import (
+    _resolve_engine,
     _resolve_history,
     _resolve_provider,
     resolve_rules,
@@ -249,7 +250,15 @@ class ReviewOrchestrator:
             },
             repo_reader=repo_reader,
         )
-        engine = self._engine_registry.get(self._default_engine)
+        # 项目级引擎选择：projects.engine_id → engines.name，任何失败回退
+        # 全局默认（fail-open，见 _resolve_engine）。
+        engine_name = await _resolve_engine(
+            event,
+            session_factory=self._session_factory,
+            registry=self._engine_registry,
+            default_engine=self._default_engine,
+        )
+        engine = self._engine_registry.get(engine_name)
         try:
             findings = await engine.review(context)
         except Exception as exc:
@@ -258,7 +267,7 @@ class ReviewOrchestrator:
                 extra={
                     "project_id": event.project_id,
                     "mr_iid": event.mr_iid,
-                    "engine": self._default_engine,
+                    "engine": engine_name,
                 },
             )
             return await _handle_engine_error(
@@ -272,7 +281,7 @@ class ReviewOrchestrator:
                 gitlab_client=self._gitlab_client,
                 review_detail_base_url=self._review_detail_base_url,
                 notification_service=self._notification_service,
-                default_engine=self._default_engine,
+                engine_used=engine_name,
                 session_factory=self._session_factory,
             )
         # 增量模式下把新 findings 与历史 open findings 合并，得到本次要展示的集合。
@@ -348,7 +357,7 @@ class ReviewOrchestrator:
             has_blocker=has_blocker,
             status_value="done",
             duration_ms=duration_ms,
-            engine_used=self._default_engine,
+            engine_used=engine_name,
             plan=plan,
             merge=merge,
             combined_finding_count=len(combined_findings),

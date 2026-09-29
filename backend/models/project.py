@@ -65,7 +65,8 @@ class Project(Base, TimestampMixin):
         nullable=False,
     )
     # 项目级 commit 审查配置（Push Hook 逐 commit 审查）。
-    # enabled 默认 False（安全第一）；max_per_push 覆盖全局 settings 同名配置。
+    # enabled 默认 False（安全第一）；max_per_push 已废弃，不再按它截断
+    # commit，字段保留仅作兼容（见 api/gitlab_webhook.py 的 push 处理）。
     commit_review_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
