@@ -114,7 +114,7 @@ async def _handle_engine_error(
     gitlab_client: GitLabClient,
     review_detail_base_url: str | None,
     notification_service: NotificationService | None,
-    default_engine: str,
+    engine_used: str,
     session_factory: SessionFactory | None,
 ) -> OrchestratorResult:
     """Persist deterministic GitLab feedback when the selected engine fails."""
@@ -169,7 +169,7 @@ async def _handle_engine_error(
         has_blocker=has_blocker,
         status_value="engine_error",
         duration_ms=duration_ms,
-        engine_used=default_engine,
+        engine_used=engine_used,
         plan=effective_plan,
         merge=None,
         combined_finding_count=0,
