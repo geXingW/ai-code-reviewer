@@ -135,6 +135,9 @@ class AgentRunTracer:
     # 引擎侧回填的 run 级状态：run_finished 事件直接取用。
     turns_used: int = 0
     final_text: str | None = None
+    # 循环如何收口：natural=模型主动给出最终 JSON；max_turns=轮数耗尽强制收口；
+    # budget_exhausted=观察字符预算耗尽强制收口。引擎在收口分支回填。
+    closeout_reason: str = "natural"
     failed: bool = False
     _seq: int = 0
 
@@ -258,6 +261,7 @@ class AgentRunTracer:
             duration_ms=self.elapsed_ms,
             payload={
                 "turns_used": self.turns_used,
+                "closeout_reason": self.closeout_reason,
                 "findings_count": findings_count,
                 "findings_before_filter": findings_before_filter,
                 "final_text": _clip(self.final_text, self.content_max_chars),
