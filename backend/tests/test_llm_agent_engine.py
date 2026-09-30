@@ -535,6 +535,7 @@ async def test_agent_trace_records_full_lifecycle(monkeypatch: pytest.MonkeyPatc
     assert finished["findings_count"] == 0
     assert finished["findings_before_filter"] == 0
     assert finished["turns_used"] == 2
+    assert finished["closeout_reason"] == "natural"
     assert finished["filter_applied"] is False
     assert "findings" in (finished["final_text"] or "")
 
@@ -592,6 +593,9 @@ async def test_agent_trace_records_budget_exhausted_status(
     tool_events = _events_of(events, "tool_executed")
     assert [event["status"] for event in tool_events] == ["ok", "budget_exhausted"]
     assert tool_events[1]["payload"]["output"].startswith("[error] context budget exhausted")
+    # 预算耗尽触发的强制收口在 run_finished 里可辨识。
+    finished = _events_of(events, "run_finished")[0]["payload"]
+    assert finished["closeout_reason"] == "budget_exhausted"
 
 
 @pytest.mark.asyncio
@@ -701,6 +705,7 @@ async def test_agent_trace_marks_forced_closeout(monkeypatch: pytest.MonkeyPatch
     assert [event["payload"]["is_closeout"] for event in llm_events] == [False, False, True]
     finished = _events_of(events, "run_finished")[0]["payload"]
     assert finished["turns_used"] == 2
+    assert finished["closeout_reason"] == "max_turns"
 
 
 def test_build_tracer_sinks_follow_settings() -> None:

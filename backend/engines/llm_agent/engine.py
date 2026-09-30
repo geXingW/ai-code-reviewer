@@ -443,6 +443,10 @@ class LLMAgentEngine(ReviewEngine):
 
             last_turn = turn == settings.agent_max_turns - 1
             if last_turn or budget.exhausted:
+                # 记录收口原因：预算耗尽优先于轮数耗尽（两者可能同时满足）。
+                tracer.closeout_reason = (
+                    "budget_exhausted" if budget.exhausted else "max_turns"
+                )
                 # 收口：把强制收尾指令并进最后一条 tool message（保持
                 # user/assistant 交替，兼容 Anthropic 的消息序列校验），
                 # 然后不带 tools 再要一次最终 JSON。
