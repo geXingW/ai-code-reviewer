@@ -38,6 +38,7 @@ from repositories.project import ProjectRepository
 from services.review_orchestration.resolution import _resolve_engine
 from services.review_orchestrator import (
     GitLabMergeRequestEvent,
+    GitLabPushEvent,
     ReviewOrchestrator,
 )
 
@@ -132,6 +133,7 @@ async def _seed_project(
     gitlab_project_id: str = "999",
     *,
     engine: Engine | None = None,
+    commit_review_enabled: bool = True,
 ) -> None:
     async with session_factory() as session:
         project = Project(
@@ -140,6 +142,9 @@ async def _seed_project(
             gitlab_access_token="tok",
             webhook_secret="sec",
             engine_id=engine.id if engine is not None else None,
+            # push / commit 链路会检查项目级开关（模型默认 False），默认开启
+            # 让引擎选择测试能走完整管线。
+            commit_review_enabled=commit_review_enabled,
         )
         session.add(project)
         await session.commit()
@@ -396,3 +401,103 @@ async def test_orchestrator_falls_back_when_configured_engine_unregistered(
     assert result.status == "done"
     assert stubs[DEFAULT_ENGINE_NAME].review_calls == 1
     assert await _fetch_last_engine_used(db_session_factory) == DEFAULT_ENGINE_NAME
+
+
+# ---------------------------------------------------------------------------
+# Push Hook 合并审查集成：engine 选择（commit/push 共用 handle 管线）
+# ---------------------------------------------------------------------------
+
+
+def _make_push_gitlab_mock() -> AsyncMock:
+    client = AsyncMock()
+    client.compare_refs.return_value = {
+        "diffs": [
+            {
+                "diff": "@@ -1,3 +1,4 @@\n line1\n+new line\n line2\n",
+                "new_path": "app.py",
+                "old_path": "app.py",
+                "new_file": False,
+                "deleted_file": False,
+            }
+        ],
+        "commits": [],
+    }
+    client.create_commit_comment.return_value = {"id": 200}
+    client.set_commit_status.return_value = {"status": "success"}
+    return client
+
+
+def _make_push_event(gitlab_project_id: int = 999) -> GitLabPushEvent:
+    return GitLabPushEvent(
+        project_id=gitlab_project_id,
+        project_path="group/repo",
+        # push 到 master 命中默认 block policy 模板，避免 skipped_no_policy。
+        branch="master",
+        before_sha="b" * 40,
+        after_sha="a" * 40,
+        commits=[{"id": "sha-1", "title": "feat: demo", "message": "feat: demo"}],
+    )
+
+
+@pytest.mark.asyncio
+async def test_push_review_uses_project_engine(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """项目配置 llm-agent 时 push 合并审查同样走 llm-agent（与 MR 链路同源）。"""
+
+    engine = await _seed_engine(db_session_factory, PROJECT_ENGINE_NAME)
+    await _seed_project(db_session_factory, "999", engine=engine)
+    registry, stubs = _make_registry(DEFAULT_ENGINE_NAME, PROJECT_ENGINE_NAME)
+    orch = ReviewOrchestrator(
+        gitlab_client=_make_push_gitlab_mock(),
+        engine_registry=registry,
+        default_engine=DEFAULT_ENGINE_NAME,
+        session_factory=db_session_factory,
+    )
+    result = await orch.review_push(_make_push_event(gitlab_project_id=999))
+
+    assert result.status == "done"
+    assert stubs[PROJECT_ENGINE_NAME].review_calls == 1
+    assert stubs[DEFAULT_ENGINE_NAME].review_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_push_review_defaults_when_project_has_no_engine(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """项目未配置引擎时 push 审查走 default_engine，行为与改造前一致。"""
+
+    await _seed_project(db_session_factory, "999", engine=None)
+    registry, stubs = _make_registry(DEFAULT_ENGINE_NAME, PROJECT_ENGINE_NAME)
+    orch = ReviewOrchestrator(
+        gitlab_client=_make_push_gitlab_mock(),
+        engine_registry=registry,
+        default_engine=DEFAULT_ENGINE_NAME,
+        session_factory=db_session_factory,
+    )
+    result = await orch.review_push(_make_push_event(gitlab_project_id=999))
+
+    assert result.status == "done"
+    assert stubs[DEFAULT_ENGINE_NAME].review_calls == 1
+    assert stubs[PROJECT_ENGINE_NAME].review_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_push_review_falls_back_when_configured_engine_unregistered(
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """push 审查时 engine_id 指向未注册的引擎名 -> 回退 default_engine，不报错。"""
+
+    engine = await _seed_engine(db_session_factory, "no-such-engine")
+    await _seed_project(db_session_factory, "999", engine=engine)
+    registry, stubs = _make_registry(DEFAULT_ENGINE_NAME)
+    orch = ReviewOrchestrator(
+        gitlab_client=_make_push_gitlab_mock(),
+        engine_registry=registry,
+        default_engine=DEFAULT_ENGINE_NAME,
+        session_factory=db_session_factory,
+    )
+    result = await orch.review_push(_make_push_event(gitlab_project_id=999))
+
+    assert result.status == "done"
+    assert stubs[DEFAULT_ENGINE_NAME].review_calls == 1

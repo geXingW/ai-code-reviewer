@@ -361,7 +361,7 @@ class NotificationService:
           "file_path", "line_number", "severity", "category"}, ...]}, ...]``。
           BLOCKER 全部展示，WARNING / INFO 各最多 5 条，超出显示
           「还有 N 条，详见详情页」；每条独立成段展示问题类型 / 严重程度 /
-          相关文件 / 代码位置。
+          代码位置（文件 + 行号）。
         - ``changed_files_count: int``：变更文件数；为 0（缺失 / 非 incremental
           模式）时跳过「变更规模」行。
 
@@ -591,7 +591,7 @@ class NotificationService:
         """按严重级别渲染分组 finding 列表（BLOCKER 全展示，其余各最多 5 条）。
 
         参照 AI-Codereview-Gitlab 的展示风格：每条问题独立成段（标题 + 问题
-        类型 / 严重程度 / 相关文件 / 代码位置），段落间空行分隔，避免长列表
+        类型 / 严重程度 / 代码位置），段落间空行分隔，避免长列表
         挤成一团；空分组（0 条问题）跳过不渲染。
         """
 
@@ -616,7 +616,11 @@ class NotificationService:
 
     @staticmethod
     def _render_finding_item(item: dict[str, Any], index: int) -> list[str]:
-        """渲染单条问题的展示段落：加粗标题 + 字段行 + 段尾空行。"""
+        """渲染单条问题的展示段落：加粗标题 + 字段行 + 段尾空行。
+
+        「代码位置」渲染 ``file_path:line_number``（无行号时仅文件路径），
+        不再单独渲染「相关文件」——两者内容原本只差一个行号后缀。
+        """
 
         title_text = str(item.get("title") or "")
         file_path = str(item.get("file_path") or "")
@@ -632,7 +636,6 @@ class NotificationService:
                 [
                     _kv("问题类型", category),
                     _kv("严重程度", severity),
-                    _kv("相关文件", f"`{file_path}`"),
                     _kv("代码位置", f"`{location}`"),
                 ],
             ),

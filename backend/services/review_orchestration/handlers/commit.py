@@ -125,12 +125,12 @@ class CommitReviewHandler(ReviewCommitStyleHandler[GitLabCommitEvent]):
     def _head_sha(self, event: GitLabCommitEvent) -> str:
         return event.commit_sha
 
-    def _log_engine_failure(self, event: GitLabCommitEvent) -> None:
+    def _log_engine_failure(self, event: GitLabCommitEvent, engine_name: str) -> None:
         logger.exception(
             "commit review engine failed",
             extra={
                 "gitlab_project_id": event.project_id,
                 "commit_sha": event.commit_sha,
-                "engine": self._default_engine,
+                "engine": engine_name,
             },
         )
