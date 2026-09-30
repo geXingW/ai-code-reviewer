@@ -299,7 +299,9 @@ export function AppShell({
           >
             <SearchOutlined className="shrink-0" />
             <span className="flex-1 truncate">搜索…</span>
-            <kbd className="rounded border border-[#E4E4E7] bg-[#F4F4F5] px-1.5 py-0.5 font-mono text-[11px] text-zinc-500">
+            <kbd className="rounded border border-[#E4E4E7] bg-[#F4F4F5] px-1.5 py-0.5 font-mono text-[11px] leading-none whitespace-nowrap text-zinc-500">
+              {/* leading-none:顶栏 antd Header 的 line-height:48px 会被继承，
+                  把行内 kbd 撑到 54px 溢出按钮，必须显式收回行高。 */}
               {isMac ? '⌘K' : 'Ctrl K'}
             </kbd>
           </button>
