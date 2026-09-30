@@ -114,12 +114,12 @@ class PushReviewHandler(ReviewCommitStyleHandler[GitLabPushEvent]):
     def _head_sha(self, event: GitLabPushEvent) -> str:
         return event.after_sha
 
-    def _log_engine_failure(self, event: GitLabPushEvent) -> None:
+    def _log_engine_failure(self, event: GitLabPushEvent, engine_name: str) -> None:
         logger.exception(
             "push review engine failed",
             extra={
                 "gitlab_project_id": event.project_id,
                 "after_sha": event.after_sha,
-                "engine": self._default_engine,
+                "engine": engine_name,
             },
         )

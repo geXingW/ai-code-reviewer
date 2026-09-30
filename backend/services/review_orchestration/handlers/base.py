@@ -48,6 +48,7 @@ from services.review_orchestration.gitlab_feedback import (
 from services.review_orchestration.notification import _push_commit_review_notification
 from services.review_orchestration.policy import resolve_policy_or_skip
 from services.review_orchestration.resolution import (
+    _resolve_engine,
     _resolve_history,
     _resolve_provider,
     resolve_rules,
@@ -99,7 +100,8 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
     5. 空 diff 短路（汇总评论 + success status + 通知，顺序固定）；
     6. rules / provider / history 解析 + repo_reader；
     7. ``_build_context`` -- ReviewContext 构建（抽象钩子）；
-    8. engine 调用，异常 -> ``_handle_commit_engine_error``（日志文案按链路区分）；
+    8. ``_resolve_engine`` 项目级引擎选择（fail-open 回退全局默认）+ engine
+       调用，异常 -> ``_handle_commit_engine_error``（日志文案按链路区分）；
     9. ``compute_has_blocker``；
     10. ``_post_commit_finding_comments`` -- 行级评论；
     11. ``_build_note`` -- 汇总评论（抽象钩子，空 diff 短路也复用）；
@@ -210,11 +212,19 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
             history=history,
             repo_reader=repo_reader,
         )
-        engine = self._engine_registry.get(self._default_engine)
+        # 项目级引擎选择与 MR 链路同源（fail-open，见 _resolve_engine）：
+        # projects.engine_id -> engines.name，任何失败回退全局默认引擎。
+        engine_name = await _resolve_engine(
+            event,
+            session_factory=self._session_factory,
+            registry=self._engine_registry,
+            default_engine=self._default_engine,
+        )
+        engine = self._engine_registry.get(engine_name)
         try:
             findings = await engine.review(context)
         except Exception as exc:
-            self._log_engine_failure(event)
+            self._log_engine_failure(event, engine_name)
             return await _handle_commit_engine_error(
                 event=event,
                 review_id=review_id,
@@ -405,5 +415,5 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
         """行级评论 / 汇总评论 / commit status / repo_reader 的写回目标 SHA。"""
 
     @abstractmethod
-    def _log_engine_failure(self, event: _EventT) -> None:
+    def _log_engine_failure(self, event: _EventT, engine_name: str) -> None:
         """engine 异常时的 ``logger.exception``（两条链路文案不同，不许合并）。"""
