@@ -30,9 +30,11 @@ backend/*.db-journal
 
 # AI 助手本地规则（不入库，仅供本地开发使用）
 .claude/
+AGENTS.md
 .cursorrules
 .cursor/
 .windsurf/
+.hermes/
 PROJECT.md
 CONTEXT.md
 
