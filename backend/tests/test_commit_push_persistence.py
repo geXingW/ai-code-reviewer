@@ -470,7 +470,12 @@ async def test_agent_trace_endpoint_returns_push_review_trace(
 async def test_list_recent_filters_mr_only(
     db_session_factory: async_sessionmaker,
 ) -> None:
-    """list_recent(review_kind='mr')：只回 MR 行，push/commit 行被排除。"""
+    """list_recent(review_kind='mr') 参数能力：只回 MR 行，push/commit 行被排除。
+
+    feat/unified-review-records 起 /api/reviews/recent 端点不再传该参数
+    （面板全来源合并口径），但 repository 层参数保留（供未来按来源过滤
+    的调用方使用），本测试锚定该能力不回归。
+    """
 
     await _seed_reviews(db_session_factory)
     async with db_session_factory() as session:
@@ -479,3 +484,37 @@ async def test_list_recent_filters_mr_only(
 
     assert len(rows) == 1
     assert rows[0].review_kind == "mr"
+
+
+@pytest.mark.asyncio
+async def test_recent_reviews_endpoint_returns_all_kinds(
+    db_client: AsyncClient,
+    db_session_factory: async_sessionmaker,
+) -> None:
+    """feat/unified-review-records：/api/reviews/recent 返回全来源（mr/commit/push）。
+
+    面板与「审查记录」菜单口径统一：push/commit 行的 mr_iid 为 null、
+    title 用 commit 短 SHA、review_kind 透传，前端按来源徽章分支渲染。
+    """
+
+    await _seed_reviews(db_session_factory)
+
+    response = await db_client.get(
+        "/api/reviews/recent",
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 3
+    kinds = {item["review_kind"] for item in items}
+    assert kinds == {"mr", "commit", "push"}
+    # push/commit 行：mr_iid 为 null（不再硬转 0 冒充 MR !0）。
+    for item in items:
+        if item["review_kind"] in ("commit", "push"):
+            assert item["mr_iid"] is None
+            assert item["title"].startswith(("Commit ", "Push "))
+            assert len(item["title"].split(" ")[1]) == 7  # 短 SHA
+        else:
+            assert item["mr_iid"] == 42
+            assert item["title"] == "MR !42"

@@ -182,7 +182,7 @@ GitLab MR webhook action:
 | `commit` | Push Hook 逐 commit 审查 | `NULL` | 是（feat/commit-push-review-persistence 起） |
 | `push` | Push Hook 合并审查（一次 push 单次审查） | `NULL` | 是（feat/commit-push-review-persistence 起） |
 
-> push / commit 审查经 `_persist_commit_style_review` 落库：`review_mode` 恒为 `full`，`policy_applied` 为 `NULL`（commit 链路的策略是展示字符串，与列的 UUID 语义不匹配），行级评论 id 写入 `gitlab_discussion_id` 复用现有语义。管理台「Push/Commit 审查」页按 `review_kind in ('commit','push')` 过滤展示，行展开可看 findings 与 Agent 执行轨迹。
+> push / commit 审查经 `_persist_commit_style_review` 落库：`review_mode` 恒为 `full`，`policy_applied` 为 `NULL`（commit 链路的策略是展示字符串，与列的 UUID 语义不匹配），行级评论 id 写入 `gitlab_discussion_id` 复用现有语义。管理台「审查记录」页统一展示全部来源（feat/unified-review-records 起，来源筛选默认 MR），首页最近审查面板同口径，行展开可看 findings 与 Agent 执行轨迹。
 
 ---
 

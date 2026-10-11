@@ -71,7 +71,9 @@ export type RecentReview = {
   review_id: string | null;
   project_id: number;
   project_path: string;
-  mr_iid: number;
+  // feat/unified-review-records：push/commit 审查行 mr_iid 为 null（无 MR 概念），
+  // 面板按 review_kind 分支渲染，MR 行才显示 !mr_iid 徽章。
+  mr_iid: number | null;
   title: string;
   web_url: string | null;
   status: string;
@@ -87,6 +89,9 @@ export type RecentReview = {
   // PR #96：MR 生命周期事件记账 Review 的标签。有值时前端优先渲染专属徽章，
   // 替代（不并列）review_mode 徽章。老数据 / 普通审查为 null / undefined。
   lifecycle_event?: 'mr_closed' | 'mr_merged' | null;
+  // feat/unified-review-records：审查来源（'mr' / 'commit' / 'push'），
+  // 面板合并口径后按此渲染来源徽章与标题。
+  review_kind?: 'mr' | 'commit' | 'push' | null;
 };
 
 export type CreateReviewPayload = {
