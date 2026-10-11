@@ -6,6 +6,8 @@
 
 ### Fixed
 
+- **Provider `extra_body` 透传断裂修复**：`ProviderCreate` / `ProviderUpdate` 只暴露 `extra_headers` 字段（无 `extra` 列），用户配置阿里百炼 `enable_thinking` 等请求体参数时只能存进 `extra_headers` 列；但 `llm/factory.py` 的 `_normalise_config` 构建 `LLMProviderConfig` 时 `extra={"extra_headers": ...}`——`llm/base.py` 白名单读取 `extra.get("extra_body")` 永远落空，`enable_thinking` 从未生效（qwen 系列默认关闭思考模式 → agent 审查轮间零推理、机械重复调用 → 观察预算烧穿强制收口）。现从 `extra_headers` 列提取嵌套的 `extra_body` 字典注入 `extra`，DB 行 / 运行时 `ProviderConfig` / `LLMProviderConfig` 三条路径行为对齐；新增 3 个 factory 单测覆盖（带 extra_body / 纯 headers / NULL headers）。
+
 - **llm-agent 去重缓存并发安全修复**：`_observation_cache` / `_tool_call_meta` 原为引擎实例属性，而引擎实例是进程级单例（registry）——并发 review 会互相清空缓存（去重失效）甚至跨 review 污染（缓存 key 不含 ref，A 命中 B 写入的观察，基于错误版本的代码下结论）。现重构为 `_RunState` review 局部状态（随 review 生命周期存在，run 结束即无引用、GC 自动回收，不在实例上残留），与 registry「engines are stateless」的设计约定对齐。新增并发隔离回归测试（两个 review 交错执行、断言缓存互不污染）与属性残留测试。
 
 - **llm-agent 审查循环优化（消除强制收口三大死循环）**：针对 30 轮仍 `budget_exhausted` 强制收口、产出空 findings 的轨迹分析（单次审查烧掉 103 万 prompt tokens，其中 ~60% 浪费在重复调用与截断死循环），实施六项修复——

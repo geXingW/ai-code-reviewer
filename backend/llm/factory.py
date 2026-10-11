@@ -91,6 +91,14 @@ def _normalise_config(
 
     db_provider = provider
     extra_headers = db_provider.extra_headers or {}
+    # 兼容历史数据：extra_headers 列可能误存 extra_body 配置。
+    # ProviderCreate/ProviderUpdate 只暴露 extra_headers 字段（无 extra 列），
+    # 用户配置 enable_thinking 等请求体参数时只能写入这一列；此处提取后
+    # 注入 extra，供 OpenAICompatibleProvider 的白名单透传（payload.update）。
+    extra: dict[str, Any] = {"extra_headers": extra_headers}
+    extra_body = extra_headers.get("extra_body")
+    if isinstance(extra_body, dict):
+        extra["extra_body"] = extra_body
     return LLMProviderConfig(
         provider_id=db_provider.id,
         protocol=_normalise_protocol(str(db_provider.protocol)),
@@ -100,7 +108,7 @@ def _normalise_config(
         temperature=float(db_provider.temperature),
         max_tokens=int(db_provider.max_tokens),
         extra_headers=_coerce_headers(extra_headers),
-        extra={"extra_headers": extra_headers},
+        extra=extra,
     )
 
 

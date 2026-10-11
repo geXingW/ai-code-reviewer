@@ -205,6 +205,68 @@ def test_factory_builds_provider_from_runtime_config() -> None:
     assert provider.config.default_json_mode is False
 
 
+class _FakeDBProviderRow:
+    """Structural stand-in for a Provider ORM row (factory duck-typing)."""
+
+    def __init__(self, extra_headers: dict[str, Any] | None) -> None:
+        self.id = uuid4()
+        self.protocol = "openai_compatible"
+        self.base_url = "https://dashscope.example.test/compatible-mode/v1"
+        self.api_key = "dashscope-key"
+        self.model = "qwen3.7-plus"
+        self.temperature = 0.0
+        self.max_tokens = 80960
+        self.extra_headers = extra_headers
+
+
+def test_factory_extracts_extra_body_from_db_extra_headers_column() -> None:
+    """DB rows whose extra_headers column carries extra_body pass it to extra.
+
+    ProviderCreate/ProviderUpdate only expose extra_headers (there is no
+    ``extra`` column), so request-body parameters like DashScope's
+    enable_thinking can only be stored in that column. The factory must
+    lift the nested ``extra_body`` dict into ``config.extra`` so the
+    OpenAI-compatible adapter's whitelist passthrough can inject it into
+    the chat-completions payload.
+    """
+
+    row = _FakeDBProviderRow(
+        extra_headers={"extra_body": {"enable_thinking": True, "thinking_budget": 4096}}
+    )
+
+    provider = build_provider(row)
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.config.extra["extra_body"] == {
+        "enable_thinking": True,
+        "thinking_budget": 4096,
+    }
+
+
+def test_factory_db_row_without_extra_body_keeps_plain_headers() -> None:
+    """DB rows without extra_body keep the historical extra shape."""
+
+    row = _FakeDBProviderRow(extra_headers={"X-Custom": "value"})
+
+    provider = build_provider(row)
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert "extra_body" not in provider.config.extra
+    assert provider.config.extra_headers == {"X-Custom": "value"}
+
+
+def test_factory_db_row_with_null_headers_has_no_extra_body() -> None:
+    """NULL extra_headers must not break the config build."""
+
+    row = _FakeDBProviderRow(extra_headers=None)
+
+    provider = build_provider(row)
+
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert "extra_body" not in provider.config.extra
+    assert provider.config.extra_headers == {}
+
+
 @pytest.mark.asyncio
 async def test_http_errors_are_mapped_to_llm_error_family() -> None:
     """Provider HTTP failures are normalized into stable LLM exceptions."""
