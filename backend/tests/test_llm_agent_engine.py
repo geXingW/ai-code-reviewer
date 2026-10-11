@@ -1066,3 +1066,117 @@ async def test_agent_batched_tool_calls_run_concurrently(
     # 3 个 0.2s 工具并行：总耗时应显著小于 0.6s（顺序执行下限）。
     assert elapsed < 0.5
     assert len(reader.calls) == 3
+
+
+
+# ---- 并发 review 缓存隔离 ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_concurrent_reviews_do_not_share_cache() -> None:
+    """并发 review 的去重缓存互不清空/污染（缓存必须是 review 局部状态）。
+
+    编排（模拟 registry 单例被并发调用，两个 review 共用同一引擎实例）：
+    A 的 turn0 完整结束（content-A 已写入缓存）-> A 的 turn1 LLM 调用挂起
+    -> B 完整跑完（旧实现会 reset 清掉 A 的缓存并写入 content-B）-> 放行
+    A -> A 的重复调用命中缓存。断言 A 命中的是自己的 content-A，而不是被
+    B 污染的 content-B。
+    """
+
+    release_a = asyncio.Event()
+    turn1_started = asyncio.Event()
+
+    @dataclass
+    class _GatedClient(_FakeAgentClient):
+        """A 的 client：第二次 LLM 调用（turn1）挂起，等编排方放行。"""
+
+        release: asyncio.Event = field(default_factory=asyncio.Event)
+        second_call_started: asyncio.Event = field(default_factory=asyncio.Event)
+
+        async def complete_with_tools(
+            self,
+            *,
+            provider: ProviderConfig,
+            messages: list[ChatMessage],
+            tools: list[ToolSpec] | None,
+            timeout_seconds: float,
+            system_prompt: str | None = None,
+        ) -> ChatResponse:
+            if len(self.turns) == 1:
+                # turn0 已完成（缓存已写入），本次是 turn1 的 LLM 调用。
+                self.second_call_started.set()
+                await self.release.wait()
+            return await super().complete_with_tools(
+                provider=provider,
+                messages=messages,
+                tools=tools,
+                timeout_seconds=timeout_seconds,
+                system_prompt=system_prompt,
+            )
+
+    reader_a = _FakeRepoReader(files={"app/auth.py": "content-A"})
+    reader_b = _FakeRepoReader(files={"app/auth.py": "content-B"})
+
+    # A 的响应序列：turn0 读文件 -> turn1 重复读（期望命中自己的缓存）-> 收口。
+    client_a = _GatedClient(
+        responses=[
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}', call_id="a-1"),
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}', call_id="a-2"),
+            _final_response(),
+        ]
+    )
+    client_a.release = release_a
+    client_a.second_call_started = turn1_started
+    # B 的响应序列：读一次 -> 收口。
+    client_b = _FakeAgentClient(
+        responses=[
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}', call_id="b-1"),
+            _final_response(),
+        ]
+    )
+
+    # 同一引擎实例被两个并发 review 使用（registry 单例的真实行为）。
+    engine = LLMAgentEngine(client=client_a, settings=_settings())
+
+    task_a = asyncio.create_task(engine.review(_ctx(repo_reader=reader_a)))
+    await turn1_started.wait()  # A 的 turn0 已完整结束（content-A 已入缓存），turn1 挂起中
+
+    # 用 B 的 client 替换引擎的 client 后并发跑 B（同一实例、不同 review 上下文）。
+    original_client = engine._client
+    engine._client = client_b
+    try:
+        task_b = asyncio.create_task(engine.review(_ctx(repo_reader=reader_b)))
+        await task_b  # B 完整跑完（旧实现：reset 清空 A 的缓存 + 写入 content-B）
+    finally:
+        engine._client = original_client
+
+    release_a.set()  # 放行 A 的 turn1
+    await task_a
+
+    # A 的重复调用命中自己的缓存：真实工具只执行一次。
+    assert len(reader_a.calls) == 1
+    # A 第三轮请求里最后一个 tool 消息是缓存观察，内容必须是 content-A。
+    turn2_tool_msgs = [m for m in client_a.turns[2]["messages"] if m.role == "tool"]
+    assert turn2_tool_msgs[-1].content.startswith("[cached]")
+    assert "content-A" in turn2_tool_msgs[-1].content
+    assert "content-B" not in turn2_tool_msgs[-1].content
+
+
+@pytest.mark.asyncio
+async def test_agent_cache_not_retained_after_review_completes() -> None:
+    """review 结束后引擎实例不残留缓存引用（局部状态，GC 可回收）。"""
+
+    reader = _FakeRepoReader(files={"app/auth.py": "x" * 100})
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}'),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    # 引擎实例上不应存在实例级缓存属性（状态随 review 局部生命周期）。
+    assert not hasattr(engine, "_observation_cache")
+    assert not hasattr(engine, "_tool_call_meta")
