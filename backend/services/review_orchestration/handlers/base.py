@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ from services.review_orchestration.gitlab_feedback import (
     _post_commit_finding_comments,
 )
 from services.review_orchestration.notification import _push_commit_review_notification
+from services.review_orchestration.persistence import _persist_commit_style_review
 from services.review_orchestration.policy import resolve_policy_or_skip
 from services.review_orchestration.resolution import (
     _resolve_engine,
@@ -139,6 +141,7 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
     async def handle(self, event: _EventT) -> CommitReviewResult:
         """Run the configured review engine for one commit-style event."""
 
+        started_at = time.perf_counter()
         if not await self._resolve_commit_review_enabled(event):
             return CommitReviewResult(
                 review_id=None,
@@ -234,10 +237,12 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
                 gitlab_client=self._gitlab_client,
                 review_detail_base_url=self._review_detail_base_url,
                 notification_service=self._notification_service,
+                session_factory=self._session_factory,
+                engine_used=engine_name,
             )
 
         has_blocker, blocker_count = compute_has_blocker(findings, block_policy)
-        await _post_commit_finding_comments(
+        comment_ids = await _post_commit_finding_comments(
             event,
             changes,
             findings,
@@ -270,6 +275,19 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
                 review_id=review_id,
             ),
         )
+        # 尝试落库（best-effort，失败不影响 GitLab 反馈与返回值）。
+        await _persist_commit_style_review(
+            event=event,
+            review_id=review_id,
+            findings=findings,
+            has_blocker=has_blocker,
+            status_value="done",
+            duration_ms=int((time.perf_counter() - started_at) * 1000),
+            engine_used=engine_name,
+            base_sha=outcome.base_sha,
+            comment_ids=comment_ids,
+            session_factory=self._session_factory,
+        )
         await _push_commit_review_notification(
             event=event,
             review_id=review_id,
@@ -295,11 +313,12 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
         event: _EventT,
         policy_applied: str,
     ) -> CommitReviewResult:
-        """空 diff 短路：汇总评论 -> success status -> 通知 -> done/0。
+        """空 diff 短路：汇总评论 -> success status -> 落库 -> 通知 -> done/0。
 
         顺序敏感（测试断言了调用顺序）：评论 -> status -> 通知 -> return。
         note 走与正常完成相同的 ``_build_note`` 钩子（``findings=[]``），
         保证两条链路的"无可审查变更"模板差异只写一次。
+        落库在通知前（与正常完成路径一致），保证通知发出时 DB 已有记录。
         """
 
         review_id = uuid4()
@@ -325,6 +344,20 @@ class ReviewCommitStyleHandler(ABC, Generic[_EventT]):
                 review_detail_base_url=self._review_detail_base_url,
                 review_id=review_id,
             ),
+        )
+        # 尝试落库（best-effort）：空 diff 也写一条 done/0 行，让新页面能看到
+        # 这次 push 的执行轨迹入口。
+        await _persist_commit_style_review(
+            event=event,
+            review_id=review_id,
+            findings=[],
+            has_blocker=False,
+            status_value="done",
+            duration_ms=0,
+            engine_used=self._default_engine,
+            base_sha=None,
+            comment_ids=None,
+            session_factory=self._session_factory,
         )
         await _push_commit_review_notification(
             event=event,

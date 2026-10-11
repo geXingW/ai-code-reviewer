@@ -246,6 +246,9 @@ export type ReviewRecord = {
   // PR #96：MR 生命周期事件记账 Review 的标签。有值时优先渲染专属徽章，
   // 替代（不并列）review_mode 徽章。老数据 / 普通审查为 null / undefined。
   lifecycle_event?: 'mr_closed' | 'mr_merged' | null;
+  // feat/commit-push-review-persistence：审查来源。'mr'（默认）/ 'commit'
+  // （逐 commit 审查）/ 'push'（合并审查）。老数据走 server_default 'mr'。
+  review_kind?: 'mr' | 'commit' | 'push';
 };
 
 export type FindingRecord = {
@@ -578,13 +581,23 @@ async function parseJsonResponse<T>(response: Response, authProtected = false): 
  * 列表接口查询串构造。null / undefined / 空串的参数直接丢弃——
  * 后端 FastAPI 对缺省参数走默认值，避免前端误传空串触发 422（如 bool 型 enabled）。
  * sort 使用后端 _ALLOWED_SORTS 约定：`-` 前缀表示降序。
+ * 数组值（如 review_kind 多值过滤）逐项 append，形成 `?k=a&k=b` 形态。
  */
-export type ListQuery = Record<string, string | number | boolean | null | undefined>;
+export type ListQuery = Record<string, string | number | boolean | string[] | null | undefined>;
 
 export function buildListQuery(params: ListQuery): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null || value === '') {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        continue;
+      }
+      for (const item of value) {
+        search.append(key, String(item));
+      }
       continue;
     }
     search.set(key, String(value));
@@ -851,10 +864,14 @@ export type ReviewRecordListParams = {
   project_id?: string;
   status?: string;
   mr_iid?: string | number;
+  /** 来源过滤（多值）：'mr' / 'commit' / 'push'。不传则不过滤来源。 */
+  review_kind?: string[];
+  /** commit SHA 精确匹配（Push/Commit 审查页搜索用）。 */
+  commit_sha?: string;
   sort?: string;
 };
 
-/** 服务端分页列表（project_id / status / mr_iid 过滤，sort 支持 created_at/finding_count 等）。 */
+/** 服务端分页列表（project_id / status / mr_iid / review_kind / commit_sha 过滤，sort 支持 created_at/finding_count 等）。 */
 export async function fetchReviewRecords(
   params: ReviewRecordListParams = {},
 ): Promise<Page<ReviewRecord>> {

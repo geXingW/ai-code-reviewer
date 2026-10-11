@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createRule, deleteProject, fetchRules, fetchStatsRules, getStoredAdminUsername, loginAdmin, setStoredAdminAccessToken, updateProvider, updateProject } from './api';
+import { buildListQuery, createRule, deleteProject, fetchReviewRecords, fetchRules, fetchStatsRules, getStoredAdminUsername, loginAdmin, setStoredAdminAccessToken, updateProvider, updateProject } from './api';
 
 type Captured = { url?: string; init?: RequestInit };
 
@@ -164,5 +164,31 @@ describe('API 客户端 payload 处理', () => {
     const payload = await loginAdmin('alice', 'pwd');
     expect(payload.username).toBe('alice');
     expect(getStoredAdminUsername()).toBe('alice');
+  });
+});
+
+describe('buildListQuery 与 review_kind 多值过滤', () => {
+  it('数组值逐项 append，形成 ?k=a&k=b 形态（后端多值 Query 解析约定）', () => {
+    const qs = buildListQuery({ review_kind: ['commit', 'push'], status: 'done' });
+    expect(qs).toBe('?review_kind=commit&review_kind=push&status=done');
+  });
+
+  it('空数组与空值一样被丢弃，不产生空参数', () => {
+    expect(buildListQuery({ review_kind: [], status: '' })).toBe('');
+    expect(buildListQuery({ review_kind: undefined })).toBe('');
+  });
+
+  it('fetchReviewRecords 多值 review_kind 生成多值查询串', async () => {
+    setStoredAdminAccessToken('admin-token');
+    const captured = mockFetchAndCapture();
+
+    await fetchReviewRecords({ review_kind: ['commit', 'push'], limit: 20 });
+
+    expect(captured.url).toBe(
+      '/api/reviews/records?review_kind=commit&review_kind=push&limit=20',
+    );
+    expect(captured.init?.method).toBeUndefined();
+    const headers = captured.init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer admin-token');
   });
 });

@@ -14,6 +14,7 @@ import {
   AppstoreOutlined,
   AuditOutlined,
   BellOutlined,
+  BranchesOutlined,
   CloudServerOutlined,
   DeploymentUnitOutlined,
   ExperimentOutlined,
@@ -42,6 +43,7 @@ export type PageKey =
   | 'projects'
   | 'user-mappings'
   | 'reviews'
+  | 'commitReviews'
   | 'findings'
   | 'falsePositives'
   | 'negativeExamples'
@@ -60,13 +62,14 @@ interface NavSection {
   items: NavItem[];
 }
 
-/** 导航分组：工作台 5 项 + 配置 6 项 + 系统管理 2 项（顺序即侧栏展示顺序）。 */
+/** 导航分组：工作台 6 项 + 配置 6 项 + 系统管理 2 项（顺序即侧栏展示顺序）。 */
 export const NAV_SECTIONS: NavSection[] = [
   {
     label: '工作台',
     items: [
       { key: 'dashboard', label: '仪表盘', icon: AppstoreOutlined },
       { key: 'reviews', label: '审查记录', icon: FileDoneOutlined },
+      { key: 'commitReviews', label: 'Push/Commit 审查', icon: BranchesOutlined },
       { key: 'falsePositives', label: '误报队列', icon: FilterOutlined },
       { key: 'negativeExamples', label: '负样本库', icon: ExperimentOutlined },
       { key: 'findings', label: '问题与误报', icon: AlertOutlined },
@@ -93,6 +96,15 @@ export const NAV_SECTIONS: NavSection[] = [
 ];
 
 export const ALL_NAV_ITEMS: Array<NavItem> = NAV_SECTIONS.flatMap((section) => section.items);
+
+/**
+ * 菜单权限别名：页面 key 与后端 `page:*` 权限不一致的映射。
+ * `commitReviews` 复用 `page:reviews`（同一数据端点 /api/reviews/records，
+ * 后端 gate 即 page:reviews；避免为既有部署引入新权限的迁移成本）。
+ */
+const PERMISSION_KEY_ALIASES: Partial<Record<PageKey, PageKey>> = {
+  commitReviews: 'reviews',
+};
 
 interface AppShellProps {
   activePage: PageKey;
@@ -133,7 +145,8 @@ export function AppShell({
   const hasPermission = useCallback(
     (pageKey: PageKey): boolean => {
       if (!permissions || permissions.length === 0) return true;
-      return permissions.includes(`page:${pageKey}`);
+      const permissionKey = PERMISSION_KEY_ALIASES[pageKey] ?? pageKey;
+      return permissions.includes(`page:${permissionKey}`);
     },
     [permissions],
   );

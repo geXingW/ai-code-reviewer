@@ -885,18 +885,22 @@ async def delete_user_mapping(mapping_id: UUID, db: DbSession) -> None:
     dependencies=[Depends(_require_permission("page:reviews"))],
 )
 async def list_recent_reviews(db: DbSession) -> list[RecentReviewRead]:
-    """从 DB 读最近 20 条评审用于首页最近审查面板。
+    """从 DB 读最近 20 条评审用于首页最近审查面板（仅 MR 审查）。
 
     历史实现仅在 ``POST /api/reviews`` 时把摘要追加到内存 deque，webhook
     路径不经过该接口，首页永远看不到数据。本实现改为直接查库，DB 查询
     失败时回退到旧 deque 保持退化可用。
+
+    feat/commit-push-review-persistence 起 push/commit 审查也落库，但
+    面板口径保持 MR 审查（``review_kind='mr'``），避免 commit 短 SHA 冒充
+    MR 编号造成误读。
     """
 
     from api.reviews import _recent_reviews
 
     try:
         reviews_repo = ReviewRepository(db)
-        rows = await reviews_repo.list_recent(limit=20)
+        rows = await reviews_repo.list_recent(limit=20, review_kind="mr")
     except (SQLAlchemyError, OSError, ConnectionError) as exc:
         # 涵盖 SQLAlchemy 抛出的所有 DB 层错误，以及 asyncpg 连接期未被包装的
         # 原生错误（OSError / ConnectionError），失败时回退到内存 deque 兜底。
@@ -968,11 +972,18 @@ async def list_reviews(
     project_id: UUID | None = None,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
     mr_iid: str | None = None,
+    review_kind: Annotated[list[str] | None, Query()] = None,
+    commit_sha: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
     sort: str = "-created_at",
 ) -> Page:
-    """List review records with management UI filters."""
+    """List review records with management UI filters.
+
+    ``review_kind`` 支持多值（``?review_kind=commit&review_kind=push``），
+    供「Push/Commit 审查」页过滤；不传时不按来源过滤（老行为）。
+    ``commit_sha`` 精确匹配（新页面按 SHA 搜索用）。
+    """
 
     stmt = select(Review)
     if project_id is not None:
@@ -981,6 +992,10 @@ async def list_reviews(
         stmt = stmt.where(Review.status == status_filter)
     if mr_iid:
         stmt = stmt.where(Review.mr_iid == mr_iid)
+    if review_kind:
+        stmt = stmt.where(Review.review_kind.in_(review_kind))
+    if commit_sha:
+        stmt = stmt.where(Review.commit_sha == commit_sha)
     return await _paginate(
         db, stmt, ReviewRead, "reviews", sort, limit, offset, enrich=_review_to_read
     )

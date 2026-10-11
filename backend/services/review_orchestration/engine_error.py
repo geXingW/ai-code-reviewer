@@ -19,7 +19,7 @@ from services.review_orchestration.notification import (
     _push_commit_review_notification,
     _push_review_notification,
 )
-from services.review_orchestration.persistence import _persist_review
+from services.review_orchestration.persistence import _persist_commit_style_review, _persist_review
 from services.review_orchestration.results import (
     CommitReviewResult,
     OrchestratorResult,
@@ -43,12 +43,15 @@ async def _handle_commit_engine_error(
     gitlab_client: GitLabClient,
     review_detail_base_url: str | None,
     notification_service: NotificationService | None,
+    session_factory: SessionFactory | None = None,
+    engine_used: str | None = None,
 ) -> CommitReviewResult:
-    """commit 审查引擎失败的确定性反馈：失败评论 + failed status + 通知。
+    """commit 审查引擎失败的确定性反馈：失败评论 + failed status + 落库 + 通知。
 
     与 MR 流的 :meth:`_handle_engine_error` 语义对齐，但 commit 审查没有
     "阻断合并"概念，**commit status 恒为 failed**（失败不装成功），错误细节
-    不回显（防泄漏，只写固定文案）。
+    不回显（防泄漏，只写固定文案）。引擎失败也落一条 ``engine_error`` 行
+    （best-effort），方便运营侧统计降级次数与新页面排查问题。
     """
 
     has_blocker, blocker_count = compute_has_blocker_for_engine_error(block_policy)
@@ -80,6 +83,19 @@ async def _handle_commit_engine_error(
             review_detail_base_url=review_detail_base_url,
             review_id=review_id,
         ),
+    )
+    # 引擎失败也落一条 engine_error 记录（best-effort），与 MR 链路对齐。
+    await _persist_commit_style_review(
+        event=event,
+        review_id=review_id,
+        findings=[],
+        has_blocker=has_blocker,
+        status_value="engine_error",
+        duration_ms=0,
+        engine_used=engine_used or "unknown",
+        base_sha=None,
+        comment_ids=None,
+        session_factory=session_factory,
     )
     await _push_commit_review_notification(
         event=event,

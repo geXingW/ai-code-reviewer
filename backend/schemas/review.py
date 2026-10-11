@@ -29,7 +29,9 @@ ReviewLifecycleEvent = Literal["mr_closed", "mr_merged"]
 # feat/commit-review：审查来源标记。
 # - ``mr``：MR 事件触发（默认，老数据 server_default 也是它）
 # - ``commit``：GitLab Push Hook 逐 commit 审查（此时 mr_iid 为 NULL）
-ReviewKind = Literal["mr", "commit"]
+# - ``push``：GitLab Push Hook 合并审查（一次 push 的全部 commit 合并单次审查，
+#   mr_iid 同样为 NULL；feat/commit-push-review-persistence 起落库）
+ReviewKind = Literal["mr", "commit", "push"]
 
 
 class ReviewCreate(BaseModel):
