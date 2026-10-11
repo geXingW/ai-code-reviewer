@@ -131,7 +131,9 @@ class RecentReviewRead(BaseModel):
     review_id: UUID | None
     project_id: int
     project_path: str
-    mr_iid: int
+    # feat/unified-review-records：push/commit 审查行 mr_iid 为 NULL（无 MR 概念），
+    # 面板合并口径后 MR 行为 int、push/commit 行为 None，前端按 review_kind 分支渲染。
+    mr_iid: int | None
     title: str
     web_url: str | None
     status: str
@@ -144,3 +146,5 @@ class RecentReviewRead(BaseModel):
     created_at: AwareDatetime | None = None
     review_mode: str | None = "full"
     lifecycle_event: str | None = None
+    # feat/unified-review-records：审查来源（'mr' / 'commit' / 'push'），面板按此渲染来源徽章。
+    review_kind: str | None = None

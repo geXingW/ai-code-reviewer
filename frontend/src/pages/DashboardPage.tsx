@@ -392,42 +392,59 @@ function RecentReviewsPanel({ reviews }: RecentReviewsPanelProps) {
     <Card title="最近审查" styles={{ body: { paddingTop: 0 } }}>
       {reviews.length === 0 ? (
         <div className="py-6 text-center text-[13px] text-zinc-400">
-          暂无审查记录 · 当 GitLab MR 触发审查后，记录会显示在这里
+          暂无审查记录 · 当 GitLab MR / Push 触发审查后，记录会显示在这里
         </div>
       ) : (
         <div className="divide-y divide-zinc-100">
-          {reviews.map((review) => (
-            <div
-              key={`${review.review_id ?? review.project_id}-${review.mr_iid}`}
-              className="flex items-center gap-3 py-2.5"
-            >
-              <StatusDot tone={review.has_blocker ? 'bad' : 'ok'} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-[13px] font-medium text-zinc-900">
-                    {review.title || `MR !${review.mr_iid}`}
-                  </span>
-                  <span className="shrink-0 rounded bg-zinc-100 px-1.5 text-[10px] font-mono text-zinc-500">
-                    !{review.mr_iid}
-                  </span>
-                  {review.engine_used ? (
-                    <span className="shrink-0 rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] font-mono text-zinc-600">
-                      {review.engine_used}
+          {reviews.map((review) => {
+            // feat/unified-review-records：按来源分支渲染。MR 行显示 !mr_iid 徽章；
+            // push/commit 行显示来源 Tag（标题已由后端生成为 "Push/Commit <短SHA>"）。
+            const isMr = !review.review_kind || review.review_kind === 'mr';
+            return (
+              <div
+                key={`${review.review_id ?? review.project_id}-${review.mr_iid ?? review.title}`}
+                className="flex items-center gap-3 py-2.5"
+              >
+                <StatusDot tone={review.has_blocker ? 'bad' : 'ok'} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-[13px] font-medium text-zinc-900">
+                      {review.title || (isMr ? `MR !${review.mr_iid}` : '审查')}
                     </span>
-                  ) : null}
+                    {isMr && review.mr_iid ? (
+                      <span className="shrink-0 rounded bg-zinc-100 px-1.5 text-[10px] font-mono text-zinc-500">
+                        !{review.mr_iid}
+                      </span>
+                    ) : null}
+                    {review.review_kind === 'push' ? (
+                      <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600">
+                        Push
+                      </span>
+                    ) : null}
+                    {review.review_kind === 'commit' ? (
+                      <span className="shrink-0 rounded bg-cyan-50 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700">
+                        Commit
+                      </span>
+                    ) : null}
+                    {review.engine_used ? (
+                      <span className="shrink-0 rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] font-mono text-zinc-600">
+                        {review.engine_used}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">
+                    {review.project_path} · {relativeTime(review.created_at)}
+                  </div>
                 </div>
-                <div className="mt-0.5 truncate font-mono text-[11px] text-zinc-500">
-                  {review.project_path} · {relativeTime(review.created_at)}
-                </div>
+                <ReviewStatusTag status={review.status} hasBlocker={review.has_blocker} />
+                {review.lifecycle_event ? (
+                  <LifecycleEventTag event={review.lifecycle_event} />
+                ) : review.review_mode && review.review_mode !== 'full' ? (
+                  <ReviewModeTag mode={review.review_mode} />
+                ) : null}
               </div>
-              <ReviewStatusTag status={review.status} hasBlocker={review.has_blocker} />
-              {review.lifecycle_event ? (
-                <LifecycleEventTag event={review.lifecycle_event} />
-              ) : review.review_mode && review.review_mode !== 'full' ? (
-                <ReviewModeTag mode={review.review_mode} />
-              ) : null}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </Card>

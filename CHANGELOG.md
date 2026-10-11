@@ -6,7 +6,8 @@
 
 ### Added
 
-- **Push/Commit 审查落库与新页面**：push / commit 审查结果此前只写回 GitLab 不落库，Agent 执行轨迹（`agent_trace_events`）虽在写库但查不出来（reviews 表无对应行 → 轨迹端点 404）。现在三条路径（正常完成 / 空 diff / engine_error）均经 `_persist_commit_style_review` 落库 `reviews` + `review_findings`（`review_kind='commit'/'push'`，`mr_iid=NULL`，`review_mode='full'`，行级评论 id 复用 `gitlab_discussion_id` 列）；`GET /api/reviews/records` 新增 `review_kind`（多值）与 `commit_sha` 过滤参数；前端新增「Push/Commit 审查」独立菜单（复用 `page:reviews` 权限），行展开可看问题列表与 Agent 执行轨迹；「审查记录」页与首页最近审查面板固定 MR 口径（`review_kind='mr'`），不受 push/commit 落库影响。
+- **审查记录统一口径（MR / Push / Commit 合并展示）**：「审查记录」页合并展示全部来源的审查（原独立「Push/Commit 审查」菜单下线），新增「来源」筛选器（默认 MR 防高频 push 刷屏，可一键切「全部来源」），首列按来源分支渲染（MR 行显示 MR 编号 + 分支对，push/commit 行显示 commit 短 SHA + 来源徽章 + diff 起点），搜索框智能识别（纯数字按 MR 号、十六进制按 commit SHA 过滤）；首页「最近审查」面板同步合并口径（`/api/reviews/recent` 返回全来源，push/commit 行 `mr_iid=null`、标题用短 SHA、带 `review_kind` 字段）。
+- **Push/Commit 审查落库与新页面**：push / commit 审查结果此前只写回 GitLab 不落库，Agent 执行轨迹（`agent_trace_events`）虽在写库但查不出来（reviews 表无对应行 → 轨迹端点 404）。现在三条路径（正常完成 / 空 diff / engine_error）均经 `_persist_commit_style_review` 落库 `reviews` + `review_findings`（`review_kind='commit'/'push'`，`mr_iid=NULL`，`review_mode='full'`，行级评论 id 复用 `gitlab_discussion_id` 列）；`GET /api/reviews/records` 新增 `review_kind`（多值）与 `commit_sha` 过滤参数；行展开可看问题列表与 Agent 执行轨迹。
 - **Push 合并审查**：Push Hook 改为一次拉取该 push 全部 commit 的合并变更（`compare before..after`）后单次 LLM 审查，行级评论 / 汇总评论 / commit status 统一写回 head commit；新建分支（before 全 0）降级用 head commit diff；`commit_review_max_per_push` 保留字段但不再截断（MR 审查链路零影响）。
 - **前端管理后台（8 个页面 Linear 化）**：Providers / Projects / Rules / ReviewRecords / Findings / FalsePositives / Engines / NegativeExamples 全部按 Linear 风格重构，抽出 DataRow / StatusRow 通用组件（Issue #35 → PR #52）。
 - **Rules `rule_id` 字段可选**：新建 Rule 时留空则从 title 自动生成 slug（英文走 slugify，含中文 fallback 到 `rule-<uuid8>`），冲突自动追加 `-2`/`-3` 保证唯一（Issue #69 → PR #72）。

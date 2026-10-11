@@ -885,22 +885,22 @@ async def delete_user_mapping(mapping_id: UUID, db: DbSession) -> None:
     dependencies=[Depends(_require_permission("page:reviews"))],
 )
 async def list_recent_reviews(db: DbSession) -> list[RecentReviewRead]:
-    """从 DB 读最近 20 条评审用于首页最近审查面板（仅 MR 审查）。
+    """从 DB 读最近 20 条评审用于首页最近审查面板（全来源合并口径）。
 
     历史实现仅在 ``POST /api/reviews`` 时把摘要追加到内存 deque，webhook
     路径不经过该接口，首页永远看不到数据。本实现改为直接查库，DB 查询
     失败时回退到旧 deque 保持退化可用。
 
-    feat/commit-push-review-persistence 起 push/commit 审查也落库，但
-    面板口径保持 MR 审查（``review_kind='mr'``），避免 commit 短 SHA 冒充
-    MR 编号造成误读。
+    feat/unified-review-records 起面板与「审查记录」菜单口径统一：MR /
+    push / commit 审查全部展示（``review_kind`` 不过滤），push/commit 行
+    的 ``mr_iid`` 为 None、标题用 commit 短 SHA，前端按来源徽章区分。
     """
 
     from api.reviews import _recent_reviews
 
     try:
         reviews_repo = ReviewRepository(db)
-        rows = await reviews_repo.list_recent(limit=20, review_kind="mr")
+        rows = await reviews_repo.list_recent(limit=20)
     except (SQLAlchemyError, OSError, ConnectionError) as exc:
         # 涵盖 SQLAlchemy 抛出的所有 DB 层错误，以及 asyncpg 连接期未被包装的
         # 原生错误（OSError / ConnectionError），失败时回退到内存 deque 兜底。
@@ -931,18 +931,29 @@ def _recent_review_from_orm(review: object) -> RecentReviewRead:
     findings = getattr(review, "findings", []) or []
     blocker_count = sum(1 for f in findings if getattr(f, "severity", "") == "BLOCKER")
 
-    mr_iid_raw = getattr(review, "mr_iid", "0")
+    # feat/unified-review-records：push/commit 审查行 mr_iid 为 NULL，保持 None 透传
+    # （前端按 review_kind 分支渲染，不再把 NULL 硬转 0 冒充 MR !0）。
+    mr_iid_raw = getattr(review, "mr_iid", None)
     try:
-        mr_iid = int(mr_iid_raw)
+        mr_iid = int(mr_iid_raw) if mr_iid_raw is not None else None
     except (TypeError, ValueError):
-        mr_iid = 0
+        mr_iid = None
+
+    # 来源标记：老数据 / MR 行为 'mr'（server_default），push/commit 行为对应值。
+    review_kind = getattr(review, "review_kind", None) or "mr"
+    # 标题按来源分支：MR 行用 MR 编号，push/commit 行用 commit 短 SHA。
+    if review_kind == "mr":
+        title = f"MR !{mr_iid_raw}"
+    else:
+        commit_sha = str(getattr(review, "commit_sha", "") or "")
+        title = f"{review_kind.capitalize()} {commit_sha[:7]}"
 
     return RecentReviewRead(
         review_id=getattr(review, "id", None),
         project_id=gitlab_project_id,
         project_path=project_name,
         mr_iid=mr_iid,
-        title=f"MR !{mr_iid_raw}",
+        title=title,
         web_url=None,
         status=getattr(review, "status", "unknown"),
         has_blocker=bool(getattr(review, "has_blocker", False)),
@@ -954,6 +965,7 @@ def _recent_review_from_orm(review: object) -> RecentReviewRead:
         created_at=getattr(review, "created_at", None),
         review_mode=getattr(review, "review_mode", None) or "full",
         lifecycle_event=getattr(review, "lifecycle_event", None),
+        review_kind=review_kind,
     )
 
 
