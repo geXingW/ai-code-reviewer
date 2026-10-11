@@ -190,6 +190,17 @@ class Settings(BaseSettings):
             ),
         ),
     ] = 15.0
+    agent_observation_compress_after_turns: Annotated[
+        int,
+        Field(
+            ge=0,
+            description=(
+                "超过该轮数的旧 tool 观察会被压缩成一行摘要（保留工具名 + 参数 +"
+                " 首行结论），控制多轮循环的 prompt 膨胀。0 表示禁用压缩。"
+                "默认 6。"
+            ),
+        ),
+    ] = 6
     # feat/agent-trace：执行轨迹观测（stdout 结构化日志 + agent_trace_events 落库）。
     agent_trace_enabled: Annotated[
         bool,

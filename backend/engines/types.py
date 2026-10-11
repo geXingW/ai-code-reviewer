@@ -150,8 +150,9 @@ class RepoReader(Protocol):
         ref: str,
         *,
         max_chars: int = 8000,
+        offset: int = 0,
     ) -> str:
-        """Return file content at ``ref``, or an error description string."""
+        """Return file content at ``ref`` starting from ``offset``, or an error string."""
         ...
 
     async def list_tree(

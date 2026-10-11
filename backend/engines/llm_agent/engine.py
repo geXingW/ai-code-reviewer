@@ -19,6 +19,7 @@ warning 并返回空/尽力 findings，不抛异常拖垮整体审查。
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ from engines.llm_agent.tools import (
 )
 from engines.llm_agent.trace import (
     STATUS_BUDGET_EXHAUSTED,
+    STATUS_CACHED,
     STATUS_ERROR,
     STATUS_MALFORMED_ARGUMENTS,
     STATUS_OK,
@@ -201,10 +203,13 @@ class ProviderAgentClient:
 
 @dataclass
 class _ObservationBudget:
-    """工具观察的总字符预算（达到后强制模型收口）。"""
+    """工具观察的总字符预算（达到后强制模型收口，过半时预警）。"""
 
     max_chars: int
     used: int = field(default=0)
+    # 预警水位：used 首次越过 50% / 80% 时在下一条观察尾部注入提醒。
+    warned_50: bool = field(default=False)
+    warned_80: bool = field(default=False)
 
     @property
     def exhausted(self) -> bool:
@@ -215,6 +220,27 @@ class _ObservationBudget:
 
         self.used += len(output)
         return output
+
+    def warning_text(self) -> str | None:
+        """返回本条观察应附带的预算预警（每档只提醒一次）。"""
+
+        if self.exhausted:
+            return None  # 耗尽走强制收口路径，不再重复提醒
+        ratio = self.used / self.max_chars
+        if ratio >= 0.8 and not self.warned_80:
+            self.warned_80 = True
+            return (
+                f"\n[notice] investigation budget {self.used}/{self.max_chars} chars "
+                "(80% used). Wrap up: only investigate what would change a finding, "
+                "then output the final JSON."
+            )
+        if ratio >= 0.5 and not self.warned_50:
+            self.warned_50 = True
+            return (
+                f"\n[notice] investigation budget {self.used}/{self.max_chars} chars "
+                "(50% used). Prioritize remaining questions that would change a finding."
+            )
+        return None
 
 
 @register_engine
@@ -260,6 +286,11 @@ class LLMAgentEngine(ReviewEngine):
             timeout_seconds=effective_timeout,
         )
         self.skipped_files: list[SkippedFile] = []
+        # (tool, canonical_args) -> (首次执行轮次, 回填观察) 的去重缓存，
+        # 每次 review 开始时清空（见 _reset_observation_cache）。
+        self._observation_cache: dict[tuple[str, str], tuple[int, str]] = {}
+        # tool_call_id -> (工具名, 参数摘要)，供旧观察压缩时还原上下文。
+        self._tool_call_meta: dict[str, tuple[str, str]] = {}
         logger.debug(
             "LLM agent engine config: timeout=%.1fs, max_turns=%d, "
             "tool_result_max_chars=%d, total_context_max_chars=%d, "
@@ -281,6 +312,7 @@ class LLMAgentEngine(ReviewEngine):
         """Review ``ctx`` with an investigation loop and return findings."""
 
         self.skipped_files = []
+        self._reset_observation_cache()
         if not ctx.diff_hunks:
             return []
         if ctx.provider is None:
@@ -439,6 +471,13 @@ class LLMAgentEngine(ReviewEngine):
                 tracer,
                 turn,
             )
+            # 预算预警：过半/80% 时并入本批最后一条观察（一次性提醒）。
+            warning = budget.warning_text()
+            if warning and observations:
+                observations[-1].content += warning
+            # 旧观察压缩：把超过压缩轮数的 tool 观察替换为一行摘要，
+            # 控制多轮循环的 prompt 膨胀（assistant 消息不动）。
+            self._compress_old_observations(messages, turn, observations)
             messages.extend(observations)
 
             last_turn = turn == settings.agent_max_turns - 1
@@ -501,45 +540,107 @@ class LLMAgentEngine(ReviewEngine):
         tracer: AgentRunTracer,
         turn: int,
     ) -> list[ChatMessage]:
-        """执行一批工具调用；失败/超时/非法参数都归一化为错误观察。"""
+        """执行一批工具调用；失败/超时/非法参数都归一化为错误观察。
 
-        results: list[ChatMessage] = []
+        同批调用并行执行（``asyncio.gather``）；重复的 ``(tool, args)`` 命中
+        去重缓存，直接回填缓存观察且不重复计入预算。
+        """
+
         max_chars = self._settings.agent_tool_result_max_chars
-        for call in calls:
+
+        # ---- 阶段 1：逐个解析/校验，划分「需执行」与「直接回填」两类 ----
+        pending: list[tuple[int, ToolCall, Any, AgentTool]] = []
+        direct: dict[int, tuple[str, str]] = {}
+        for index, call in enumerate(calls):
             args = parse_tool_arguments(call.arguments)
             if args is None:
-                output = (
-                    f"[error] malformed arguments for {call.name} "
-                    f"(must be a JSON object): {call.arguments[:200]}"
+                direct[index] = (
+                    (
+                        f"[error] malformed arguments for {call.name} "
+                        f"(must be a JSON object): {call.arguments[:200]}"
+                    ),
+                    STATUS_MALFORMED_ARGUMENTS,
                 )
-                status = STATUS_MALFORMED_ARGUMENTS
+                continue
+            tool = tools_by_name.get(call.name)
+            if tool is None:
+                available = ", ".join(sorted(tools_by_name))
+                direct[index] = (
+                    f"[error] unknown tool: {call.name} (available: {available})",
+                    STATUS_UNKNOWN_TOOL,
+                )
+                continue
+            if budget.exhausted:
+                direct[index] = (
+                    (
+                        "[error] context budget exhausted; do not investigate "
+                        "further and output the final findings JSON now"
+                    ),
+                    STATUS_BUDGET_EXHAUSTED,
+                )
+                continue
+            cache_key = (call.name, _canonical_args(args))
+            if cache_key in self._observation_cache:
+                first_turn, first_output = self._observation_cache[cache_key]
+                direct[index] = (
+                    (
+                        f"[cached] identical call already executed at turn {first_turn}; "
+                        f"same result as before: {first_output[:200]}"
+                    ),
+                    STATUS_CACHED,
+                )
+                continue
+            pending.append((index, call, args, tool))
+
+        # ---- 阶段 2：需执行的调用并行跑（各自带超时与异常归一化） ----
+        executed: dict[int, tuple[str, str, int | None]] = {}
+        if pending:
+            started = time.perf_counter()
+            outcomes = await asyncio.gather(
+                *(self._run_tool(call.name, tool, args) for _, call, args, tool in pending)
+            )
+            batch_ms = int((time.perf_counter() - started) * 1000)
+            for (index, _call, _args, _tool), (output, status) in zip(
+                pending, outcomes, strict=True
+            ):
+                executed[index] = (output, status, batch_ms)
+
+        # ---- 阶段 3：按调用顺序组装观察（截断/记账/缓存/trace） ----
+        results: list[ChatMessage] = []
+        for index, call in enumerate(calls):
+            if index in direct:
+                output, status = direct[index]
                 duration_ms = None
             else:
-                tool = tools_by_name.get(call.name)
-                if tool is None:
-                    available = ", ".join(sorted(tools_by_name))
-                    output = f"[error] unknown tool: {call.name} (available: {available})"
-                    status = STATUS_UNKNOWN_TOOL
-                    duration_ms = None
-                elif budget.exhausted:
+                output, status, duration_ms = executed[index]
+                if budget.exhausted:
+                    # 批内前序调用记账后预算已耗尽：本调用虽已并行执行，
+                    # 观察仍替换为预算错误，保持「批内后续调用被拒」语义
+                    # （与顺序执行时代的行为一致，模型收到明确停止信号）。
                     output = (
                         "[error] context budget exhausted; do not investigate "
                         "further and output the final findings JSON now"
                     )
                     status = STATUS_BUDGET_EXHAUSTED
-                    duration_ms = None
                 else:
-                    tool_started = time.perf_counter()
-                    output, status = await self._run_tool(call.name, tool, args)
-                    duration_ms = int((time.perf_counter() - tool_started) * 1000)
-            # 先按回填口径截断/记账，trace 记录的是模型实际看到的观察内容。
-            output = budget.record(self._clip(output, max_chars))
+                    # 先按回填口径截断/记账，trace 记录的是模型实际看到的观察内容。
+                    clipped = self._clip(output, max_chars)
+                    output = budget.record(clipped)
+                    cache_key = (
+                        call.name,
+                        _canonical_args(parse_tool_arguments(call.arguments) or {}),
+                    )
+                    self._observation_cache[cache_key] = (turn, output)
+            self._tool_call_meta[call.id] = (
+                call.name,
+                _canonical_args(parse_tool_arguments(call.arguments) or {}),
+            )
             await tracer.tool_executed(
                 turn=turn,
                 call_id=call.id,
                 name=call.name,
                 raw_arguments=call.arguments,
-                arguments=args,
+                arguments=parse_tool_arguments(call.arguments),
                 output=output,
                 status=status,
                 duration_ms=duration_ms,
@@ -550,6 +651,41 @@ class LLMAgentEngine(ReviewEngine):
                 ChatMessage(role="tool", tool_call_id=call.id, content=output),
             )
         return results
+
+    def _compress_old_observations(
+        self,
+        messages: list[ChatMessage],
+        current_turn: int,
+        new_observations: list[ChatMessage],
+    ) -> None:
+        """把超过压缩轮数的旧 tool 观察原地替换为一行摘要。
+
+        压缩阈值取 ``agent_observation_compress_after_turns``（0 = 禁用）。
+        只压缩 tool 消息；assistant / user 消息保持原样。摘要保留观察首行，
+        让模型仍能引用早前的调查结论。本批新观察不压缩（刚产生）。
+        """
+
+        after_turns = self._settings.agent_observation_compress_after_turns
+        if after_turns <= 0:
+            return
+        cutoff_turn = current_turn - after_turns
+        if cutoff_turn < 0:
+            return
+        # 本批新观察（尚未 append 到 messages）不压缩。
+        new_ids = {id(message) for message in new_observations}
+        for message in messages:
+            if id(message) in new_ids:
+                continue
+            if message.role != "tool" or message.content.startswith("[compressed]"):
+                continue
+            name, args_str = self._tool_call_meta.get(message.tool_call_id or "", ("tool", ""))
+            message.content = _summarize_observation(message.content, name, args_str)
+
+    def _reset_observation_cache(self) -> None:
+        """每次 review 开始时清空去重缓存（跨 review 不共享）。"""
+
+        self._observation_cache.clear()
+        self._tool_call_meta.clear()
 
     async def _run_tool(
         self,
@@ -630,6 +766,22 @@ class LLMAgentEngine(ReviewEngine):
         if negative_prompt:
             return negative_prompt
         return LLMDirectEngine._format_history(ctx.history)
+
+
+def _canonical_args(args: dict[str, Any]) -> str:
+    """把工具参数归一化为可比较的缓存 key（键排序 + 稳定序列化）。"""
+
+    return json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _summarize_observation(content: str, tool_name: str, args_str: str) -> str:
+    """把一条旧 tool 观察压缩成一行摘要（保留工具名 + 参数 + 首行）。"""
+
+    first_line = content.strip().splitlines()[0] if content.strip() else ""
+    if len(first_line) > 120:
+        first_line = first_line[:120] + "..."
+    args_short = args_str[:80] + ("..." if len(args_str) > 80 else "")
+    return f"[compressed] {tool_name}({args_short}) earlier observation: {first_line}"
 
 
 def _append_force_final(message: ChatMessage) -> None:

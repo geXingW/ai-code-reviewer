@@ -69,8 +69,9 @@ class GitLabRepoReader:
         ref: str = "",
         *,
         max_chars: int = 8000,
+        offset: int = 0,
     ) -> str:
-        """读取文件全文；ref 为空时回退 default_ref。"""
+        """读取文件内容（支持 offset 分页）；ref 为空时回退 default_ref。"""
 
         effective_ref = ref or self._default_ref
         try:
@@ -82,7 +83,26 @@ class GitLabRepoReader:
         except Exception as exc:  # noqa: BLE001 - 契约：任何失败都归一化为错误观察
             logger.info("repo_reader read_file failed", extra={"file_path": file_path})
             return _error_text(f"read_file({file_path}@{effective_ref})", exc)
-        return _truncate(content, max_chars)
+        if offset < 0:
+            return f"[error] read_file offset must be >= 0, got {offset}"
+        if offset >= len(content) and offset > 0:
+            return (
+                f"[error] read_file offset {offset} is beyond end of file "
+                f"(file is {len(content)} chars)"
+            )
+        page = content[offset:]
+        if len(page) <= max_chars:
+            if offset == 0:
+                return page
+            return page + (
+                f"\n[file complete: chars {offset}-{offset + len(page)} of {len(content)}]"
+            )
+        truncated = page[:max_chars]
+        return truncated + (
+            f"\n... (truncated, total {len(content)} chars; returned chars "
+            f"{offset}-{offset + max_chars}; use offset={offset + max_chars} "
+            f"to read the next page)"
+        )
 
     async def list_tree(
         self,
@@ -152,7 +172,12 @@ class GitLabRepoReader:
             snippet = str(hit.get("data", ""))[:_SNIPPET_MAX_CHARS].replace("\n", " ")
             lines.append(f"{path}:{startline}  {snippet}")
         if not lines:
-            return "[empty] no search hits"
+            return (
+                "[empty] no search hits. Note: this is GitLab full-text search "
+                "(blob scope) — it does NOT support regex or wildcards. Use a "
+                "single short keyword (e.g. one identifier name); if that fails, "
+                "try read_file on the file you already know contains the symbol."
+            )
         return _truncate("\n".join(lines), max_chars)
 
     async def commit_history(
