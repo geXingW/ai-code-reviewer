@@ -131,8 +131,9 @@ export function ReviewRecordsPage({ initialFilters }: ReviewRecordsPageProps) {
   const { items, total, loading, error, filters, setFilters, setSort, reload, pagination } =
     usePagedList<ReviewRecord, Filters>(
       ({ limit, offset, sort, filters: current }) => {
-        // 来源筛选：默认 'mr'（高频场景防 push 刷屏）；'all' 不过滤；单来源传单值数组。
-        const kind = current.review_kind || 'mr';
+        // 来源筛选：默认 'all'（全来源统一流水线，MR/push/commit 混合时间线）；
+        // 单来源（'mr'/'push'/'commit'）传单值数组。空值兜底也按 all 处理。
+        const kind = current.review_kind || 'all';
         const smart = smartSearchParams(current.mr_iid);
         return fetchReviewRecords({
           limit,
@@ -149,8 +150,9 @@ export function ReviewRecordsPage({ initialFilters }: ReviewRecordsPageProps) {
         project_id: initialFilters?.project_id ?? '',
         status: initialFilters?.status ?? '',
         mr_iid: initialFilters?.mr_iid ?? '',
-        // feat/unified-review-records：默认 MR 口径（防 push 高频刷屏），可切全部。
-        review_kind: initialFilters?.review_kind ?? 'mr',
+        // feat/review-records-default-all：默认全来源（完整审查流水线直接可见），
+        // 需要聚焦时手动切单来源。
+        review_kind: initialFilters?.review_kind ?? 'all',
       },
     );
 
@@ -400,9 +402,9 @@ export function ReviewRecordsPage({ initialFilters }: ReviewRecordsPageProps) {
         }}
         locale={{
           emptyText:
-            filters.review_kind === 'mr' || !filters.review_kind
-              ? '暂无 MR 审查 · 当 GitLab MR 触发审查后，记录会显示在这里（切换上方「全部来源」可查看 push/commit 审查）'
-              : '暂无审查记录 · 切换「来源」筛选或调整搜索条件试试',
+            filters.review_kind === 'mr' || filters.review_kind === 'push' || filters.review_kind === 'commit'
+              ? `暂无${KIND_OPTIONS.find((opt) => opt.value === filters.review_kind)?.label ?? ''} · 切换「来源」筛选试试`
+              : '暂无审查记录 · 当 GitLab MR / Push 触发审查后，记录会显示在这里',
         }}
       />
       <div className="pt-1 text-[12px] text-zinc-400">
