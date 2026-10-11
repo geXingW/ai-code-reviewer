@@ -41,6 +41,7 @@ STATUS_ERROR = "error"
 STATUS_MALFORMED_ARGUMENTS = "malformed_arguments"
 STATUS_UNKNOWN_TOOL = "unknown_tool"
 STATUS_BUDGET_EXHAUSTED = "budget_exhausted"
+STATUS_CACHED = "cached"
 
 
 def _clip(text: str | None, max_chars: int) -> str | None:

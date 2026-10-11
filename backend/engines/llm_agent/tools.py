@@ -83,7 +83,8 @@ async def _read_file(reader: RepoReader, args: dict[str, Any]) -> str:
         return "[error] read_file requires non-empty file_path"
     ref = str(args.get("ref") or "")
     max_chars = _as_int(args.get("max_chars"), 8000, minimum=200, maximum=50000)
-    return await reader.read_file(file_path, ref, max_chars=max_chars)
+    offset = _as_int(args.get("offset"), 0, minimum=0, maximum=10_000_000)
+    return await reader.read_file(file_path, ref, max_chars=max_chars, offset=offset)
 
 
 async def _list_tree(reader: RepoReader, args: dict[str, Any]) -> str:
@@ -134,9 +135,11 @@ def build_default_tools(reader: RepoReader) -> list[AgentTool]:
             reader=reader,
             name="read_file",
             description=(
-                "Read the full content of one file from the repository. Use it "
-                "to inspect callers/callees of changed functions and to verify "
-                "assumptions before reporting a finding."
+                "Read the content of one file from the repository (paginated). "
+                "Use it to inspect callers/callees of changed functions and to "
+                "verify assumptions before reporting a finding. When the result "
+                "is truncated, it tells you the returned char range — pass "
+                "offset (NOT a larger max_chars) to read the next page."
             ),
             parameters=_schema(
                 {
@@ -147,7 +150,15 @@ def build_default_tools(reader: RepoReader) -> list[AgentTool]:
                     "ref": {"type": "string", "description": _REF_DESCRIPTION},
                     "max_chars": {
                         "type": "integer",
-                        "description": "Max characters returned (default 8000).",
+                        "description": "Max characters per page (default 8000).",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": (
+                            "Char offset to start reading from (default 0). Use the "
+                            "next-page offset from a truncated result to page "
+                            "through large files."
+                        ),
                     },
                 },
                 required=["file_path"],
@@ -194,14 +205,20 @@ def build_default_tools(reader: RepoReader) -> list[AgentTool]:
             reader=reader,
             name="search_code",
             description=(
-                "Full-text code search across the project (blob scope). Use it "
-                "to find usages of a changed symbol and assess the impact scope."
+                "Full-text code search across the project (GitLab blob scope). "
+                "Use it to find usages of a changed symbol and assess the impact "
+                "scope. IMPORTANT: this is keyword full-text search — it does "
+                "NOT support regex, wildcards, or multi-word phrases. Query a "
+                "single short identifier (e.g. a class or method name)."
             ),
             parameters=_schema(
                 {
                     "query": {
                         "type": "string",
-                        "description": "Search keywords, e.g. a function or class name.",
+                        "description": (
+                            "A single short keyword, e.g. one class or method "
+                            "name. No regex, no wildcards."
+                        ),
                     },
                 },
                 required=["query"],

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
@@ -63,11 +64,30 @@ class _FakeRepoReader:
     files: dict[str, str] = field(default_factory=dict)
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
-    async def read_file(self, file_path: str, ref: str, *, max_chars: int = 8000) -> str:
+    async def read_file(
+        self, file_path: str, ref: str, *, max_chars: int = 8000, offset: int = 0
+    ) -> str:
         self.calls.append(("read_file", {"file_path": file_path, "ref": ref}))
-        if file_path in self.files:
-            return self.files[file_path]
-        return f"[error] read_file({file_path}) failed: not found"
+        if file_path not in self.files:
+            return f"[error] read_file({file_path}) failed: not found"
+        content = self.files[file_path]
+        if offset >= len(content) and offset > 0:
+            return (
+                f"[error] read_file offset {offset} is beyond end of file "
+                f"(file is {len(content)} chars)"
+            )
+        page = content[offset:]
+        if len(page) <= max_chars:
+            if offset == 0:
+                return page
+            return page + (
+                f"\n[file complete: chars {offset}-{offset + len(page)} of {len(content)}]"
+            )
+        return page[:max_chars] + (
+            f"\n... (truncated, total {len(content)} chars; returned chars "
+            f"{offset}-{offset + max_chars}; use offset={offset + max_chars} "
+            f"to read the next page)"
+        )
 
     async def list_tree(self, path: str, ref: str, *, recursive: bool = False) -> str:
         self.calls.append(("list_tree", {"path": path}))
@@ -143,11 +163,13 @@ def _final_response(findings_json: str = '{"findings": []}') -> ChatResponse:
     return ChatResponse(content=findings_json, model="reviewer-1")
 
 
-def _tool_call_response(name: str = "read_file", arguments: str = "{}") -> ChatResponse:
+def _tool_call_response(
+    name: str = "read_file", arguments: str = "{}", call_id: str = "call-1"
+) -> ChatResponse:
     return ChatResponse(
         content="checking caller",
         model="reviewer-1",
-        tool_calls=[ToolCall(id="call-1", name=name, arguments=arguments)],
+        tool_calls=[ToolCall(id=call_id, name=name, arguments=arguments)],
     )
 
 
@@ -325,7 +347,9 @@ async def test_agent_tool_error_observation_does_not_abort_review() -> None:
     class _ExplodingToolReader:
         calls: list = field(default_factory=list)
 
-        async def read_file(self, file_path: str, ref: str, *, max_chars: int = 8000) -> str:
+        async def read_file(
+            self, file_path: str, ref: str, *, max_chars: int = 8000, offset: int = 0
+        ) -> str:
             raise RuntimeError("gitlab down")
 
         async def list_tree(self, path: str, ref: str, *, recursive: bool = False) -> str:
@@ -390,7 +414,7 @@ async def test_agent_forces_final_json_when_max_turns_reached() -> None:
 async def test_agent_budget_exhaustion_forces_wrap_up() -> None:
     """观察总预算耗尽 -> 同轮后续工具调用直接返回预算错误观察并收口。"""
 
-    reader = _FakeRepoReader()
+    reader = _FakeRepoReader(files={"app/auth.py": "x" * 50})
     # 一轮内两个工具调用：第一个把预算吃完，第二个拿到预算错误观察。
     exhausted_response = ChatResponse(
         content="checking two things",
@@ -574,6 +598,7 @@ async def test_agent_trace_records_budget_exhausted_status(
 ) -> None:
     events = _install_trace_recorder(monkeypatch)
     reader = _FakeRepoReader(files={"app/auth.py": "x" * 50})
+    # 一轮内两个工具调用：第一个把预算吃完，第二个拿到预算错误观察。
     exhausted_response = ChatResponse(
         content="checking two things",
         model="reviewer-1",
@@ -610,7 +635,9 @@ async def test_agent_trace_records_timeout_and_error_status(
     class _SlowAndExplodingReader:
         calls: list = field(default_factory=list)
 
-        async def read_file(self, file_path: str, ref: str, *, max_chars: int = 8000) -> str:
+        async def read_file(
+            self, file_path: str, ref: str, *, max_chars: int = 8000, offset: int = 0
+        ) -> str:
             self.calls.append(file_path)
             if len(self.calls) == 1:
                 raise RuntimeError("gitlab down")
@@ -722,3 +749,320 @@ def test_build_tracer_sinks_follow_settings() -> None:
         review_id, Settings(agent_trace_enabled=False, agent_trace_db_enabled=False)
     )
     assert none.sinks == []
+
+
+
+# ---- 工具去重缓存 ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_duplicate_tool_call_returns_cached_observation() -> None:
+    """同一 (tool, args) 重复调用 -> 回填缓存观察，不重复执行、不重复计预算。"""
+
+    reader = _FakeRepoReader(files={"app/auth.py": "def login(): ...\n"})
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}'),
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}'),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    # 真实工具只执行一次。
+    assert reader.calls.count(("read_file", {"file_path": "app/auth.py", "ref": ""})) == 1
+    # 第二次调用拿到缓存观察（含 dedup 标记）：取第三轮请求里最后一个 tool 消息
+    # （turns[N] 记录的是完整消息列表，历史观察会在后续轮次重复出现）。
+    turn2_tool_msgs = [m for m in client.turns[2]["messages"] if m.role == "tool"]
+    assert turn2_tool_msgs[-1].content.startswith("[cached]")
+    assert "turn 0" in turn2_tool_msgs[-1].content
+
+
+@pytest.mark.asyncio
+async def test_agent_duplicate_call_budget_not_double_charged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缓存观察不计预算：两次相同 read_file 只记一次预算消耗。"""
+
+    events = _install_trace_recorder(monkeypatch)
+    reader = _FakeRepoReader(files={"app/auth.py": "x" * 100})
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}'),
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}'),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    tool_events = _events_of(events, "tool_executed")
+    assert len(tool_events) == 2
+    # 第二次是 cached 状态，预算不增加。
+    assert tool_events[1]["status"] == "cached"
+    assert tool_events[1]["payload"]["budget_used"] == tool_events[0]["payload"]["budget_used"]
+    assert tool_events[1]["payload"]["output"].startswith("[cached]")
+
+
+@pytest.mark.asyncio
+async def test_agent_different_args_not_deduplicated() -> None:
+    """参数不同（file_path 不同）的调用各自执行，不走缓存。"""
+
+    reader = _FakeRepoReader(
+        files={"app/auth.py": "a", "app/other.py": "b"}
+    )
+    client = _FakeAgentClient(
+        responses=[
+            ChatResponse(
+                content="batch",
+                model="reviewer-1",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="read_file",
+                        arguments='{"file_path": "app/auth.py"}',
+                    ),
+                    ToolCall(
+                        id="call-2",
+                        name="read_file",
+                        arguments='{"file_path": "app/other.py"}',
+                    ),
+                ],
+            ),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    assert len(reader.calls) == 2
+    tool_messages = [
+        m.content for turn in client.turns for m in turn["messages"] if m.role == "tool"
+    ]
+    assert tool_messages[0] == "a"
+    assert tool_messages[1] == "b"
+
+
+# ---- read_file 分页 ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_read_file_offset_pages_through_large_file() -> None:
+    """大文件截断时模型用 offset 翻页，能拿到后半段内容。"""
+
+    big_file = "\n".join(f"line {i}" for i in range(1, 501))  # ~4000 chars
+    reader = _FakeRepoReader(files={"big.txt": big_file})
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response("read_file", '{"file_path": "big.txt", "max_chars": 2000}'),
+            _tool_call_response(
+                "read_file", '{"file_path": "big.txt", "max_chars": 2000, "offset": 2000}'
+            ),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    # 第一页（第二轮请求里的 tool 消息）：截断标记告知区间，引导 offset 翻页。
+    turn1_tool_msgs = [m for m in client.turns[1]["messages"] if m.role == "tool"]
+    assert "truncated" in turn1_tool_msgs[0].content
+    assert "offset" in turn1_tool_msgs[0].content
+    # 第二页（第三轮请求里的最后一个 tool 消息）：内容从 offset 处开始。
+    turn2_tool_msgs = [m for m in client.turns[2]["messages"] if m.role == "tool"]
+    assert "line 1\n" not in turn2_tool_msgs[-1].content
+    assert "line 300" in turn2_tool_msgs[-1].content
+
+
+@pytest.mark.asyncio
+async def test_agent_read_file_offset_beyond_eof_returns_error() -> None:
+    """offset 超出文件长度 -> 明确错误观察，不静默返回空。"""
+
+    reader = _FakeRepoReader(files={"small.txt": "abc"})
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response(
+                "read_file", '{"file_path": "small.txt", "offset": 999}'
+            ),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    tool_messages = [
+        m.content for turn in client.turns for m in turn["messages"] if m.role == "tool"
+    ]
+    assert tool_messages[0].startswith("[error]")
+
+
+# ---- search_code 语义教育 ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_search_empty_result_contains_guidance() -> None:
+    """空搜索结果附带教育提示：不支持正则、建议更短关键词。"""
+
+    @dataclass
+    class _EmptySearchReader(_FakeRepoReader):
+        async def search(self, query: str, *, max_chars: int = 4000) -> str:
+            self.calls.append(("search", {"query": query}))
+            return (
+                "[empty] no search hits. Note: this is GitLab full-text search "
+                "(blob scope) — it does NOT support regex or wildcards. Use a "
+                "single short keyword (e.g. one identifier name); if that fails, "
+                "try read_file on the file you already know contains the symbol."
+            )
+
+    reader = _EmptySearchReader()
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response("search_code", '{"query": "queryExport.*DTO"}'),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    tool_messages = [
+        m.content for turn in client.turns for m in turn["messages"] if m.role == "tool"
+    ]
+    # 空结果观察应包含教育提示（不支持正则 / 换更短关键词）。
+    assert "no search hits" in tool_messages[0]
+    assert "regex" in tool_messages[0].lower() or "keyword" in tool_messages[0].lower()
+
+
+# ---- 预算预警 ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_budget_warning_injected_at_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """预算使用过半时，观察尾部注入预警提醒模型主动收口。"""
+
+    events = _install_trace_recorder(monkeypatch)
+    reader = _FakeRepoReader(files={"app/auth.py": "x" * 100})
+    # 预算 200：第一次调用吃 100+，第二次再吃 -> 跨过 50% 阈值。
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response("read_file", '{"file_path": "app/auth.py"}'),
+            _tool_call_response("search_code", '{"query": "login"}'),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(
+        client=client,
+        settings=_settings(agent_total_context_max_chars=200),
+    )
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    # 第二轮请求的 tool 消息里带预算预警。
+    second_turn_tool_msgs = [
+        m.content for m in client.turns[1]["messages"] if m.role == "tool"
+    ]
+    assert any("budget" in content.lower() for content in second_turn_tool_msgs)
+    # 预警后模型主动收口（自然收口而非 budget_exhausted）。
+    finished = _events_of(events, "run_finished")[0]["payload"]
+    assert finished["closeout_reason"] == "natural"
+
+
+# ---- 旧观察压缩 --------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_old_tool_observations_are_summarized() -> None:
+    """超过压缩轮数的旧 tool 观察被替换为一行摘要，控制 prompt 膨胀。"""
+
+    reader = _FakeRepoReader(files={"app/auth.py": "line\n" * 500})
+    responses = [
+        _tool_call_response("read_file", '{"file_path": "app/auth.py"}', call_id="call-a"),
+        _tool_call_response("search_code", '{"query": "login"}', call_id="call-b"),
+        _tool_call_response("search_code", '{"query": "token"}', call_id="call-c"),
+        _tool_call_response("search_code", '{"query": "user"}', call_id="call-d"),
+        _final_response(),
+    ]
+    client = _FakeAgentClient(responses=responses)
+    engine = LLMAgentEngine(
+        client=client,
+        settings=_settings(
+            agent_observation_compress_after_turns=2,
+        ),
+    )
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    # 第 3 轮（index 3）请求里：turn 0 的 read_file 观察应已被压缩成摘要。
+    turn3_messages = client.turns[3]["messages"]
+    tool_msgs = [m for m in turn3_messages if m.role == "tool"]
+    # 压缩后的旧观察远短于原文（原文 ~2500 字符）。
+    first_tool = tool_msgs[0].content
+    assert len(first_tool) < 200
+    assert "read_file" in first_tool
+    # turn 1 的 search 观察同样被压缩。
+    assert "search_code" in tool_msgs[1].content
+
+
+# ---- 并行工具执行 ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_batched_tool_calls_run_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一批多个工具调用并行执行（总耗时 ≈ 单个而非求和）。"""
+
+    # 替换 tracer 与 prompt 加载：避免 DB 连接失败重试拖慢计时。
+    _install_trace_recorder(monkeypatch)
+
+    async def _no_prompt() -> str:
+        return ""
+
+    async def _no_negative_prompt(project_id: object) -> str:
+        return ""
+
+    monkeypatch.setattr(engine_module, "_load_global_prompt", _no_prompt)
+    monkeypatch.setattr(engine_module, "_load_negative_prompt", _no_negative_prompt)
+
+    @dataclass
+    class _SlowReader(_FakeRepoReader):
+        async def read_file(
+            self, file_path: str, ref: str, *, max_chars: int = 8000, offset: int = 0
+        ) -> str:
+            self.calls.append(("read_file", {"file_path": file_path, "ref": ref}))
+            await asyncio.sleep(0.2)
+            return "content"
+
+        async def search(self, query: str, *, max_chars: int = 4000) -> str:
+            self.calls.append(("search", {"query": query}))
+            await asyncio.sleep(0.2)
+            return "src/auth.py:10  def login()"
+
+    reader = _SlowReader()
+    batched = ChatResponse(
+        content="batch",
+        model="reviewer-1",
+        tool_calls=[
+            ToolCall(id="call-1", name="read_file", arguments='{"file_path": "a.py"}'),
+            ToolCall(id="call-2", name="search_code", arguments='{"query": "login"}'),
+            ToolCall(id="call-3", name="read_file", arguments='{"file_path": "b.py"}'),
+        ],
+    )
+    client = _FakeAgentClient(responses=[batched, _final_response()])
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    started = time.perf_counter()
+    await engine.review(_ctx(repo_reader=reader))
+    elapsed = time.perf_counter() - started
+
+    # 3 个 0.2s 工具并行：总耗时应显著小于 0.6s（顺序执行下限）。
+    assert elapsed < 0.5
+    assert len(reader.calls) == 3

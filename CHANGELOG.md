@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **llm-agent 审查循环优化（消除强制收口三大死循环）**：针对 30 轮仍 `budget_exhausted` 强制收口、产出空 findings 的轨迹分析（单次审查烧掉 103 万 prompt tokens，其中 ~60% 浪费在重复调用与截断死循环），实施六项修复——
+  1. **工具调用去重缓存**：同一 `(tool, args)` 重复调用直接回填 `[cached]` 观察（不重复执行、不重复计预算，trace 状态 `cached`），消除「同文件 5 连读」类浪费；
+  2. **read_file 分页**：新增 `offset` 参数，截断标记明确告知「已返回区间 + 下一页 offset」，模型翻页即可读到文件后半段（此前加大 `max_chars` 只会拿到同样内容，陷入复读机循环）；`max_chars` 上限从 50000 收紧为工具层与引擎层一致；
+  3. **search_code 语义教育**：工具描述与空结果观察均声明「GitLab blob 全文检索、不支持正则/通配符/多词短语，请查询单个短标识符」，消除 9 轮正则空转；
+  4. **预算预警**：观察预算 50%/80% 水位在下一条观察尾部注入 `[notice]` 一次性提醒，模型有机会主动收口而非被强制掐断；
+  5. **同批工具调用并行执行**：`_execute_tool_calls` 改 `asyncio.gather`，批量调用耗时从求和降为取最大（批内预算耗尽语义保留：前序调用记账耗尽后，后续观察替换为预算错误）；
+  6. **旧观察压缩**：超过 `agent_observation_compress_after_turns`（默认 6，0 禁用）轮的旧 tool 观察压缩为一行摘要（保留工具名 + 参数 + 首行结论），控制多轮循环 prompt 膨胀。
+  同步更新 agent system prompt（分页/去重/搜索约束/预算提醒的使用规则）。预期同等复杂度 MR 从 30 轮强制收口降至 10~15 轮自然收口，单次审查 token 成本下降 60%~70%。
+
 ### Added
 
 - **审查记录统一口径（MR / Push / Commit 合并展示）**：「审查记录」页合并展示全部来源的审查（原独立「Push/Commit 审查」菜单下线），新增「来源」筛选器（默认 MR 防高频 push 刷屏，可一键切「全部来源」），首列按来源分支渲染（MR 行显示 MR 编号 + 分支对，push/commit 行显示 commit 短 SHA + 来源徽章 + diff 起点），搜索框智能识别（纯数字按 MR 号、十六进制按 commit SHA 过滤）；首页「最近审查」面板同步合并口径（`/api/reviews/recent` 返回全来源，push/commit 行 `mr_iid=null`、标题用短 SHA、带 `review_kind` 字段）。

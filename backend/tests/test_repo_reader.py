@@ -99,7 +99,8 @@ async def test_search_empty_hits_and_error_paths() -> None:
     client.search_code.return_value = []
 
     output = await _reader(client).search("no-such-symbol")
-    assert output == "[empty] no search hits"
+    assert output.startswith("[empty] no search hits")
+    assert "regex" in output.lower()  # 空结果附带教育提示
 
     failing = _failing_client(
         GitLabClientError(status_code=500, message="search timeout", response_body="")

@@ -37,6 +37,7 @@ AGENTS.md
 .hermes/
 PROJECT.md
 CONTEXT.md
+.zcode/
 
 # 前端构建产物（打进后端 static 目录，发布时由 CI 生成）
 backend/static/*
