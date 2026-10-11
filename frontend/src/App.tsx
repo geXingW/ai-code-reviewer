@@ -30,6 +30,7 @@ import { ALL_NAV_ITEMS, AppShell, type PageKey } from './components/layout/AppSh
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ReviewRecordsPage } from './pages/ReviewRecordsPage';
+import { CommitReviewsPage } from './pages/CommitReviewsPage';
 import { FindingsPage } from './pages/FindingsPage';
 import { FalsePositivesPage } from './pages/FalsePositivesPage';
 import { NegativeExamplesPage } from './pages/NegativeExamplesPage';
@@ -143,6 +144,7 @@ function AppInner() {
       {activePage === 'reviews' ? (
         <ReviewRecordsPage key={intentKey} initialFilters={intentFilters} />
       ) : null}
+      {activePage === 'commitReviews' ? <CommitReviewsPage key={intentKey} /> : null}
       {activePage === 'findings' ? (
         <FindingsPage key={intentKey} initialFilters={intentFilters} />
       ) : null}

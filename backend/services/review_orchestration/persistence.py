@@ -20,7 +20,11 @@ from models.review import Review as ReviewRow
 from repositories.project import ProjectRepository
 from repositories.review import FindingRepository, ReviewRepository
 from services.review_orchestration.diff_utils import _finding_row_to_engine
-from services.review_orchestration.events import GitLabMergeRequestEvent
+from services.review_orchestration.events import (
+    GitLabMergeRequestEvent,
+    GitLabPushEvent,
+    _CommitLikeEvent,
+)
 from services.review_orchestration.results import _MergeResult, _ReviewPlan
 
 if TYPE_CHECKING:
@@ -136,6 +140,123 @@ async def _persist_review(
                 "mr_iid": event.mr_iid,
             },
         )
+
+
+async def _persist_commit_style_review(
+    *,
+    event: _CommitLikeEvent,
+    review_id: UUID,
+    findings: Sequence[Finding],
+    has_blocker: bool,
+    status_value: str,
+    duration_ms: int,
+    engine_used: str,
+    base_sha: str | None,
+    comment_ids: Sequence[str | None] | None,
+    session_factory: SessionFactory | None,
+) -> None:
+    """Best-effort 落库：push / commit 审查写 ``reviews`` + ``review_findings``。
+
+    与 MR 链路的 :func:`_persist_review` 语义对齐（best-effort、事务失败只
+    记 warning 不影响 GitLab 反馈与返回值），差异在字段映射：
+
+    - ``mr_iid`` 落 ``None``（commit 级审查没有 MR 概念，schema 已允许）；
+    - ``review_kind`` 落事件链路的来源标记（``'commit'`` / ``'push'``）；
+    - ``policy_applied`` 落 ``None``：commit 链路的 policy_applied 是展示
+      字符串（如 ``"master -> BLOCKER"``），而列存的是策略主键 UUID，
+      语义不匹配，不强行写入；
+    - ``base_sha`` 落本次 diff 起点（commit 链路为第一个 parent，push 链路
+      为 before SHA）；
+    - ``comment_ids`` 是 GitLab commit 评论 id 列表（与 findings 同序），
+      写入 ``gitlab_discussion_id`` 列复用现有语义（行级评论的 GitLab 定位
+      标识），供误报闭环 resolve 时使用。
+
+    Args:
+        event: 归一化的 commit / push 事件（duck-typing 取 project_id /
+            branch / commit_sha）。
+        review_id: 本次审查的 review 主键（Python 层生成）。
+        findings: 本轮 engine 输出（engine_error 时为空）。
+        has_blocker: 是否命中阻断策略。
+        status_value: ``done`` / ``engine_error``。
+        duration_ms: 审查耗时。
+        engine_used: 引擎名。
+        base_sha: 本次 diff 起点 SHA。
+        comment_ids: 行级评论 id 列表，与 ``findings`` 同序对齐；长度不齐时
+            丢弃（与 MR 链路 discussion_ids 的兜底策略一致）。
+        session_factory: 为 None 时跳过（MVP 兼容路径）。
+    """
+
+    if session_factory is None:
+        return
+    review_kind = _commit_style_review_kind(event)
+    ids_seq: Sequence[str | None] = (
+        list(comment_ids)
+        if comment_ids is not None
+        else [None] * len(findings)
+    )
+    if len(ids_seq) != len(findings):
+        logger.warning(
+            "commit-style comment ids length mismatch; discarding ids",
+            extra={
+                "expected": len(findings),
+                "got": len(ids_seq),
+                "review_id": str(review_id),
+            },
+        )
+        ids_seq = [None] * len(findings)
+    try:
+        async with session_factory() as session:
+            project_repo = ProjectRepository(session)
+            project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
+            if project is None:
+                logger.warning(
+                    "skip commit-style review persistence: project not registered",
+                    extra={
+                        "gitlab_project_id": event.project_id,
+                        "review_id": str(review_id),
+                    },
+                )
+                return
+            review_row = ReviewRow(
+                id=review_id,
+                project_id=project.id,
+                mr_iid=None,
+                source_branch=event.branch,
+                target_branch=event.branch,
+                commit_sha=event.commit_sha,
+                status=status_value,
+                engine_used=engine_used,
+                has_blocker=has_blocker,
+                finding_count=len(findings),
+                duration_ms=duration_ms,
+                base_sha=base_sha,
+                review_mode="full",
+                review_kind=review_kind,
+            )
+            review_repo = ReviewRepository(session)
+            await review_repo.create_review_with_findings(
+                review=review_row,
+                findings=list(zip(findings, ids_seq, strict=True)),
+                stale_finding_ids=[],
+                resolved_in_review_id=review_id,
+            )
+    except SQLAlchemyError:
+        logger.exception(
+            "failed to persist commit-style review",
+            extra={
+                "gitlab_project_id": event.project_id,
+                "review_id": str(review_id),
+                "review_kind": review_kind,
+            },
+        )
+
+
+def _commit_style_review_kind(event: _CommitLikeEvent) -> str:
+    """从事件类型推断 review_kind（commit / push 链路的落库来源标记）。"""
+
+    if isinstance(event, GitLabPushEvent):
+        return "push"
+    return "commit"
 
 
 async def _merge_findings_for_plan(

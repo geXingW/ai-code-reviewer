@@ -42,7 +42,9 @@ class PushReviewHandler(ReviewCommitStyleHandler[GitLabPushEvent]):
     async def _fetch_changes(self, event: GitLabPushEvent) -> _FetchOutcome:
         changes = await _fetch_push_changes(event, gitlab_client=self._gitlab_client)
         # compare 失败 / 异常 -> None，上层按 skipped_no_changes 处理（不误报失败）。
-        return _FetchOutcome(changes=changes)
+        # base_sha 落 before SHA（新建分支降级路径为 None，落库时保持 NULL）。
+        base_sha = event.before_sha if event.before_sha != "0" * 40 else None
+        return _FetchOutcome(changes=changes, base_sha=base_sha)
 
     def _build_context(
         self,

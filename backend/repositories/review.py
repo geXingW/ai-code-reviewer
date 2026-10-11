@@ -30,7 +30,12 @@ class ReviewRepository(BaseRepository[Review]):
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
-    async def list_recent(self, limit: int = 20) -> list[Review]:
+    async def list_recent(
+        self,
+        limit: int = 20,
+        *,
+        review_kind: str | None = None,
+    ) -> list[Review]:
         """按 created_at 倒序列出最近 ``limit`` 条评审，预取 project 与 findings。
 
         用于首页最近审查面板，走 DB 查询以取代早期仅按 POST /api/reviews 入队
@@ -38,6 +43,8 @@ class ReviewRepository(BaseRepository[Review]):
 
         Args:
             limit: 上限条数。默认 20。
+            review_kind: 可选来源过滤（``'mr'`` / ``'commit'`` / ``'push'``）。
+                首页面板传 ``'mr'`` 保持 MR 口径；不传则不过滤（全来源）。
 
         Returns:
             按创建时间倒序的 Review 列表；已 selectinload project + findings，
@@ -50,6 +57,8 @@ class ReviewRepository(BaseRepository[Review]):
             .order_by(Review.created_at.desc())
             .limit(limit)
         )
+        if review_kind is not None:
+            stmt = stmt.where(Review.review_kind == review_kind)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 

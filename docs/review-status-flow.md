@@ -35,7 +35,8 @@ MR 生命周期（close / merge）
   └─ _handle_lifecycle_event → ReviewRow(status="done", lifecycle_event="mr_closed"|"mr_merged")
 
 commit / push 审查
-  └─ 不落库（_persist_review 不被调用），CommitReviewResult 仅在内存返回
+  └─ 落库（feat/commit-push-review-persistence 起）：_persist_commit_style_review
+     写 reviews + review_findings（done / engine_error / 空 diff 三路径均落）
 ```
 
 > **结论**：当前 DB 中 `reviews.status` 只会出现 `done` 和 `engine_error` 两个值。`pending` 是 schema 默认值但被 orchestrator 绕过；`running` 和 `failed` 是预留值。
@@ -178,7 +179,10 @@ GitLab MR webhook action:
 | review_kind | 含义 | mr_iid | 落库？ |
 |------------|------|--------|--------|
 | `mr` | MR 事件触发（webhook） | 有值 | 是 |
-| `commit` | Push Hook 逐 commit 审查 | `NULL` | **不落库** |
+| `commit` | Push Hook 逐 commit 审查 | `NULL` | 是（feat/commit-push-review-persistence 起） |
+| `push` | Push Hook 合并审查（一次 push 单次审查） | `NULL` | 是（feat/commit-push-review-persistence 起） |
+
+> push / commit 审查经 `_persist_commit_style_review` 落库：`review_mode` 恒为 `full`，`policy_applied` 为 `NULL`（commit 链路的策略是展示字符串，与列的 UUID 语义不匹配），行级评论 id 写入 `gitlab_discussion_id` 复用现有语义。管理台「Push/Commit 审查」页按 `review_kind in ('commit','push')` 过滤展示，行展开可看 findings 与 Agent 执行轨迹。
 
 ---
 
@@ -298,13 +302,13 @@ lifecycle 记账行的 `status="done"` 不在 `exclude_status=("pending",)` 中�
 | `mr_closed` | MR close 事件 |
 | `resolved` | MR merge / 增量审查改动文件老 finding 被替代 |
 
-### CommitReviewResult.status（仅内存返回，不落库）
+### CommitReviewResult.status（内存返回值；done / engine_error 同步落库为 Review.status）
 
-| 值 | 产生条件 |
-|----|----------|
-| `done` | commit/push 审查正常完成 |
-| `engine_error` | commit/push 审查引擎异常 |
-| `skipped_merge_commit` | merge commit（>1 parent）跳过 |
-| `skipped_root_commit` | 根 commit（无 parent）跳过 |
-| `skipped_disabled` | 全局/项目级 commit_review 开关关闭 |
-| `skipped_no_changes` | push 审查 compare 失败，无 diff 可审 |
+| 值 | 产生条件 | 落库？ |
+|----|----------|--------|
+| `done` | commit/push 审查正常完成 | 是（Review.status='done'） |
+| `engine_error` | commit/push 审查引擎异常 | 是（Review.status='engine_error'） |
+| `skipped_merge_commit` | merge commit（>1 parent）跳过 | 否 |
+| `skipped_root_commit` | 根 commit（无 parent）跳过 | 否 |
+| `skipped_disabled` | 全局/项目级 commit_review 开关关闭 | 否 |
+| `skipped_no_changes` | push 审查 compare 失败，无 diff 可审 | 否 |

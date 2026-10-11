@@ -6,8 +6,9 @@
    正常路径 / merge commit / 根提交 / 行号失效 / engine 异常 / 空 diff；
 3. 钉钉通知：正常完成 / 空审 / engine 异常三条路径都推送，推送失败被吞，
    跳过路径不推送；
-4. 不落库：commit 审查不写 ``reviews`` / ``review_findings``，已有历史记录
-   也不阻断重审（无幂等检查）；
+4. 落库（feat/commit-push-review-persistence）：commit 审查写 ``reviews`` /
+   ``review_findings``（done / engine_error / 空 diff 三路径），已有历史
+   记录也不阻断重审（无幂等检查）；
 5. schema：review_kind 写入值被 ReviewCreate / ReviewRead 接受。
 """
 
@@ -900,7 +901,7 @@ async def test_review_push_skips_when_disabled(monkeypatch: pytest.MonkeyPatch) 
 
 
 # ---------------------------------------------------------------------------
-# 不落库（真实测试 DB）
+# 落库（真实测试 DB）
 # ---------------------------------------------------------------------------
 
 
@@ -963,10 +964,10 @@ async def test_review_commit_reruns_despite_existing_done_record(
 
 
 @pytest.mark.asyncio
-async def test_review_commit_does_not_persist_review_or_finding_rows(
+async def test_review_commit_persists_review_and_finding_rows(
     db_session_factory: async_sessionmaker,
 ) -> None:
-    """审查完成后不落库：reviews / review_findings 都查不到本次审查。"""
+    """审查完成后落库：reviews / review_findings 各写入一行，字段映射到位。"""
 
     await _create_project(db_session_factory)
     gitlab = _client()
@@ -983,7 +984,18 @@ async def test_review_commit_does_not_persist_review_or_finding_rows(
 
     async with db_session_factory() as session:
         review = await session.get(ReviewRow, result.review_id)
-        assert review is None
+        assert review is not None
+        assert review.mr_iid is None
+        assert review.review_kind == "commit"
+        assert review.status == "done"
+        assert review.has_blocker is False
+        assert review.finding_count == 1
+        assert review.source_branch == "feature/x"
+        assert review.target_branch == "feature/x"
+        assert review.commit_sha == "c0ffee0000"
+        assert review.base_sha == "parent000"
+        assert review.review_mode == "full"
+        assert review.engine_used == "static-engine"
         findings = (
             (
                 await session.execute(
@@ -993,7 +1005,12 @@ async def test_review_commit_does_not_persist_review_or_finding_rows(
             .scalars()
             .all()
         )
-        assert findings == []
+        assert len(findings) == 1
+        assert findings[0].rule_id == "no-secret"
+        assert findings[0].file_path == "app.py"
+        assert findings[0].status == "open"
+        # 行级评论 id 写回（fake client 返回 {"id": n}）。
+        assert findings[0].gitlab_discussion_id is not None
 
 
 @pytest.mark.asyncio
@@ -1024,9 +1041,9 @@ async def test_review_commit_skips_when_project_disabled(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("review_kind", ["mr", "commit"])
+@pytest.mark.parametrize("review_kind", ["mr", "commit", "push"])
 def test_review_kind_literal_accepts_written_values(review_kind: str) -> None:
-    """ReviewCreate 接受 'mr' / 'commit'（schema 允许的两个取值）。"""
+    """ReviewCreate 接受 'mr' / 'commit' / 'push'（schema 允许的三个取值）。"""
 
     payload = ReviewCreate(
         project_id="00000000-0000-0000-0000-000000000001",  # type: ignore[arg-type]
@@ -1039,9 +1056,9 @@ def test_review_kind_literal_accepts_written_values(review_kind: str) -> None:
     assert payload.review_kind == review_kind
 
 
-@pytest.mark.parametrize("review_kind", ["mr", "commit"])
+@pytest.mark.parametrize("review_kind", ["mr", "commit", "push"])
 def test_review_read_accepts_review_kind(review_kind: str) -> None:
-    """ReviewRead 接受历史 commit 审查行（mr_iid=None + review_kind）。"""
+    """ReviewRead 接受历史 commit / push 审查行（mr_iid=None + review_kind）。"""
 
     from datetime import UTC, datetime
 

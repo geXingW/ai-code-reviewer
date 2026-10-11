@@ -95,6 +95,9 @@ export function ReviewRecordsPage({ initialFilters }: ReviewRecordsPageProps) {
           project_id: current.project_id || undefined,
           status: current.status || undefined,
           mr_iid: current.mr_iid || undefined,
+          // feat/commit-push-review-persistence：push/commit 审查落库后，
+          // 本页固定 MR 口径（push/commit 有独立菜单「Push/Commit 审查」）。
+          review_kind: ['mr'],
         }),
       {
         project_id: initialFilters?.project_id ?? '',
