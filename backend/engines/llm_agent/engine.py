@@ -243,6 +243,23 @@ class _ObservationBudget:
         return None
 
 
+@dataclass
+class _RunState:
+    """单次 review 的局部状态（并发安全：随 review 生命周期存在）。
+
+    引擎实例是进程级单例（registry），同一实例可能被多个 review 并发调
+    用——所有跨轮可变状态必须挂在这里而不是 ``self``，review 结束后随局部
+    引用消失，GC 自动回收，不在实例上残留。
+    """
+
+    # (tool, canonical_args) -> (首次执行轮次, 回填观察) 的去重缓存。
+    observation_cache: dict[tuple[str, str], tuple[int, str]] = field(
+        default_factory=dict
+    )
+    # tool_call_id -> (工具名, 参数摘要)，供旧观察压缩时还原上下文。
+    tool_call_meta: dict[str, tuple[str, str]] = field(default_factory=dict)
+
+
 @register_engine
 class LLMAgentEngine(ReviewEngine):
     """Agent-style diff review engine with read-only repo investigation tools."""
@@ -286,11 +303,6 @@ class LLMAgentEngine(ReviewEngine):
             timeout_seconds=effective_timeout,
         )
         self.skipped_files: list[SkippedFile] = []
-        # (tool, canonical_args) -> (首次执行轮次, 回填观察) 的去重缓存，
-        # 每次 review 开始时清空（见 _reset_observation_cache）。
-        self._observation_cache: dict[tuple[str, str], tuple[int, str]] = {}
-        # tool_call_id -> (工具名, 参数摘要)，供旧观察压缩时还原上下文。
-        self._tool_call_meta: dict[str, tuple[str, str]] = {}
         logger.debug(
             "LLM agent engine config: timeout=%.1fs, max_turns=%d, "
             "tool_result_max_chars=%d, total_context_max_chars=%d, "
@@ -312,7 +324,6 @@ class LLMAgentEngine(ReviewEngine):
         """Review ``ctx`` with an investigation loop and return findings."""
 
         self.skipped_files = []
-        self._reset_observation_cache()
         if not ctx.diff_hunks:
             return []
         if ctx.provider is None:
@@ -429,6 +440,8 @@ class LLMAgentEngine(ReviewEngine):
             budget_max_chars=budget.max_chars,
         )
 
+        # review 局部状态：并发 review 互不共享，run 结束即无引用（GC 回收）。
+        run_state = _RunState()
         final_text: str | None = None
         for turn in range(settings.agent_max_turns):
             call_started = time.perf_counter()
@@ -468,6 +481,7 @@ class LLMAgentEngine(ReviewEngine):
                 response.tool_calls,
                 tools_by_name,
                 budget,
+                run_state,
                 tracer,
                 turn,
             )
@@ -477,7 +491,7 @@ class LLMAgentEngine(ReviewEngine):
                 observations[-1].content += warning
             # 旧观察压缩：把超过压缩轮数的 tool 观察替换为一行摘要，
             # 控制多轮循环的 prompt 膨胀（assistant 消息不动）。
-            self._compress_old_observations(messages, turn, observations)
+            self._compress_old_observations(messages, turn, observations, run_state)
             messages.extend(observations)
 
             last_turn = turn == settings.agent_max_turns - 1
@@ -537,6 +551,7 @@ class LLMAgentEngine(ReviewEngine):
         calls: list[ToolCall],
         tools_by_name: dict[str, Any],
         budget: _ObservationBudget,
+        run_state: _RunState,
         tracer: AgentRunTracer,
         turn: int,
     ) -> list[ChatMessage]:
@@ -580,8 +595,8 @@ class LLMAgentEngine(ReviewEngine):
                 )
                 continue
             cache_key = (call.name, _canonical_args(args))
-            if cache_key in self._observation_cache:
-                first_turn, first_output = self._observation_cache[cache_key]
+            if cache_key in run_state.observation_cache:
+                first_turn, first_output = run_state.observation_cache[cache_key]
                 direct[index] = (
                     (
                         f"[cached] identical call already executed at turn {first_turn}; "
@@ -630,8 +645,8 @@ class LLMAgentEngine(ReviewEngine):
                         call.name,
                         _canonical_args(parse_tool_arguments(call.arguments) or {}),
                     )
-                    self._observation_cache[cache_key] = (turn, output)
-            self._tool_call_meta[call.id] = (
+                    run_state.observation_cache[cache_key] = (turn, output)
+            run_state.tool_call_meta[call.id] = (
                 call.name,
                 _canonical_args(parse_tool_arguments(call.arguments) or {}),
             )
@@ -657,6 +672,7 @@ class LLMAgentEngine(ReviewEngine):
         messages: list[ChatMessage],
         current_turn: int,
         new_observations: list[ChatMessage],
+        run_state: _RunState,
     ) -> None:
         """把超过压缩轮数的旧 tool 观察原地替换为一行摘要。
 
@@ -678,14 +694,10 @@ class LLMAgentEngine(ReviewEngine):
                 continue
             if message.role != "tool" or message.content.startswith("[compressed]"):
                 continue
-            name, args_str = self._tool_call_meta.get(message.tool_call_id or "", ("tool", ""))
+            name, args_str = run_state.tool_call_meta.get(
+                message.tool_call_id or "", ("tool", "")
+            )
             message.content = _summarize_observation(message.content, name, args_str)
-
-    def _reset_observation_cache(self) -> None:
-        """每次 review 开始时清空去重缓存（跨 review 不共享）。"""
-
-        self._observation_cache.clear()
-        self._tool_call_meta.clear()
 
     async def _run_tool(
         self,

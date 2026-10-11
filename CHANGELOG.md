@@ -6,6 +6,8 @@
 
 ### Fixed
 
+- **llm-agent 去重缓存并发安全修复**：`_observation_cache` / `_tool_call_meta` 原为引擎实例属性，而引擎实例是进程级单例（registry）——并发 review 会互相清空缓存（去重失效）甚至跨 review 污染（缓存 key 不含 ref，A 命中 B 写入的观察，基于错误版本的代码下结论）。现重构为 `_RunState` review 局部状态（随 review 生命周期存在，run 结束即无引用、GC 自动回收，不在实例上残留），与 registry「engines are stateless」的设计约定对齐。新增并发隔离回归测试（两个 review 交错执行、断言缓存互不污染）与属性残留测试。
+
 - **llm-agent 审查循环优化（消除强制收口三大死循环）**：针对 30 轮仍 `budget_exhausted` 强制收口、产出空 findings 的轨迹分析（单次审查烧掉 103 万 prompt tokens，其中 ~60% 浪费在重复调用与截断死循环），实施六项修复——
   1. **工具调用去重缓存**：同一 `(tool, args)` 重复调用直接回填 `[cached]` 观察（不重复执行、不重复计预算，trace 状态 `cached`），消除「同文件 5 连读」类浪费；
   2. **read_file 分页**：新增 `offset` 参数，截断标记明确告知「已返回区间 + 下一页 offset」，模型翻页即可读到文件后半段（此前加大 `max_chars` 只会拿到同样内容，陷入复读机循环）；`max_chars` 上限从 50000 收紧为工具层与引擎层一致；
