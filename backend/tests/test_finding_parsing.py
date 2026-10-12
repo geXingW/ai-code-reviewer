@@ -81,6 +81,42 @@ class TestLoadsModelJson:
         with pytest.raises(ValueError):
             loads_model_json("not json at all")
 
+    def test_prose_prefix_with_trailing_json_object(self) -> None:
+        # 回归：qwen3.7-plus 第 17 轮返回「散文分析 + 末尾 JSON」，
+        # 整体解析在第 1 个字符失败（Expecting value: line 1 column 1），
+        # 之前会被误判为 invalid_final_json 导致整个 review 失败。
+        text = (
+            "Based on my investigation, I've reviewed both files in the diff:\n\n"
+            "Both changes appear intentional and valid. No concrete issues "
+            "identified.\n\n"
+            '{"findings": []}'
+        )
+        assert loads_model_json(text) == {"findings": []}
+
+    def test_prose_prefix_with_trailing_fenced_json(self) -> None:
+        text = 'Analysis complete. No issues found.\n\n```json\n{"findings": []}\n```'
+        assert loads_model_json(text) == {"findings": []}
+
+    def test_prose_prefix_with_trailing_json_containing_findings(self) -> None:
+        text = (
+            "The change prints the password.\n\n"
+            '{"findings": [{"file_path": "app/auth.py", "line_number": 11, '
+            '"rule_id": "no-secret-logging", "severity": "BLOCKER", '
+            '"title": "Password printed"}]}'
+        )
+        data = loads_model_json(text)
+        assert data["findings"][0]["title"] == "Password printed"
+
+    def test_prose_prefix_without_any_json_still_raises(self) -> None:
+        # 容错提取不能把纯散文当成合法响应：无 JSON 时仍必须抛 ValueError。
+        with pytest.raises(ValueError):
+            loads_model_json("Analysis complete. No issues found.")
+
+    def test_json_object_must_be_top_level_object(self) -> None:
+        # 尾部提取到的是数组/标量时不能当合法 payload（必须是 JSON object）。
+        with pytest.raises(ValueError):
+            loads_model_json('Some prose.\n\n["not", "an", "object"]')
+
 
 class TestNormalisation:
     def test_parse_findings_resolves_line_via_existing_code(self) -> None:
