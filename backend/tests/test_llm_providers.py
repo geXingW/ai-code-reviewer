@@ -75,7 +75,7 @@ async def test_openai_compatible_chat_normalises_response_and_json_mode() -> Non
             _FakeAsyncResponse(
                 payload={
                     "id": "chatcmpl-1",
-                    "choices": [{"message": {"content": "{\"ok\": true}"}}],
+                    "choices": [{"message": {"content": '{"ok": true}'}}],
                     "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
                 }
             )
@@ -97,12 +97,12 @@ async def test_openai_compatible_chat_normalises_response_and_json_mode() -> Non
     response = await provider.chat([ChatMessage(role="user", content="ping")])
 
     assert response == ChatResponse(
-        content="{\"ok\": true}",
+        content='{"ok": true}',
         model="glm-4.5",
         usage={"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
         raw={
             "id": "chatcmpl-1",
-            "choices": [{"message": {"content": "{\"ok\": true}"}}],
+            "choices": [{"message": {"content": '{"ok": true}'}}],
             "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
         },
     )
@@ -110,6 +110,91 @@ async def test_openai_compatible_chat_normalises_response_and_json_mode() -> Non
     assert request["url"] == "https://ark.example.com/api/v3/chat/completions"
     assert request["headers"]["Authorization"] == "Bearer test-key"
     assert request["json"]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_chat_parses_reasoning_content() -> None:
+    """思考模式（qwen/DeepSeek 等）带 tool_calls 时 content 为空、思考在 reasoning_content。
+
+    回归：此前 reasoning_content 被直接丢弃，agent 轨迹里模型响应轮
+    content 恒为空串，前端看起来"没有内容"。
+    """
+
+    http_client = _FakeHTTPClient(
+        [
+            _FakeAsyncResponse(
+                payload={
+                    "id": "chatcmpl-2",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "reasoning_content": "user asked for X, I should read the file",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"file_path": "a.py"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 9, "completion_tokens": 467, "total_tokens": 476},
+                }
+            )
+        ]
+    )
+    provider = OpenAICompatibleProvider(
+        LLMProviderConfig(
+            provider_id=uuid4(),
+            protocol="openai_compatible",
+            base_url="https://ark.example.com/api/v3",
+            api_key="test-key",
+            model="qwen3.7-plus",
+        ),
+        http_client=http_client,
+    )
+
+    response = await provider.chat([ChatMessage(role="user", content="ping")])
+
+    assert response.content == ""
+    assert response.reasoning_content == "user asked for X, I should read the file"
+    assert [call.name for call in response.tool_calls] == ["read_file"]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_chat_without_reasoning_content_keeps_default() -> None:
+    """普通响应没有 reasoning_content 字段时 reasoning_content 保持空串。"""
+
+    http_client = _FakeHTTPClient(
+        [
+            _FakeAsyncResponse(
+                payload={
+                    "choices": [{"message": {"content": "plain answer"}}],
+                    "usage": {"total_tokens": 1},
+                }
+            )
+        ]
+    )
+    provider = OpenAICompatibleProvider(
+        LLMProviderConfig(
+            provider_id=uuid4(),
+            protocol="openai_compatible",
+            base_url="https://ark.example.com/api/v3",
+            api_key="test-key",
+            model="glm-4.5",
+        ),
+        http_client=http_client,
+    )
+
+    response = await provider.chat([ChatMessage(role="user", content="ping")])
+
+    assert response.content == "plain answer"
+    assert response.reasoning_content == ""
 
 
 @pytest.mark.asyncio
@@ -173,8 +258,7 @@ async def test_custom_provider_uses_auth_template_and_streams_chunks() -> None:
 
     response = await provider.chat([ChatMessage(role="user", content="ping")])
     chunks = [
-        chunk
-        async for chunk in provider.stream_chat([ChatMessage(role="user", content="ping")])
+        chunk async for chunk in provider.stream_chat([ChatMessage(role="user", content="ping")])
     ]
 
     assert response.content == "first second"

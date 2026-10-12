@@ -39,6 +39,7 @@ type RunStartedPayload = {
 
 type LlmResponsePayload = {
   content?: string;
+  reasoning_content?: string;
   tool_calls?: { id?: string; name?: string; arguments?: string }[];
   usage?: Record<string, number>;
   model?: string;
@@ -164,11 +165,21 @@ function eventChildren(event: AgentTraceEvent) {
   if (event.event_type === 'llm_response') {
     const p = payload as LlmResponsePayload;
     const usageEntries = Object.entries(p.usage ?? {});
+    const content = p.content ?? '';
+    const reasoning = p.reasoning_content ?? '';
+    const hasToolCalls = (p.tool_calls ?? []).length > 0;
     return (
       <div className="text-[11px] leading-5 text-zinc-500">
         消息数 {p.message_count ?? '-'}
         {usageEntries.length > 0 ? ` · tokens ${usageEntries.map(([k, v]) => `${k}=${v}`).join(', ')}` : ''}
-        <PayloadBlock label="回复原文" content={p.content ?? ''} />
+        <PayloadBlock label="思考过程" content={reasoning} />
+        <PayloadBlock label="回复原文" content={content} />
+        {!content && !reasoning && !hasToolCalls ? (
+          <span className="text-zinc-400">本轮无文本回复</span>
+        ) : null}
+        {!content && !reasoning && hasToolCalls ? (
+          <span className="text-zinc-400">本轮无文本回复（仅工具调用）</span>
+        ) : null}
       </div>
     );
   }

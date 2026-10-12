@@ -63,6 +63,9 @@ class ChatResponse(BaseModel):
 
     content: str
     model: str
+    # 思考模式（qwen/DeepSeek-R1 等）的思考文本：带 tool_calls 的轮次
+    # content 常为空串，模型输出全在 reasoning_content。非思考模型恒为空串。
+    reasoning_content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: dict[str, int] = Field(default_factory=dict)
     raw: dict[str, Any] = Field(default_factory=dict)
@@ -289,9 +292,15 @@ class OpenAICompatibleProvider(LLMProvider):
             raise ProviderResponseError(msg)
         if not isinstance(raw_message, dict):
             raw_message = {}
+        # 思考模式（qwen/DeepSeek-R1 等）：思考文本在 reasoning_content，
+        # 带 tool_calls 的轮次 content 常为空。缺失/非字符串时归一化为空串。
+        reasoning_content = raw_message.get("reasoning_content")
+        if not isinstance(reasoning_content, str):
+            reasoning_content = ""
         return ChatResponse(
             content=content,
             model=self.config.model,
+            reasoning_content=reasoning_content,
             tool_calls=_parse_openai_tool_calls(raw_message),
             usage=_normalise_usage(data.get("usage")),
             raw=dict(data),

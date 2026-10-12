@@ -328,10 +328,7 @@ async def test_agent_unknown_tool_and_malformed_args_become_error_observations()
 
     assert findings == []
     tool_messages = [
-        m.content
-        for turn in client.turns
-        for m in turn["messages"]
-        if m.role == "tool"
+        m.content for turn in client.turns for m in turn["messages"] if m.role == "tool"
     ]
     assert any(content.startswith("[error] unknown tool") for content in tool_messages)
     assert any(content.startswith("[error] malformed arguments") for content in tool_messages)
@@ -404,9 +401,7 @@ async def test_agent_forces_final_json_when_max_turns_reached() -> None:
     # 最后一轮不带 tools（强制收口）。
     assert client.turns[-1]["tools"] == []
     # 收口指令并入最后一条 tool 观察消息（保持消息交替）。
-    last_tool_msg = next(
-        m for m in reversed(client.turns[-1]["messages"]) if m.role == "tool"
-    )
+    last_tool_msg = next(m for m in reversed(client.turns[-1]["messages"]) if m.role == "tool")
     assert "Investigation budget reached" in last_tool_msg.content
 
 
@@ -541,6 +536,44 @@ async def test_agent_trace_records_full_lifecycle(monkeypatch: pytest.MonkeyPatc
         {"id": "call-1", "name": "read_file", "arguments": '{"file_path": "app/auth.py"}'}
     ]
     assert first_response["duration_ms"] is not None
+
+
+@pytest.mark.asyncio
+async def test_agent_trace_records_reasoning_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    """思考模式轮次的 reasoning_content 必须落进轨迹 payload。
+
+    回归：qwen3.7-plus 带 tool_calls 的轮次 content 为空、思考全在
+    reasoning_content，此前轨迹只记 content 导致前端"模型响应无内容"。
+    """
+
+    events = _install_trace_recorder(monkeypatch)
+    reader = _FakeRepoReader(files={"app/auth.py": "def login(): ...\n"})
+    client = _FakeAgentClient(
+        responses=[
+            ChatResponse(
+                content="",
+                reasoning_content="need to check the caller of login()",
+                model="reviewer-1",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="read_file",
+                        arguments='{"file_path": "app/auth.py"}',
+                    )
+                ],
+            ),
+            _final_response('{"findings": []}'),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+    ctx = _ctx(repo_reader=reader)
+
+    await engine.review(ctx)
+
+    responses = _events_of(events, "llm_response")
+    assert responses[0]["payload"]["reasoning_content"] == ("need to check the caller of login()")
+    # 最终 JSON 轮无思考：字段省略而不是落空串，避免 payload 冗余。
+    assert "reasoning_content" not in responses[1]["payload"]
 
     tool_event = events[2]
     assert tool_event["tool_name"] == "read_file"
@@ -681,9 +714,7 @@ async def test_agent_trace_run_failed_on_invalid_final_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events = _install_trace_recorder(monkeypatch)
-    client = _FakeAgentClient(
-        responses=[ChatResponse(content="not json", model="reviewer-1")]
-    )
+    client = _FakeAgentClient(responses=[ChatResponse(content="not json", model="reviewer-1")])
     engine = LLMAgentEngine(client=client, settings=_settings())
 
     await engine.review(_ctx(repo_reader=_FakeRepoReader()))
@@ -737,9 +768,7 @@ async def test_agent_trace_marks_forced_closeout(monkeypatch: pytest.MonkeyPatch
 
 def test_build_tracer_sinks_follow_settings() -> None:
     review_id = uuid4()
-    both = build_tracer(
-        review_id, Settings(agent_trace_enabled=True, agent_trace_db_enabled=True)
-    )
+    both = build_tracer(review_id, Settings(agent_trace_enabled=True, agent_trace_db_enabled=True))
     assert [type(sink).__name__ for sink in both.sinks] == ["LogSink", "DbSink"]
     log_only = build_tracer(
         review_id, Settings(agent_trace_enabled=True, agent_trace_db_enabled=False)
@@ -749,7 +778,6 @@ def test_build_tracer_sinks_follow_settings() -> None:
         review_id, Settings(agent_trace_enabled=False, agent_trace_db_enabled=False)
     )
     assert none.sinks == []
-
 
 
 # ---- 工具去重缓存 ----------------------------------------------------------------
@@ -811,9 +839,7 @@ async def test_agent_duplicate_call_budget_not_double_charged(
 async def test_agent_different_args_not_deduplicated() -> None:
     """参数不同（file_path 不同）的调用各自执行，不走缓存。"""
 
-    reader = _FakeRepoReader(
-        files={"app/auth.py": "a", "app/other.py": "b"}
-    )
+    reader = _FakeRepoReader(files={"app/auth.py": "a", "app/other.py": "b"})
     client = _FakeAgentClient(
         responses=[
             ChatResponse(
@@ -886,9 +912,7 @@ async def test_agent_read_file_offset_beyond_eof_returns_error() -> None:
     reader = _FakeRepoReader(files={"small.txt": "abc"})
     client = _FakeAgentClient(
         responses=[
-            _tool_call_response(
-                "read_file", '{"file_path": "small.txt", "offset": 999}'
-            ),
+            _tool_call_response("read_file", '{"file_path": "small.txt", "offset": 999}'),
             _final_response(),
         ]
     )
@@ -966,9 +990,7 @@ async def test_agent_budget_warning_injected_at_threshold(
     await engine.review(_ctx(repo_reader=reader))
 
     # 第二轮请求的 tool 消息里带预算预警。
-    second_turn_tool_msgs = [
-        m.content for m in client.turns[1]["messages"] if m.role == "tool"
-    ]
+    second_turn_tool_msgs = [m.content for m in client.turns[1]["messages"] if m.role == "tool"]
     assert any("budget" in content.lower() for content in second_turn_tool_msgs)
     # 预警后模型主动收口（自然收口而非 budget_exhausted）。
     finished = _events_of(events, "run_finished")[0]["payload"]
@@ -1066,7 +1088,6 @@ async def test_agent_batched_tool_calls_run_concurrently(
     # 3 个 0.2s 工具并行：总耗时应显著小于 0.6s（顺序执行下限）。
     assert elapsed < 0.5
     assert len(reader.calls) == 3
-
 
 
 # ---- 并发 review 缓存隔离 ----------------------------------------------------------

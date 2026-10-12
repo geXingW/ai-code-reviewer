@@ -77,7 +77,7 @@ _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 _FORCE_FINAL_TEXT = (
     "\n\n[instruction] Investigation budget reached. Based on the information "
-    'gathered so far, output the final findings JSON now. If none, output '
+    "gathered so far, output the final findings JSON now. If none, output "
     '{"findings": []}. Do not request any more tools.'
 )
 
@@ -253,9 +253,7 @@ class _RunState:
     """
 
     # (tool, canonical_args) -> (首次执行轮次, 回填观察) 的去重缓存。
-    observation_cache: dict[tuple[str, str], tuple[int, str]] = field(
-        default_factory=dict
-    )
+    observation_cache: dict[tuple[str, str], tuple[int, str]] = field(default_factory=dict)
     # tool_call_id -> (工具名, 参数摘要)，供旧观察压缩时还原上下文。
     tool_call_meta: dict[str, tuple[str, str]] = field(default_factory=dict)
 
@@ -283,7 +281,8 @@ class LLMAgentEngine(ReviewEngine):
 
         self._settings = settings if settings is not None else get_settings()
         effective_timeout = (
-            timeout_seconds if timeout_seconds is not None
+            timeout_seconds
+            if timeout_seconds is not None
             else self._settings.llm_request_timeout_seconds
         )
         if effective_timeout <= 0:
@@ -328,8 +327,7 @@ class LLMAgentEngine(ReviewEngine):
             return []
         if ctx.provider is None:
             logger.warning(
-                "llm-agent: no provider configured, returning no findings "
-                "(review_id=%s)",
+                "llm-agent: no provider configured, returning no findings (review_id=%s)",
                 ctx.review_id,
             )
             return []
@@ -360,8 +358,7 @@ class LLMAgentEngine(ReviewEngine):
         except LLMError as exc:
             await tracer.run_failed(reason="llm_error", error=str(exc))
             logger.warning(
-                "llm-agent: LLM call failed, returning no findings "
-                "(review_id=%s): %s",
+                "llm-agent: LLM call failed, returning no findings (review_id=%s): %s",
                 ctx.review_id,
                 exc,
             )
@@ -404,8 +401,7 @@ class LLMAgentEngine(ReviewEngine):
                 "max_turns": self._settings.agent_max_turns,
             },
             message=(
-                "LLMAgentEngine is configured; provider health is checked "
-                "during review calls."
+                "LLMAgentEngine is configured; provider health is checked during review calls."
             ),
         )
 
@@ -456,6 +452,7 @@ class LLMAgentEngine(ReviewEngine):
             await tracer.llm_response(
                 turn=turn,
                 content=response.content,
+                reasoning_content=response.reasoning_content,
                 tool_calls=[
                     {"id": call.id, "name": call.name, "arguments": call.arguments}
                     for call in response.tool_calls
@@ -497,9 +494,7 @@ class LLMAgentEngine(ReviewEngine):
             last_turn = turn == settings.agent_max_turns - 1
             if last_turn or budget.exhausted:
                 # 记录收口原因：预算耗尽优先于轮数耗尽（两者可能同时满足）。
-                tracer.closeout_reason = (
-                    "budget_exhausted" if budget.exhausted else "max_turns"
-                )
+                tracer.closeout_reason = "budget_exhausted" if budget.exhausted else "max_turns"
                 # 收口：把强制收尾指令并进最后一条 tool message（保持
                 # user/assistant 交替，兼容 Anthropic 的消息序列校验），
                 # 然后不带 tools 再要一次最终 JSON。
@@ -515,6 +510,7 @@ class LLMAgentEngine(ReviewEngine):
                 await tracer.llm_response(
                     turn=turn,
                     content=response.content,
+                    reasoning_content=response.reasoning_content,
                     tool_calls=[],
                     usage=dict(response.usage),
                     model=response.model,
@@ -694,9 +690,7 @@ class LLMAgentEngine(ReviewEngine):
                 continue
             if message.role != "tool" or message.content.startswith("[compressed]"):
                 continue
-            name, args_str = run_state.tool_call_meta.get(
-                message.tool_call_id or "", ("tool", "")
-            )
+            name, args_str = run_state.tool_call_meta.get(message.tool_call_id or "", ("tool", ""))
             message.content = _summarize_observation(message.content, name, args_str)
 
     async def _run_tool(
@@ -728,12 +722,7 @@ class LLMAgentEngine(ReviewEngine):
         template = _load_prompt("agent_system.md")
         global_prompt = await _load_global_prompt()
         if global_prompt:
-            return (
-                "=== 全局审查原则 ===\n"
-                f"{global_prompt}\n"
-                "====================\n\n"
-                f"{template}"
-            )
+            return f"=== 全局审查原则 ===\n{global_prompt}\n====================\n\n{template}"
         return template
 
     async def _build_user_prompt(self, ctx: ReviewContext) -> str:

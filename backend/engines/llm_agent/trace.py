@@ -73,10 +73,7 @@ class LogSink:
     """把事件打到现有 JSON stdout 日志（extra 顶层字段 + 嵌套 payload）。"""
 
     async def emit(self, event: dict[str, Any]) -> None:
-        extra = {
-            key: _clip_structured(value, _LOG_FIELD_MAX_CHARS)
-            for key, value in event.items()
-        }
+        extra = {key: _clip_structured(value, _LOG_FIELD_MAX_CHARS) for key, value in event.items()}
         logger.info("agent trace event", extra=extra)
 
 
@@ -205,19 +202,25 @@ class AgentRunTracer:
         message_count: int,
         duration_ms: int,
         is_closeout: bool = False,
+        reasoning_content: str = "",
     ) -> None:
+        payload: dict[str, Any] = {
+            "content": _clip(content, self.content_max_chars),
+            "tool_calls": tool_calls,
+            "usage": usage,
+            "model": model,
+            "message_count": message_count,
+            "is_closeout": is_closeout,
+        }
+        if reasoning_content:
+            # 思考模式轮次：content 为空、输出全在 reasoning_content。
+            # 空思考省略字段，避免 payload 冗余。
+            payload["reasoning_content"] = _clip(reasoning_content, self.content_max_chars)
         await self._emit(
             EVENT_LLM_RESPONSE,
             turn=turn,
             duration_ms=duration_ms,
-            payload={
-                "content": _clip(content, self.content_max_chars),
-                "tool_calls": tool_calls,
-                "usage": usage,
-                "model": model,
-                "message_count": message_count,
-                "is_closeout": is_closeout,
-            },
+            payload=payload,
         )
 
     async def tool_executed(
