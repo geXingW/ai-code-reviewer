@@ -45,6 +45,51 @@ _DIFF_HEADER_RE = re.compile(
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(?P<body>.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
 
+def _extract_trailing_json_object(text: str) -> dict[str, Any] | None:
+    """从「散文前缀 + 末尾 JSON object」的混合响应尾部提取最后一个平衡对象。
+
+    Agent 引擎的最终响应偶发违反输出契约：模型先输出一段分析散文，再在
+    末尾给出结论 JSON（如 ``...No concrete issues identified.\\n\\n{"findings": []}``）。
+    整体 ``json.loads`` 在第 1 个字符即失败，fenced fullmatch 也匹配不上，
+    导致有效结论被丢弃、整个 review 被误判为 ``invalid_final_json``。
+
+    策略：从文本**尾部**向前找最后一个 ``{``，检查其后是否是一个平衡的
+    （字符串/转义感知的）JSON object 且解析成功。只从尾部提取，避免把
+    finding ``suggestion`` 内嵌的代码片段误当 JSON body。
+    """
+
+    stripped = text.strip()
+    # 尾部是 fenced block 结束符：取最后一个 fenced block 的 body 解析。
+    if stripped.endswith("```"):
+        for body in reversed(_JSON_BLOCK_RE.findall(stripped)):
+            try:
+                data = json.loads(body.strip())
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return cast(dict[str, Any], data)
+
+    start = text.rfind("{")
+    while start != -1:
+        candidate = text[start:]
+        stripped = candidate.strip()
+        if not stripped.endswith("}"):
+            # 尾部还有非 JSON 文本（如 fenced block 结束符之后的散文），
+            # 跳过这个 "{" 继续向前找。
+            start = text.rfind("{", 0, start)
+            continue
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            start = text.rfind("{", 0, start)
+            continue
+        if isinstance(data, dict):
+            return cast(dict[str, Any], data)
+        # 解析成功但不是 object（数组/标量）：继续向前找。
+        start = text.rfind("{", 0, start)
+    return None
+
+
 def loads_model_json(raw_response: str) -> dict[str, Any]:
     """Load model JSON, accepting an optional whole-response fenced block.
 
@@ -52,6 +97,10 @@ def loads_model_json(raw_response: str) -> dict[str, Any]:
     suggestion 字段可能内嵌 ```java 代码块，用 search 在任意位置提取会误伤
     （把内嵌代码块当成 JSON body，导致合法响应解析失败）。只有整体解析
     失败且整个响应被 ```json ... ``` 包裹时才提取 fenced body。
+
+    第三层容错：整体解析与 fenced fullmatch 均失败时，尝试从响应尾部提取
+    最后一个平衡的 JSON object（「散文前缀 + 末尾 JSON」形态）。仍提取不到
+    才抛错——纯散文响应必须继续失败，不能被静默吞掉。
     """
 
     text = raw_response.strip()
@@ -61,9 +110,14 @@ def loads_model_json(raw_response: str) -> dict[str, Any]:
         # 整体不是合法 JSON：仅当整个响应是 fenced block 时提取，
         # 内嵌 ``` 的合法 JSON 不会走到这里（上面已成功解析）。
         match = _JSON_BLOCK_RE.fullmatch(text)
-        if not match:
-            raise
-        data = json.loads(match.group("body").strip())
+        if match:
+            data = json.loads(match.group("body").strip())
+        else:
+            # 「散文 + 末尾 JSON」混合形态：尾部提取最后一个平衡 object。
+            trailing = _extract_trailing_json_object(text)
+            if trailing is None:
+                raise
+            data = trailing
     if not isinstance(data, dict):
         msg = "LLM response must be a JSON object"
         raise ValueError(msg)
