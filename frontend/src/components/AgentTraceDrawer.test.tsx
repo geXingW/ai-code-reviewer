@@ -32,7 +32,7 @@ function renderWithEvents(events: AgentTraceEvent[]) {
 }
 
 describe('AgentTraceDrawer 模型响应内容渲染', () => {
-  it('思考模式轮次渲染「思考过程」折叠块与空态提示', async () => {
+  it('思考模式轮次渲染「思考过程」折叠块', async () => {
     renderWithEvents([
       traceEvent({
         payload: {
@@ -48,8 +48,8 @@ describe('AgentTraceDrawer 模型响应内容渲染', () => {
     ]);
 
     expect(await screen.findByText('思考过程')).toBeTruthy();
-    // content 为空时不再静默隐藏：给出明确提示。
-    expect(screen.getByText('本轮无文本回复（仅工具调用）')).toBeTruthy();
+    // content 为空但有思考时：不显示空态提示（思考过程本身就是内容）。
+    expect(screen.queryByText('本轮无文本回复（仅工具调用）')).toBeNull();
   });
 
   it('普通轮次渲染「回复原文」折叠块', async () => {
