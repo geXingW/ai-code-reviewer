@@ -81,6 +81,15 @@ _FORCE_FINAL_TEXT = (
     '{"findings": []}. Do not request any more tools.'
 )
 
+# 循环熔断纠正提示：连续 N 轮工具调用全部命中去重缓存时注入。
+_STALL_WARNING_TEXT = (
+    "\n\n[notice] All tool calls in the last {turns} turns were duplicates of "
+    "earlier calls — you are going in circles. Change strategy: read a "
+    "different file or region (read_file line_start/line_end), search a "
+    "different identifier, or output the final findings JSON now with the "
+    "evidence you already have."
+)
+
 
 @cache
 def _load_prompt(name: str) -> str:
@@ -258,6 +267,8 @@ class _RunState:
     )
     # tool_call_id -> (工具名, 参数摘要)，供旧观察压缩时还原上下文。
     tool_call_meta: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # 连续「整轮工具调用全部命中去重缓存」的轮数（循环熔断计数器）。
+    consecutive_cached_turns: int = 0
 
 
 @register_engine
@@ -489,17 +500,42 @@ class LLMAgentEngine(ReviewEngine):
             warning = budget.warning_text()
             if warning and observations:
                 observations[-1].content += warning
+            # 循环熔断：连续 N 轮工具调用全部命中去重缓存 = 模型在原地打转。
+            # 达到阈值注入纠正提示；达到 2 倍阈值强制收口（见下方 closeout）。
+            stall_turns = settings.agent_stall_turns
+            all_cached = bool(observations) and all(
+                message.content.startswith("[cached]") for message in observations
+            )
+            if all_cached:
+                run_state.consecutive_cached_turns += 1
+            else:
+                run_state.consecutive_cached_turns = 0
+            if (
+                stall_turns > 0
+                and run_state.consecutive_cached_turns == stall_turns
+                and observations
+            ):
+                observations[-1].content += _STALL_WARNING_TEXT.format(
+                    turns=stall_turns,
+                )
             # 旧观察压缩：把超过压缩轮数的 tool 观察替换为一行摘要，
             # 控制多轮循环的 prompt 膨胀（assistant 消息不动）。
             self._compress_old_observations(messages, turn, observations, run_state)
             messages.extend(observations)
 
             last_turn = turn == settings.agent_max_turns - 1
-            if last_turn or budget.exhausted:
-                # 记录收口原因：预算耗尽优先于轮数耗尽（两者可能同时满足）。
-                tracer.closeout_reason = (
-                    "budget_exhausted" if budget.exhausted else "max_turns"
-                )
+            stalled = (
+                stall_turns > 0
+                and run_state.consecutive_cached_turns >= stall_turns * 2
+            )
+            if last_turn or budget.exhausted or stalled:
+                # 记录收口原因：预算耗尽优先于轮数耗尽；打转熔断兜底。
+                if budget.exhausted:
+                    tracer.closeout_reason = "budget_exhausted"
+                elif stalled:
+                    tracer.closeout_reason = "stalled_loop"
+                else:
+                    tracer.closeout_reason = "max_turns"
                 # 收口：把强制收尾指令并进最后一条 tool message（保持
                 # user/assistant 交替，兼容 Anthropic 的消息序列校验），
                 # 然后不带 tools 再要一次最终 JSON。

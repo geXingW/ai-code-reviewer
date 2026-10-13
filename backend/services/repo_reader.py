@@ -70,8 +70,12 @@ class GitLabRepoReader:
         *,
         max_chars: int = 8000,
         offset: int = 0,
+        line_start: int | None = None,
+        line_end: int | None = None,
     ) -> str:
-        """读取文件内容（支持 offset 分页）；ref 为空时回退 default_ref。"""
+        """读取文件内容；支持行号区间（``line_start``/``line_end``，1 起）或
+        ``offset`` 字符分页，两者同时给出时行号区间优先；ref 为空时回退
+        default_ref。"""
 
         effective_ref = ref or self._default_ref
         try:
@@ -83,6 +87,8 @@ class GitLabRepoReader:
         except Exception as exc:  # noqa: BLE001 - 契约：任何失败都归一化为错误观察
             logger.info("repo_reader read_file failed", extra={"file_path": file_path})
             return _error_text(f"read_file({file_path}@{effective_ref})", exc)
+        if line_start is not None:
+            return _render_lines(content, line_start, line_end, max_chars)
         if offset < 0:
             return f"[error] read_file offset must be >= 0, got {offset}"
         if offset >= len(content) and offset > 0:
@@ -207,6 +213,52 @@ class GitLabRepoReader:
             for c in commits
         ]
         return _truncate("\n".join(lines), max_chars)
+
+
+def _render_lines(
+    content: str,
+    line_start: int,
+    line_end: int | None,
+    max_chars: int,
+) -> str:
+    """按行号区间渲染文件内容，每行前缀真实行号（``n: content``）。
+
+    行号是 new-file 的 1 起行号，与 diff 行号同坐标系，模型读到的内容可以
+    直接对齐 diff hunk 并在 finding 里引用准确的 ``line_number``。区间超出
+    ``max_chars`` 时按行截断并给出下一页 ``line_start``。
+    """
+
+    if line_start < 1:
+        return f"[error] read_file line_start must be >= 1, got {line_start}"
+    if line_end is not None and line_end < line_start:
+        return (
+            f"[error] read_file line_end {line_end} must be >= line_start {line_start}"
+        )
+    lines = content.splitlines()
+    total = len(lines)
+    if line_start > total:
+        return (
+            f"[error] read_file line_start {line_start} is beyond end of file "
+            f"(file has {total} lines)"
+        )
+    end = total if line_end is None else min(line_end, total)
+    selected: list[str] = []
+    returned_end = line_start - 1
+    for line_no in range(line_start, end + 1):
+        piece = f"{line_no}: {lines[line_no - 1]}"
+        candidate = piece if not selected else "\n".join([*selected, piece])
+        if len(candidate) > max_chars and selected:
+            break
+        selected.append(piece)
+        returned_end = line_no
+    block = "\n".join(selected)
+    if returned_end < end:
+        block += (
+            f"\n... (truncated, file has {total} lines; returned lines "
+            f"{line_start}-{returned_end}; use line_start={returned_end + 1} "
+            f"to read the next page)"
+        )
+    return block
 
 
 def _iter_blame_lines(blame_range: dict[str, Any], start: int) -> tuple[list[tuple[int, str]], int]:
