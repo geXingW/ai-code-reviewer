@@ -201,6 +201,17 @@ class Settings(BaseSettings):
             ),
         ),
     ] = 6
+    agent_stall_turns: Annotated[
+        int,
+        Field(
+            ge=0,
+            description=(
+                "llm-agent 循环熔断阈值：连续 N 轮工具调用全部命中去重缓存"
+                "（原地打转）时注入纠正提示；达到 2N 轮时强制收口（trace 里"
+                " closeout_reason=stalled_loop）。0 表示禁用熔断。默认 3。"
+            ),
+        ),
+    ] = 3
     # feat/agent-trace：执行轨迹观测（stdout 结构化日志 + agent_trace_events 落库）。
     agent_trace_enabled: Annotated[
         bool,

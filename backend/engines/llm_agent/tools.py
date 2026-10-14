@@ -77,6 +77,18 @@ def _as_int(value: object, default: int, *, minimum: int, maximum: int) -> int:
     return max(minimum, min(parsed, maximum))
 
 
+def _optional_int(value: object, *, minimum: int, maximum: int) -> int | None:
+    """解析可选整型参数；缺省/空串/非法值返回 None。"""
+
+    if value is None or isinstance(value, bool) or str(value).strip() == "":
+        return None
+    try:
+        parsed = int(str(value))
+    except ValueError:
+        return None
+    return max(minimum, min(parsed, maximum))
+
+
 async def _read_file(reader: RepoReader, args: dict[str, Any]) -> str:
     file_path = str(args.get("file_path") or "")
     if not file_path.strip():
@@ -84,7 +96,15 @@ async def _read_file(reader: RepoReader, args: dict[str, Any]) -> str:
     ref = str(args.get("ref") or "")
     max_chars = _as_int(args.get("max_chars"), 8000, minimum=200, maximum=50000)
     offset = _as_int(args.get("offset"), 0, minimum=0, maximum=10_000_000)
-    return await reader.read_file(file_path, ref, max_chars=max_chars, offset=offset)
+    line_start = _optional_int(args.get("line_start"), minimum=1, maximum=10_000_000)
+    line_end = _optional_int(args.get("line_end"), minimum=1, maximum=10_000_000)
+    # line 参数仅在显式给出时透传：兼容未声明这两个 keyword 的 RepoReader
+    # 实现（本地 clone reader / 测试替身），避免 TypeError 被归一化为错误观察。
+    kwargs: dict[str, Any] = {"max_chars": max_chars, "offset": offset}
+    if line_start is not None or line_end is not None:
+        kwargs["line_start"] = line_start
+        kwargs["line_end"] = line_end
+    return await reader.read_file(file_path, ref, **kwargs)
 
 
 async def _list_tree(reader: RepoReader, args: dict[str, Any]) -> str:
@@ -135,11 +155,15 @@ def build_default_tools(reader: RepoReader) -> list[AgentTool]:
             reader=reader,
             name="read_file",
             description=(
-                "Read the content of one file from the repository (paginated). "
-                "Use it to inspect callers/callees of changed functions and to "
-                "verify assumptions before reporting a finding. When the result "
-                "is truncated, it tells you the returned char range — pass "
-                "offset (NOT a larger max_chars) to read the next page."
+                "Read the content of one file from the repository. Two paging "
+                "modes: (1) line-based — pass line_start/line_end (1-based, the "
+                "same NEW-file line numbers you see in the diff) and every "
+                "returned line is prefixed with its number; use this to inspect "
+                "the region around a diff hunk and to quote exact line numbers "
+                "in findings. (2) char-based — pass offset to page through a "
+                "huge file when you do not know line numbers. Use it to inspect "
+                "callers/callees of changed functions and to verify assumptions "
+                "before reporting a finding."
             ),
             parameters=_schema(
                 {
@@ -148,6 +172,21 @@ def build_default_tools(reader: RepoReader) -> list[AgentTool]:
                         "description": "Repository-relative file path, e.g. src/app.py.",
                     },
                     "ref": {"type": "string", "description": _REF_DESCRIPTION},
+                    "line_start": {
+                        "type": "integer",
+                        "description": (
+                            "1-based line number to start reading from (new-file "
+                            "line numbers, matching diff line numbers). Every "
+                            "returned line is prefixed with its number. Preferred "
+                            "way to read a specific region."
+                        ),
+                    },
+                    "line_end": {
+                        "type": "integer",
+                        "description": (
+                            "1-based inclusive end line (defaults to end of file)."
+                        ),
+                    },
                     "max_chars": {
                         "type": "integer",
                         "description": "Max characters per page (default 8000).",
@@ -155,9 +194,10 @@ def build_default_tools(reader: RepoReader) -> list[AgentTool]:
                     "offset": {
                         "type": "integer",
                         "description": (
-                            "Char offset to start reading from (default 0). Use the "
-                            "next-page offset from a truncated result to page "
-                            "through large files."
+                            "Char offset to start reading from (default 0). Only "
+                            "for char-wise paging of huge files; ignored when "
+                            "line_start is given. Use the next-page offset from a "
+                            "truncated result to page through large files."
                         ),
                     },
                 },

@@ -57,6 +57,10 @@ root `.env.example` for the full list):
   observation budget for one agent session.
 - `AGENT_TOOL_TIMEOUT_SECONDS` (default `15`) — per-tool execution
   timeout.
+- `AGENT_STALL_TURNS` (default `3`) — loop-breaker threshold for
+  `llm-agent`: when N consecutive turns issue only duplicate tool calls
+  (dedup-cache hits), a corrective notice is injected; at `2N` turns the
+  run is force-closed (`closeout_reason=stalled_loop`). `0` disables it.
 
 ## Architecture docs
 

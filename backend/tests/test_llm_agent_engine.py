@@ -65,11 +65,34 @@ class _FakeRepoReader:
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     async def read_file(
-        self, file_path: str, ref: str, *, max_chars: int = 8000, offset: int = 0
+        self,
+        file_path: str,
+        ref: str,
+        *,
+        max_chars: int = 8000,
+        offset: int = 0,
+        line_start: int | None = None,
+        line_end: int | None = None,
     ) -> str:
-        self.calls.append(("read_file", {"file_path": file_path, "ref": ref}))
+        self.calls.append(
+            (
+                "read_file",
+                {
+                    "file_path": file_path,
+                    "ref": ref,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                },
+            )
+        )
         if file_path not in self.files:
             return f"[error] read_file({file_path}) failed: not found"
+        if line_start is not None:
+            lines = self.files[file_path].splitlines()
+            end = len(lines) if line_end is None else min(line_end, len(lines))
+            return "\n".join(
+                f"{n}: {lines[n - 1]}" for n in range(line_start, end + 1)
+            )
         content = self.files[file_path]
         if offset >= len(content) and offset > 0:
             return (
@@ -234,7 +257,10 @@ async def test_agent_investigates_then_outputs_findings() -> None:
     assert findings[0].file_path == "app/auth.py"
     assert findings[0].line_number == 11
     # 工具确实被执行过（未传 ref 时空串，由 reader 回退默认 ref）。
-    assert ("read_file", {"file_path": "app/auth.py", "ref": ""}) in reader.calls
+    assert (
+        "read_file",
+        {"file_path": "app/auth.py", "ref": "", "line_start": None, "line_end": None},
+    ) in reader.calls
     second_turn_messages = client.turns[1]["messages"]
     assert any(m.role == "tool" for m in second_turn_messages)
     tool_msg = next(m for m in second_turn_messages if m.role == "tool")
@@ -624,6 +650,88 @@ async def test_agent_trace_records_budget_exhausted_status(
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_warns_on_stalled_duplicate_turns() -> None:
+    """连续 N 轮工具调用全部命中缓存 -> 最后一条观察注入打转纠正提示。"""
+
+    reader = _FakeRepoReader(files={"app/auth.py": "def login(): ...\n"})
+    duplicated = _tool_call_response("read_file", '{"file_path": "app/auth.py"}')
+    client = _FakeAgentClient(
+        responses=[
+            duplicated,  # turn 0: 首次执行（非 cached）
+            duplicated,  # turn 1: cached，计数 1
+            duplicated,  # turn 2: cached，计数 2 == 阈值 -> 注入提示
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings(agent_stall_turns=2))
+
+    findings = await engine.review(_ctx(repo_reader=reader))
+
+    assert findings == []
+    # 最后一轮请求的 messages 里，最后一条 tool 观察带有打转提示。
+    final_messages = client.turns[-1]["messages"]
+    tool_msgs = [m for m in final_messages if m.role == "tool"]
+    assert tool_msgs
+    assert "going in circles" in tool_msgs[-1].content
+    assert "last 2 turns" in tool_msgs[-1].content
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_stall_forces_closeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """打转持续到 2N 轮 -> 强制收口，closeout_reason=stalled_loop。"""
+
+    events = _install_trace_recorder(monkeypatch)
+    reader = _FakeRepoReader(files={"app/auth.py": "def login(): ...\n"})
+    duplicated = _tool_call_response("read_file", '{"file_path": "app/auth.py"}')
+    client = _FakeAgentClient(
+        responses=[
+            duplicated,  # turn 0: 首次执行
+            duplicated,  # turn 1: cached，计数 1 == 阈值 -> 注入提示
+            duplicated,  # turn 2: cached，计数 2 >= 2*阈值 -> 强制收口
+            _final_response(),  # 收口请求（无 tools）
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings(agent_stall_turns=1))
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    finished = _events_of(events, "run_finished")[0]["payload"]
+    assert finished["closeout_reason"] == "stalled_loop"
+    assert finished["turns_used"] == 3
+    # 收口请求不再广告工具。
+    assert client.turns[-1]["tools"] == []
+    # 打转提示在收口前出现过一次。
+    tool_events = _events_of(events, "tool_executed")
+    assert [event["status"] for event in tool_events] == ["ok", "cached", "cached"]
+
+
+@pytest.mark.asyncio
+async def test_read_file_line_args_are_forwarded_to_reader() -> None:
+    """read_file 的 line_start/line_end 参数透传给 RepoReader 实现。"""
+
+    reader = _FakeRepoReader(
+        files={"app/auth.py": "\n".join(f"line-{n}" for n in range(1, 21))}
+    )
+    client = _FakeAgentClient(
+        responses=[
+            _tool_call_response(
+                "read_file",
+                '{"file_path": "app/auth.py", "line_start": 5, "line_end": 7}',
+            ),
+            _final_response(),
+        ]
+    )
+    engine = LLMAgentEngine(client=client, settings=_settings())
+
+    await engine.review(_ctx(repo_reader=reader))
+
+    assert reader.calls[0][1]["line_start"] == 5
+    assert reader.calls[0][1]["line_end"] == 7
+
+
+@pytest.mark.asyncio
 async def test_agent_trace_records_timeout_and_error_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -772,7 +880,20 @@ async def test_agent_duplicate_tool_call_returns_cached_observation() -> None:
     await engine.review(_ctx(repo_reader=reader))
 
     # 真实工具只执行一次。
-    assert reader.calls.count(("read_file", {"file_path": "app/auth.py", "ref": ""})) == 1
+    assert (
+        reader.calls.count(
+            (
+                "read_file",
+                {
+                    "file_path": "app/auth.py",
+                    "ref": "",
+                    "line_start": None,
+                    "line_end": None,
+                },
+            )
+        )
+        == 1
+    )
     # 第二次调用拿到缓存观察（含 dedup 标记）：取第三轮请求里最后一个 tool 消息
     # （turns[N] 记录的是完整消息列表，历史观察会在后续轮次重复出现）。
     turn2_tool_msgs = [m for m in client.turns[2]["messages"] if m.role == "tool"]

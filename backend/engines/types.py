@@ -151,8 +151,14 @@ class RepoReader(Protocol):
         *,
         max_chars: int = 8000,
         offset: int = 0,
+        line_start: int | None = None,
+        line_end: int | None = None,
     ) -> str:
-        """Return file content at ``ref`` starting from ``offset``, or an error string."""
+        """Return file content at ``ref``, or an error string.
+
+        两种分页模式：``line_start``/``line_end``（1 起行号，输出每行前缀
+        行号，与 diff 行号同坐标系）优先；否则按 ``offset`` 字符偏移分页。
+        """
         ...
 
     async def list_tree(
