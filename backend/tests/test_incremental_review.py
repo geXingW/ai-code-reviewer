@@ -178,12 +178,13 @@ def _event(
 
 def _finding(
     *, file_path: str = "app.py", line: int = 2, rule_id: str = "rule-a",
+    severity: str = "WARNING",
 ) -> EngineFinding:
     return EngineFinding(
         file_path=file_path,
         line_number=line,
         rule_id=rule_id,
-        severity="WARNING",
+        severity=severity,
         title="stub finding",
         description="d",
         confidence=0.5,
@@ -422,6 +423,51 @@ async def test_same_head_ci_retry_reuses_previous_review(
     assert gitlab.create_merge_request_note.await_count == 2
     reuse_body = gitlab.create_merge_request_note.await_args_list[1].kwargs["body"]
     assert "复用上一次审查结果" in reuse_body
+
+
+@pytest.mark.asyncio
+async def test_reuse_ignores_resolved_findings_for_block_status(
+    session_factory_fixture: async_sessionmaker[AsyncSession],
+) -> None:
+    """同 head 重跑时，父审查里已 resolve 的 finding 不再计入阻断。
+
+    现实触发链路：人工 resolve finding → commit status 转 success → resolve
+    discussion 引发的 MR update webhook 走 reuse 路径 → 若复用时不剔除已
+    resolve 的行，会把 status 又覆盖回 failed，MR 永久卡在阻断。
+    """
+
+    factory = session_factory_fixture
+    await _seed_project(factory)
+
+    gitlab = _gitlab_mock()
+    engine = _StubEngine([[_finding(severity="BLOCKER")]])
+    orch = ReviewOrchestrator(
+        gitlab_client=gitlab,
+        engine_registry=_registry(engine),
+        default_engine="stub-engine",
+        session_factory=factory,
+    )
+    first = await orch.review_merge_request(_event(commit_sha="head-a"))
+    assert first.has_blocker is True
+
+    # 人工 resolve 全部 findings（模拟管理台标记已解决）。
+    findings = await _list_findings(factory)
+    assert findings
+    async with factory() as session:
+        result = await session.execute(select(FindingRow))
+        for row in result.scalars():
+            row.status = "resolved"
+        await session.commit()
+
+    second = await orch.review_merge_request(_event(commit_sha="head-a"))
+
+    # 仍走 reuse（engine 只调一次），但 resolved findings 不再阻断。
+    assert engine.call_count == 1
+    assert second.review_id == first.review_id
+    assert second.has_blocker is False
+    assert second.blocker_count == 0
+    last_status = gitlab.set_commit_status.await_args_list[-1].kwargs
+    assert last_status["state"] == "success"
 
 
 @pytest.mark.asyncio
