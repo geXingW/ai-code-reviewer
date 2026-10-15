@@ -48,6 +48,7 @@ from repositories import (
     ProjectNegativePromptRepository,
     ProjectNotificationChannelRepository,
     ProjectRepository,
+    ProviderRepository,
     ReviewRepository,
     RoleRepository,
     RuleRepository,
@@ -1758,26 +1759,28 @@ def _format_negative_examples_by_rule(examples: Sequence[NegativeExample]) -> st
 async def _pick_generate_provider(
     db: AsyncSession,
     provider_id: UUID | None,
+    project: Project,
 ) -> Provider:
-    """选择用于生成负样本提示词的 provider。
+    """选择用于生成负样本提示词的 provider，取法与评审链路一致
+    （见 services/review_orchestration/resolution/provider.py）。
 
     - 指定 ``provider_id``：取该 provider，不存在则 404；
-    - 未指定：按 ``created_at ASC`` 取第一个 enabled 的 provider，没有则 400。
+    - 未指定：取 ``project.provider_id`` 对应的 provider，
+      未配置、不存在或已禁用则 400。
     """
 
     if provider_id is not None:
         return await _get_or_404(db, Provider, provider_id, "Provider")
-    stmt = (
-        select(Provider)
-        .where(Provider.enabled.is_(True))
-        .order_by(Provider.created_at.asc())
-        .limit(1)
-    )
-    provider = (await db.execute(stmt)).scalar_one_or_none()
-    if provider is None:
+    if project.provider_id is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="无可用的 LLM Provider",
+            detail="该项目未配置 LLM Provider，请先在项目设置中选择供应商",
+        )
+    provider = await ProviderRepository(db).get(project.provider_id)
+    if provider is None or not provider.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该项目配置的 LLM Provider 不存在或已禁用",
         )
     return provider
 
@@ -1801,7 +1804,7 @@ async def generate_project_negative_prompt(
 
     from llm import ChatMessage, LLMError, build_provider
 
-    await _get_or_404(db, Project, project_id, "Project")
+    project = await _get_or_404(db, Project, project_id, "Project")
 
     examples = await NegativeExampleRepository(db).list_all_approved(
         limit=100,
@@ -1812,7 +1815,7 @@ async def generate_project_negative_prompt(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="该项目负样本库为空，无法生成",
         )
-    provider = await _pick_generate_provider(db, payload.provider_id if payload else None)
+    provider = await _pick_generate_provider(db, payload.provider_id if payload else None, project)
 
     user_prompt = (
         "以下是已确认的误报样本列表（按规则分组）：\n\n"

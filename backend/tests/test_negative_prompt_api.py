@@ -232,7 +232,7 @@ async def test_generate_empty_project_library(
 async def test_generate_no_provider(
     db_client: AsyncClient, db_session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
-    """有负样本但无启用 provider 时返回 400。"""
+    """有负样本但项目未配置 provider 时返回 400。"""
 
     project = await _create_project(db_session_factory, "proj-neg-no-provider")
     async with db_session_factory() as session:
@@ -252,7 +252,100 @@ async def test_generate_no_provider(
         f"/api/projects/{project.id}/negative-prompt/generate", json={}, headers=headers
     )
     assert response.status_code == 400
-    assert "无可用的 LLM Provider" in response.json()["detail"]
+    assert "该项目未配置 LLM Provider" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_generate_uses_project_provider_not_first(
+    db_client: AsyncClient, db_session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """未显式指定 provider 时，使用项目配置的 provider（而非全局第一个）。"""
+
+    project = await _create_project(db_session_factory, "proj-neg-gen-own-provider")
+    async with db_session_factory() as session:
+        first = Provider(
+            name="test-provider-neg-first",
+            protocol="openai_compatible",
+            base_url="https://example.com",
+            api_key="sk-first",
+            model="gpt-first",
+            enabled=True,
+        )
+        own = Provider(
+            name="test-provider-neg-own",
+            protocol="openai_compatible",
+            base_url="https://example.com",
+            api_key="sk-own",
+            model="gpt-own",
+            enabled=True,
+        )
+        session.add(first)
+        session.add(own)
+        await session.flush()
+        db_project = await session.get(Project, project.id)
+        db_project.provider_id = own.id
+        session.add(
+            NegativeExample(
+                rule_id="sql-injection",
+                project_id=project.id,
+                code_snippet="cursor.execute(f'SELECT FROM a')",
+                explanation="A 项目的样本",
+                approved_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    fake_response: Any = type("R", (), {"content": "## 规则：sql-injection"})()
+    with patch("llm.build_provider") as build:
+        build.return_value.chat = AsyncMock(return_value=fake_response)
+        headers = await _login(db_client)
+        response = await db_client.post(
+            f"/api/projects/{project.id}/negative-prompt/generate", json={}, headers=headers
+        )
+        # build_provider 收到的是项目配置的 provider，而非 created_at 更早的第一个。
+        assert build.call_args is not None
+        assert build.call_args.args[0].id == own.id
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_generate_disabled_provider_rejected(
+    db_client: AsyncClient, db_session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """项目配置的 provider 已禁用时返回 400。"""
+
+    project = await _create_project(db_session_factory, "proj-neg-gen-disabled")
+    async with db_session_factory() as session:
+        provider = Provider(
+            name="test-provider-neg-disabled",
+            protocol="openai_compatible",
+            base_url="https://example.com",
+            api_key="sk-test",
+            model="gpt-test",
+            enabled=False,
+        )
+        session.add(provider)
+        await session.flush()
+        db_project = await session.get(Project, project.id)
+        db_project.provider_id = provider.id
+        session.add(
+            NegativeExample(
+                rule_id="sql-injection",
+                project_id=project.id,
+                code_snippet="cursor.execute(f'SELECT FROM a')",
+                explanation="样本",
+                approved_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    headers = await _login(db_client)
+    response = await db_client.post(
+        f"/api/projects/{project.id}/negative-prompt/generate", json={}, headers=headers
+    )
+    assert response.status_code == 400
+    assert "不存在或已禁用" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -264,16 +357,18 @@ async def test_generate_success_filters_by_project(
     project_a = await _create_project(db_session_factory, "proj-neg-gen-a")
     project_b = await _create_project(db_session_factory, "proj-neg-gen-b")
     async with db_session_factory() as session:
-        session.add(
-            Provider(
-                name="test-provider-neg",
-                protocol="openai_compatible",
-                base_url="https://example.com",
-                api_key="sk-test",
-                model="gpt-test",
-                enabled=True,
-            )
+        provider = Provider(
+            name="test-provider-neg",
+            protocol="openai_compatible",
+            base_url="https://example.com",
+            api_key="sk-test",
+            model="gpt-test",
+            enabled=True,
         )
+        session.add(provider)
+        await session.flush()
+        db_project = await session.get(Project, project_a.id)
+        db_project.provider_id = provider.id
         session.add(
             NegativeExample(
                 rule_id="sql-injection",
@@ -337,16 +432,18 @@ async def test_generate_failure_maps_to_500(
 
     project = await _create_project(db_session_factory, "proj-neg-fail")
     async with db_session_factory() as session:
-        session.add(
-            Provider(
-                name="test-provider-neg2",
-                protocol="openai_compatible",
-                base_url="https://example.com",
-                api_key="sk-test",
-                model="gpt-test",
-                enabled=True,
-            )
+        provider = Provider(
+            name="test-provider-neg2",
+            protocol="openai_compatible",
+            base_url="https://example.com",
+            api_key="sk-test",
+            model="gpt-test",
+            enabled=True,
         )
+        session.add(provider)
+        await session.flush()
+        db_project = await session.get(Project, project.id)
+        db_project.provider_id = provider.id
         session.add(
             NegativeExample(
                 rule_id="null-check",
