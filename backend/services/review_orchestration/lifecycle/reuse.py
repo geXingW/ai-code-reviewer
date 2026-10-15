@@ -62,7 +62,10 @@ async def _handle_reuse(
             if parent is None:
                 return None
             finding_repo = FindingRepository(session)
-            parent_findings_rows = await finding_repo.list_by_review(parent_id)
+            rows = await finding_repo.list_by_review(parent_id)
+            # 已 resolve 的 finding 不再计入阻断（复用重发与人工 resolve 存在竞态：
+            # resolve 触发的 MR update webhook 会走 reuse 路径重算 has_blocker）。
+            parent_findings_rows = [row for row in rows if row.status != "resolved"]
     except SQLAlchemyError:
         logger.exception(
             "reuse lookup failed; will fall back to full review",
