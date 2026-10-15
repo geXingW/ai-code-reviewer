@@ -25,7 +25,7 @@ class ProjectNegativePromptGenerateRequest(BaseModel):
 
     provider_id: UUID | None = Field(
         None,
-        description="指定 provider，不传则用第一个启用的 provider",
+        description="指定 provider，不传则使用该项目配置的 provider",
     )
 
 
