@@ -2343,9 +2343,12 @@ async def assign_user_projects(
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Clear existing assignments
+    # Clear existing assignments; flush first so the DELETEs execute before
+    # the new INSERTs (same-flush order is INSERT before DELETE, which would
+    # violate the uniq_user_project constraint when a project is re-assigned)
     for assignment in list(user.project_assignments):
         await db.delete(assignment)
+    await db.flush()
 
     # Create new assignments
     for project_id in payload.project_ids:
@@ -2485,9 +2488,12 @@ async def update_role(role_id: UUID, payload: RoleUpdate, db: DbSession) -> Role
         role.description = update_data["description"]
 
     if "permissions" in update_data:
-        # Replace all permissions
+        # Replace all permissions; flush first so DELETEs execute before the
+        # new INSERTs (same-flush order is INSERT before DELETE, which would
+        # violate the uniq_role_permission constraint for retained permissions)
         for rp in list(role.permissions):
             await db.delete(rp)
+        await db.flush()
         for perm in update_data["permissions"]:
             db.add(RolePermission(role_id=role.id, permission=perm))
 
