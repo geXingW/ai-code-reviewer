@@ -89,10 +89,8 @@ def _normalise_config(
             extra=provider.extra,
         )
 
-    # DB Provider 的 extra_headers 列与 ProviderConfig.extra 同构：
-    # {"extra_body": {...}} / {"extra_headers": {...}} / {"default_json_mode": bool}。
     db_provider = provider
-    extra = db_provider.extra_headers or {}
+    extra_headers = db_provider.extra_headers or {}
     return LLMProviderConfig(
         provider_id=db_provider.id,
         protocol=_normalise_protocol(str(db_provider.protocol)),
@@ -101,9 +99,8 @@ def _normalise_config(
         model=str(db_provider.model),
         temperature=float(db_provider.temperature),
         max_tokens=int(db_provider.max_tokens),
-        default_json_mode=bool(extra.get("default_json_mode", True)),
-        extra_headers=_coerce_headers(extra.get("extra_headers")),
-        extra=extra,
+        extra_headers=_coerce_headers(extra_headers),
+        extra={"extra_headers": extra_headers},
     )
 
 

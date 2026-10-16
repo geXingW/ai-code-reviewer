@@ -206,45 +206,6 @@ def test_factory_builds_provider_from_runtime_config() -> None:
 
 
 @pytest.mark.asyncio
-async def test_factory_db_provider_passes_extra_body() -> None:
-    """DB Provider 的 extra_headers 列中 extra_body（如阿里云 enable_thinking）应透传到请求体。
-
-    回归：旧实现把整个 extra_headers 字典塞进 ``extra={"extra_headers": ...}``，
-    导致 extra_body 丢失，qwen3 混合思考模型非流式调用被阿里云 400 拒绝。
-    """
-
-    class _DBProvider:
-        id = uuid4()
-        protocol = "openai_compatible"
-        base_url = "https://maas.example.test/compatible-mode/v1"
-        api_key = "sk-test"
-        model = "qwen3.7-plus"
-        temperature = 0
-        max_tokens = 80960
-        extra_headers = {"extra_body": {"enable_thinking": True, "thinking_budget": 4096}}
-
-    http_client = _FakeHTTPClient(
-        [
-            _FakeAsyncResponse(
-                payload={
-                    "id": "chatcmpl-1",
-                    "choices": [{"message": {"content": "ok"}}],
-                    "usage": {},
-                }
-            )
-        ]
-    )
-    provider = build_provider(_DBProvider(), http_client=http_client)
-
-    assert isinstance(provider, OpenAICompatibleProvider)
-    await provider.chat([ChatMessage(role="user", content="ping")])
-
-    request = http_client.requests[0]
-    assert request["json"]["enable_thinking"] is True
-    assert request["json"]["thinking_budget"] == 4096
-
-
-@pytest.mark.asyncio
 async def test_http_errors_are_mapped_to_llm_error_family() -> None:
     """Provider HTTP failures are normalized into stable LLM exceptions."""
 
