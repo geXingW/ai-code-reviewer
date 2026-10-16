@@ -302,9 +302,13 @@ async def test_generate_uses_project_provider_not_first(
         response = await db_client.post(
             f"/api/projects/{project.id}/negative-prompt/generate", json={}, headers=headers
         )
-        # build_provider 收到的是项目配置的 provider，而非 created_at 更早的第一个。
+        # build_provider 收到的是项目配置的 provider（而非 created_at 更早的第一个），
+        # 且生成调用关闭 JSON 模式与思考模式。
         assert build.call_args is not None
-        assert build.call_args.args[0].id == own.id
+        config = build.call_args.args[0]
+        assert config.provider_id == own.id
+        assert config.extra["default_json_mode"] is False
+        assert config.extra["extra_body"] == {"enable_thinking": False}
 
     assert response.status_code == 200
 

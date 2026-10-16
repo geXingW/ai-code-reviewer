@@ -26,6 +26,7 @@ from core.block_policy import (
 )
 from core.config import get_settings
 from core.db import Base, DbSession
+from engines import ProviderConfig
 from models.engine import Engine
 from models.finding import Finding
 from models.negative_example import NegativeExample
@@ -1823,7 +1824,23 @@ async def generate_project_negative_prompt(
         "请根据以上样本生成负样本提示词。"
     )
     try:
-        llm_provider = build_provider(provider)
+        # 负样本提示词是纯文本输出：不启用 JSON 模式；走非流式调用，
+        # 显式关闭思考模式（qwen3 混合思考模型非流式默认思考会被网关 400 拒绝）。
+        llm_provider = build_provider(
+            ProviderConfig(
+                provider_id=provider.id,
+                provider_type=provider.protocol,
+                base_url=provider.base_url,
+                model=provider.model,
+                api_key=provider.api_key,
+                temperature=provider.temperature,
+                max_tokens=provider.max_tokens,
+                extra={
+                    "default_json_mode": False,
+                    "extra_body": {"enable_thinking": False},
+                },
+            )
+        )
         response = await llm_provider.chat(
             [
                 ChatMessage(role="system", content=_NEGATIVE_PROMPT_GENERATE_SYSTEM_PROMPT),
