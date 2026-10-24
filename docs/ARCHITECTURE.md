@@ -329,11 +329,109 @@ stage('AI Code Review') {
 | 阻断默认 | master/release → BLOCKER, 其他 NONE | 渐进引入，让团队先用起来 |
 | 评审引擎 | 抽象 + 多实现（`llm-direct` 纯 diff 单轮 / `llm-agent` 多轮工具调用，可调查提交影响范围） | 不被 LLM API 涨价 / 上游 CLI 改接口卡脖子 |
 
+## 十、代码分层与模块边界
+
+> 本节是「代码往哪里放」的唯一约定。新增功能先在这里找到自己的层，再动手。
+
+### 10.1 目录地图（后端）
+
+```
+backend/
+├── main.py                 应用工厂（create_app）+ 路由装配
+├── app.py / __main__.py    启动脚本（加载 .env + uvicorn）
+├── api/                    HTTP 层：只做鉴权、校验、序列化、错误映射
+│   ├── admin/              管理后台（按域拆包，见 10.3）
+│   ├── reviews.py          Jenkins 同步审查入口
+│   ├── gitlab_webhook.py   Webhook 接收与事件归一化
+│   ├── stats.py            统计聚合
+│   ├── engines.py          运行时引擎信息 / 健康检查
+│   └── health.py           健康探针
+├── services/               应用层：编排、通知、提示词生成、仓库读取
+│   ├── review_orchestration/  审查编排（见 docs/orchestration.md）
+│   ├── prompt_generation.py   负样本提示词生成（LLM 调用在此，不在路由里）
+│   ├── notification_service.py 钉钉/Webhook 通知渲染与投递
+│   ├── recent_review_buffer.py 首页"最近审查"的进程内降级缓冲
+│   └── repo_reader.py      GitLab 只读仓库访问器（实现引擎侧 RepoReader 协议）
+├── engines/                引擎层：ReviewContext → findings（无 IO 副作用之外的东西）
+│   ├── base.py             ReviewEngine 抽象
+│   ├── registry.py         进程级单例注册表（引擎必须无状态）
+│   ├── types.py            ReviewContext / Finding / RuleSpec / SkippedFile …
+│   ├── llm_engine/         纯 diff 五段式 Prompt 引擎
+│   └── llm_agent/          多轮工具调用引擎（含轨迹落库）
+├── llm/                    LLM 供应商适配（openai_compatible / anthropic / custom）
+├── repositories/           数据访问层：一模型一仓储，只做查询与写库
+├── models/                 SQLAlchemy ORM（含 Fernet 加密 Mixin）
+├── schemas/                Pydantic v2 出入参（时区处理在 _datetime.py）
+└── core/                   横切能力：config / db / block_policy / summary_builder …
+```
+
+### 10.2 依赖方向（硬约束）
+
+```
+api  →  services  →  repositories  →  models
+ ↓                     ↓
+schemas              engines（只依赖 engines.types，不碰 db / models）
+ ↓
+core（config / db / policy / summary_builder：任何层可用，但不反向依赖上面三层）
+```
+
+四条不可违反的规则：
+
+1. **api 不写业务**。路由里不出现 LLM 调用、跨表事务、复杂计算；这些下沉到 `services/`。历史上
+   `POST /api/projects/{id}/negative-prompt/generate` 曾在路由里直接 `build_provider().chat()`，
+   现已迁到 `services/prompt_generation.py`。
+2. **engine 不碰数据库**。引擎只能读 `ReviewContext`（含 `provider` / `rules` / `history` /
+   `repo_reader`），不得 `from core.db import ...`。之前 `llm_engine` 直连 `global_settings`
+   读全局提示词属于越界，须由编排层解析后注入。
+3. **engine 实例必须无状态**。`EngineRegistry` 持有的是进程级单例，任何 per-review 可变数据
+   都放在 review 局部：要么是方法内局部变量，要么是 `ReviewContext` 上的回填字段
+   （例：`ReviewContext.skipped_files`）。历史事故：去重缓存与 `skipped_files` 挂在实例上，
+   并发 review 会互相污染。
+4. **repository 只做数据访问**，不返回 HTTP 语义、不拼展示文案；`schemas/` 负责序列化，
+   `core/summary_builder.py` 负责展示文案。
+
+### 10.3 管理后台 API 分包
+
+`api/admin.py` 曾是 2500 行单文件（99 个函数 / 55 个路由）。现按资源域拆为包：
+
+| 模块 | 负责 |
+|---|---|
+| `api/admin/deps.py` | Bearer 鉴权、RBAC 权限守卫、JWT 签发 |
+| `api/admin/common.py` | `Page` 响应包装、白名单排序、CRUD 薄封装、错误映射 |
+| `api/admin/auth.py` | `/auth/login`、`/auth/me` |
+| `api/admin/providers.py` | 模型供应商配置 |
+| `api/admin/rules.py` | 规则库 |
+| `api/admin/projects.py` | GitLab 项目 + 通知渠道 + 项目成员映射 |
+| `api/admin/reviews.py` | 审查记录（MR/Push/Commit）、最近审查面板、Agent 轨迹 |
+| `api/admin/findings.py` | 问题列表、误报队列、负样本库、阻断状态重算 |
+| `api/admin/engines.py` | 引擎持久化配置 |
+| `api/admin/prompts.py` | 全局提示词、项目级负样本提示词 |
+| `api/admin/rbac.py` | 用户、项目授权、角色与权限矩阵 |
+
+约定：每个域模块自己声明 `APIRouter(prefix="/api", dependencies=[Depends(_require_admin_auth)])`，
+路由级权限用 `dependencies=[Depends(_require_permission("page:xxx"))]` 显式声明；
+`api/admin/__init__.py` 只做聚合，不写业务。
+
+### 10.4 两条审查管线的现状
+
+| 链路 | 落点 | 形态 |
+|---|---|---|
+| MR（`review_merge_request`） | `services/review_orchestration/orchestrator.py` | 线性编排，含增量合并 / reuse / 生命周期事件 |
+| commit / push | `services/review_orchestration/handlers/base.py` | 模板方法：公共管线在基类，子类只注入 diff 获取与 note 渲染 |
+
+两条链路的**持久化、通知、引擎解析、策略匹配**已经共享同一批函数；剩下的差异（diff 语义、
+汇总评论模板、跳过条件）是真实差异。后续把 MR 也收敛进模板方法骨架（见
+`docs/orchestration.md` §5「演进方向」）。
+
 ## 十一、文档索引
 
 - [setup.md](setup.md) — 部署
 - [gitlab-setup.md](gitlab-setup.md) — GitLab 配置（webhook / token / 项目设置）
 - [jenkins-setup.md](jenkins-setup.md) — Jenkins Pipeline 集成
-- [engine-development.md](engine-development.md) — 如何开发新引擎
+- [engine-development.md](engine-development.md) — 如何开发新引擎（接口契约、注册、测试）
 - [rule-authoring.md](rule-authoring.md) — 规则编写指南
+- [orchestration.md](orchestration.md) — 审查编排链路（阶段、数据结构、错误路径）
+- [storage.md](storage.md) — 数据模型与存储约定
+- [review-status-flow.md](review-status-flow.md) — 审查状态流转
 - [api.md](api.md) — REST API 文档
+- [code-quality-review-2026-10-24.md](code-quality-review-2026-10-24.md) — 代码质量评审与改造进度

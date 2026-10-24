@@ -37,11 +37,36 @@
 
 ### Changed
 
+- **`api/admin.py` 拆分为按域分包**（2506 行 / 99 函数 / 55 路由 → `api/admin/` 下 11 个模块）：
+  `deps`（鉴权 / RBAC）、`common`（`Page` / 排序白名单 / CRUD 薄封装）、`auth`、`providers`、`rules`、
+  `projects`、`reviews`、`findings`、`engines`、`prompts`、`rbac`。每个域模块自持
+  `APIRouter(prefix="/api", dependencies=[Depends(_require_admin_auth)])`，路由级权限仍逐条显式声明；
+  `api/admin/__init__.py` 只做聚合。**66 条路由的路径 + 方法集合与拆分前逐条比对一致**，零行为变更。
+- **落库双函数收敛公共流程**：`_persist_review` / `_persist_commit_style_review` 原为两份 107 行近似实现，
+  现共享 `_write_review`（项目解析 → 行挂载 → 事务 → 错误兜底），公开签名不变，差异仅剩字段映射。
+- **负样本提示词生成下沉到 service 层**：`api/admin/prompts.py` 不再直接 `build_provider().chat()`，
+  改由 `services/prompt_generation.py` 承载提示词模板、样本分组渲染与失败语义
+  （`PromptGenerationError`），路由只做鉴权 / 校验 / HTTP 错误映射。
+- **首页「最近审查」降级缓冲独立成模块**：`api/reviews.py` 内的 `deque` 迁至
+  `services/recent_review_buffer.py`（`record` / `snapshot` / `clear`），消除 `api.admin` 对路由私有符号的跨模块引用；
+  DB 仍是唯一事实源，缓冲仅作查询失败时的降级。
+- **CRUD 辅助函数不再绕过仓储契约**：`_create` / `_delete` / `_get_or_404` 改用 `AsyncSession.add/delete/get`，
+  移除运行时改写 `BaseRepository.model` 的写法；`BaseRepository` 回归"子类声明 model"的契约。
+- `docs/ARCHITECTURE.md` 新增「十、代码分层与模块边界」（目录地图、依赖方向、四条硬约束、admin 分包表、
+  双管线现状）；新增 `docs/orchestration.md`（编排阶段 / 数据结构 / 失败语义 / 演进方向）与
+  `docs/engine-development.md`（引擎开发指南，修复原先指向不存在文件的死链）。
+- 后端测试支持无 Postgres 环境：`requirements-dev.txt` 增加 `aiosqlite`，
+  可用 `DATABASE_URL=sqlite+aiosqlite:///./_pytest.db pytest` 直接跑全量用例。
 - 后端启动依赖新增 `aiomysql` / `pymysql`（可选，仅当 `DATABASE_URL` 指向 MySQL 时生效）。
 - 数据访问统一走 Repository 层，未来注入 mock repository / 切换存储后端只需实现同一接口。
 
 ### Fixed
 
+- **`skipped_files` 跨 review 污染（并发缺陷）**：`LLMDirectEngine` / `LLMAgentEngine` 曾把"被跳过的文件"
+  存在实例属性上，而引擎是进程级单例（`EngineRegistry`）——并发审查会互相清空/串味，与 2026-09 修掉的
+  agent 观察缓存属同类问题。现改为 review 局部通道 `ReviewContext.skipped_files`，引擎实例回归无状态；
+  同时把这一直未被消费的结果接进 MR 汇总评论（新增「跳过文件」分区 + 已审文件数），
+  不再出现"跳过文件却显示全部审查通过"的误导。
 - **建库脚本 MySQL 语法错误**：`scripts/export_schema_sql.py` 编译 DDL 时未传目标方言，SQLAlchemy 退回默认方言渲染——`global_settings.key`（MySQL 保留字）未加反引号导致 `schema-mysql.sql` 执行报 `You have an error in your SQL syntax`，`BOOLEAN DEFAULT x NOT NULL` 属性顺序也不合 MySQL 语法，PostgreSQL 文件被渲染成 `DATETIME` / `CHAR(32)` 等非法类型。现显式按目标方言编译（MySQL：`` `key` ``、`BOOL NOT NULL DEFAULT x`；PostgreSQL：原生 `UUID` / `TIMESTAMP WITH TIME ZONE`），两份 `backend/sql/schema-*.sql` 已重新生成，并新增 `tests/test_schema_export.py` 回归测试。
 - **供应商编辑误覆盖 API Key**：编辑供应商时不再反显脱敏值 `****`，改为留空则不修改，与项目编辑中 GitLab Access Token / Webhook Secret 的行为保持一致；此前保存未编辑的密钥会被脱敏占位符覆盖，导致供应商鉴权失效。
 
