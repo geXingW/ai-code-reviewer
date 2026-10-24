@@ -1,8 +1,17 @@
-"""Review persistence: 落库 reviews / review_findings 与增量 finding 合并。
+"""Review persistence: 落库 ``reviews`` / ``review_findings`` 与增量 finding 合并。
 
-MR 生命周期动作（close / merge / reopen）已迁往 :mod:`lifecycle`（PR3）。
-行构造 / flush / mark_resolved / commit 已下沉
-:meth:`ReviewRepository.create_review_with_findings`（PR4）。
+两条审查链路（MR / push+commit）的落库语义完全一致：
+
+* **best-effort** —— ``session_factory`` 为 None（MVP 兼容路径）直接跳过；
+  Project 未在管理后台注册则记 warning 跳过；事务失败 rollback + warning，
+  不影响 GitLab 反馈与 API 响应。
+* **一次事务** —— 行构造 / flush / mark_resolved / commit 全部下沉到
+  :meth:`ReviewRepository.create_review_with_findings`。
+
+差异只有字段映射（``mr_iid`` / ``review_kind`` / ``base_sha``），因此公共流程
+收敛在 :func:`_write_review`，两个公开函数只负责构造 ``ReviewRow``。
+
+历史：MR 生命周期动作（close / merge / reopen）在 :mod:`lifecycle`。
 """
 
 from __future__ import annotations
@@ -33,6 +42,75 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _align_comment_ids(
+    comment_ids: Sequence[str | None] | None,
+    expected: int,
+    *,
+    message: str,
+    extra: dict[str, object],
+) -> list[str | None]:
+    """把行级评论 id 对齐到 ``findings`` 长度。
+
+    长度不一致属于上游 bug（理论不会发生），此时**丢弃全部 id** 而不是让
+    ``zip`` 静默截断——错配的 discussion id 会在误报闭环里 resolve 掉别人的评论。
+    """
+
+    if comment_ids is None:
+        return [None] * expected
+    aligned = list(comment_ids)
+    if len(aligned) != expected:
+        logger.warning(message, extra={**extra, "expected": expected, "got": len(aligned)})
+        return [None] * expected
+    return aligned
+
+
+async def _write_review(
+    *,
+    gitlab_project_id: int,
+    review_row: ReviewRow,
+    findings: Sequence[Finding],
+    comment_ids: Sequence[str | None] | None,
+    stale_finding_ids: Sequence[UUID],
+    session_factory: SessionFactory | None,
+    skip_log_message: str,
+    failure_log_message: str,
+    failure_extra: dict[str, object],
+) -> None:
+    """把一条 review 及其 findings 写入数据库（best-effort，异常不外抛）。"""
+
+    if session_factory is None:
+        return
+    ids = _align_comment_ids(
+        comment_ids,
+        len(findings),
+        message="comment ids length mismatch; discarding ids to avoid misalignment",
+        extra={"review_id": str(review_row.id)},
+    )
+    try:
+        async with session_factory() as session:
+            project = await ProjectRepository(session).get_by_gitlab_project_id(
+                str(gitlab_project_id)
+            )
+            if project is None:
+                logger.warning(
+                    skip_log_message,
+                    extra={
+                        "gitlab_project_id": gitlab_project_id,
+                        "review_id": str(review_row.id),
+                    },
+                )
+                return
+            review_row.project_id = project.id
+            await ReviewRepository(session).create_review_with_findings(
+                review=review_row,
+                findings=list(zip(findings, ids, strict=True)),
+                stale_finding_ids=list(stale_finding_ids),
+                resolved_in_review_id=review_row.id,
+            )
+    except SQLAlchemyError:
+        logger.exception(failure_log_message, extra=failure_extra)
+
+
 async def _persist_review(
     *,
     event: GitLabMergeRequestEvent,
@@ -48,17 +126,14 @@ async def _persist_review(
     discussion_ids: Sequence[str | None] | None,
     session_factory: SessionFactory | None,
 ) -> None:
-    """Best-effort 落库：写入 ``reviews`` + ``review_findings`` 两张表。
+    """Best-effort 落库 MR 审查：写入 ``reviews`` + ``review_findings`` 两张表。
 
     - ``session_factory`` 为 None：跳过（MVP 兼容路径）。
     - Project 不存在（GitLab 项目未在管理后台注册）：跳过并记 warning。
     - 事务失败：rollback + 记 warning，不影响 GitLab 反馈与 API 响应。
 
-    行构造 / flush / mark_resolved / commit 已下沉
-    :meth:`ReviewRepository.create_review_with_findings`；本函数只保留编排语义
-    （Project 查询、review 行构造、discussion_ids 对齐校验）与异常兜底。
-
     增量语义（feat/rescan-changed-files）：
+
       - ``findings`` = 本轮 engine 输出。改动文件全量重审，全部当作新增
         行入库，``first_seen_review_id=review_id``。
       - ``merge.stale_findings_to_resolve`` 通过 ``mark_resolved`` 批量
@@ -69,77 +144,40 @@ async def _persist_review(
         GitLab note / commit status 描述保持一致（合并后的总数）。
     """
 
-    if session_factory is None:
-        return
     # merge 为 None（engine_error）时 findings 就是"新 finding"的全部（一般是空）。
-    new_findings_to_persist: Sequence[Finding] = findings
     stale_rows: Sequence[FindingRow] = (
         merge.stale_findings_to_resolve if merge is not None else ()
     )
-    # discussion_ids 与 findings 同序对齐；若上游未产出（engine_error），全部
-    # 视为 None，保证 zip 长度对齐。
-    ids_seq: Sequence[str | None] = (
-        list(discussion_ids)
-        if discussion_ids is not None
-        else [None] * len(new_findings_to_persist)
+    review_row = ReviewRow(
+        id=review_id,
+        mr_iid=str(event.mr_iid),
+        source_branch=event.source_branch,
+        target_branch=event.target_branch,
+        commit_sha=event.source_commit_sha,
+        status=status_value,
+        engine_used=engine_used,
+        has_blocker=has_blocker,
+        finding_count=combined_finding_count,
+        duration_ms=duration_ms,
+        base_sha=plan.base_sha,
+        parent_review_id=plan.parent_review_id,
+        review_mode=plan.mode,
     )
-    if len(ids_seq) != len(new_findings_to_persist):
-        # 理论不会发生；发生就丢弃 discussion_ids 而不是让 zip 静默截断。
-        logger.warning(
-            "discussion_ids length mismatch; discarding ids to avoid misalignment",
-            extra={
-                "expected": len(new_findings_to_persist),
-                "got": len(ids_seq),
-            },
-        )
-        ids_seq = [None] * len(new_findings_to_persist)
-    try:
-        async with session_factory() as session:
-            project_repo = ProjectRepository(session)
-            project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
-            if project is None:
-                logger.warning(
-                    "skip review persistence: project not registered",
-                    extra={
-                        "gitlab_project_id": event.project_id,
-                        "review_id": str(review_id),
-                    },
-                )
-                return
-            review_row = ReviewRow(
-                id=review_id,
-                project_id=project.id,
-                mr_iid=str(event.mr_iid),
-                source_branch=event.source_branch,
-                target_branch=event.target_branch,
-                commit_sha=event.source_commit_sha,
-                status=status_value,
-                engine_used=engine_used,
-                has_blocker=has_blocker,
-                finding_count=combined_finding_count,
-                duration_ms=duration_ms,
-                base_sha=plan.base_sha,
-                parent_review_id=plan.parent_review_id,
-                review_mode=plan.mode,
-            )
-            review_repo = ReviewRepository(session)
-            await review_repo.create_review_with_findings(
-                review=review_row,
-                findings=list(
-                    zip(new_findings_to_persist, ids_seq, strict=True),
-                ),
-                stale_finding_ids=[row.id for row in stale_rows],
-                resolved_in_review_id=review_id,
-            )
-    except SQLAlchemyError:
-        logger.exception(
-            "failed to persist review",
-            extra={
-                "gitlab_project_id": event.project_id,
-                "review_id": str(review_id),
-                "mr_iid": event.mr_iid,
-            },
-        )
+    await _write_review(
+        gitlab_project_id=event.project_id,
+        review_row=review_row,
+        findings=findings,
+        comment_ids=discussion_ids,
+        stale_finding_ids=[row.id for row in stale_rows],
+        session_factory=session_factory,
+        skip_log_message="skip review persistence: project not registered",
+        failure_log_message="failed to persist review",
+        failure_extra={
+            "gitlab_project_id": event.project_id,
+            "review_id": str(review_id),
+            "mr_iid": event.mr_iid,
+        },
+    )
 
 
 async def _persist_commit_style_review(
@@ -157,8 +195,8 @@ async def _persist_commit_style_review(
 ) -> None:
     """Best-effort 落库：push / commit 审查写 ``reviews`` + ``review_findings``。
 
-    与 MR 链路的 :func:`_persist_review` 语义对齐（best-effort、事务失败只
-    记 warning 不影响 GitLab 反馈与返回值），差异在字段映射：
+    与 MR 链路（:func:`_persist_review`）共享 :func:`_write_review`，差异在
+    字段映射：
 
     - ``mr_iid`` 落 ``None``（commit 级审查没有 MR 概念，schema 已允许）；
     - ``review_kind`` 落事件链路的来源标记（``'commit'`` / ``'push'``）；
@@ -170,85 +208,39 @@ async def _persist_commit_style_review(
     - ``comment_ids`` 是 GitLab commit 评论 id 列表（与 findings 同序），
       写入 ``gitlab_discussion_id`` 列复用现有语义（行级评论的 GitLab 定位
       标识），供误报闭环 resolve 时使用。
-
-    Args:
-        event: 归一化的 commit / push 事件（duck-typing 取 project_id /
-            branch / commit_sha）。
-        review_id: 本次审查的 review 主键（Python 层生成）。
-        findings: 本轮 engine 输出（engine_error 时为空）。
-        has_blocker: 是否命中阻断策略。
-        status_value: ``done`` / ``engine_error``。
-        duration_ms: 审查耗时。
-        engine_used: 引擎名。
-        base_sha: 本次 diff 起点 SHA。
-        comment_ids: 行级评论 id 列表，与 ``findings`` 同序对齐；长度不齐时
-            丢弃（与 MR 链路 discussion_ids 的兜底策略一致）。
-        session_factory: 为 None 时跳过（MVP 兼容路径）。
     """
 
-    if session_factory is None:
-        return
     review_kind = _commit_style_review_kind(event)
-    ids_seq: Sequence[str | None] = (
-        list(comment_ids)
-        if comment_ids is not None
-        else [None] * len(findings)
+    review_row = ReviewRow(
+        id=review_id,
+        mr_iid=None,
+        source_branch=event.branch,
+        target_branch=event.branch,
+        commit_sha=event.commit_sha,
+        status=status_value,
+        engine_used=engine_used,
+        has_blocker=has_blocker,
+        finding_count=len(findings),
+        duration_ms=duration_ms,
+        base_sha=base_sha,
+        review_mode="full",
+        review_kind=review_kind,
     )
-    if len(ids_seq) != len(findings):
-        logger.warning(
-            "commit-style comment ids length mismatch; discarding ids",
-            extra={
-                "expected": len(findings),
-                "got": len(ids_seq),
-                "review_id": str(review_id),
-            },
-        )
-        ids_seq = [None] * len(findings)
-    try:
-        async with session_factory() as session:
-            project_repo = ProjectRepository(session)
-            project = await project_repo.get_by_gitlab_project_id(str(event.project_id))
-            if project is None:
-                logger.warning(
-                    "skip commit-style review persistence: project not registered",
-                    extra={
-                        "gitlab_project_id": event.project_id,
-                        "review_id": str(review_id),
-                    },
-                )
-                return
-            review_row = ReviewRow(
-                id=review_id,
-                project_id=project.id,
-                mr_iid=None,
-                source_branch=event.branch,
-                target_branch=event.branch,
-                commit_sha=event.commit_sha,
-                status=status_value,
-                engine_used=engine_used,
-                has_blocker=has_blocker,
-                finding_count=len(findings),
-                duration_ms=duration_ms,
-                base_sha=base_sha,
-                review_mode="full",
-                review_kind=review_kind,
-            )
-            review_repo = ReviewRepository(session)
-            await review_repo.create_review_with_findings(
-                review=review_row,
-                findings=list(zip(findings, ids_seq, strict=True)),
-                stale_finding_ids=[],
-                resolved_in_review_id=review_id,
-            )
-    except SQLAlchemyError:
-        logger.exception(
-            "failed to persist commit-style review",
-            extra={
-                "gitlab_project_id": event.project_id,
-                "review_id": str(review_id),
-                "review_kind": review_kind,
-            },
-        )
+    await _write_review(
+        gitlab_project_id=event.project_id,
+        review_row=review_row,
+        findings=findings,
+        comment_ids=comment_ids,
+        stale_finding_ids=(),
+        session_factory=session_factory,
+        skip_log_message="skip commit-style review persistence: project not registered",
+        failure_log_message="failed to persist commit-style review",
+        failure_extra={
+            "gitlab_project_id": event.project_id,
+            "review_id": str(review_id),
+            "review_kind": review_kind,
+        },
+    )
 
 
 def _commit_style_review_kind(event: _CommitLikeEvent) -> str:
@@ -277,7 +269,7 @@ async def _merge_findings_for_plan(
            - **属于改动文件**（含 old_path 命中，覆盖 renamed / deleted 时的
              老 finding）→ ``stale_findings_to_resolve``：本函数不改 DB，
              交给 :meth:`_resolve_stale_discussions_for_files` 关 GitLab
-             discussion + :meth:`_persist_review` 事务里 UPDATE status；
+             discussion + :func:`_persist_review` 事务里 UPDATE status；
            - **不属于改动文件** → ``carried_over_untouched``：保持 open，note
              里作为"历史遗留"展示。
         3. 新 findings 全部当作本轮新增（``new_findings``）。
@@ -331,4 +323,3 @@ async def _merge_findings_for_plan(
         carried_over_untouched=carried_untouched,
         stale_findings_to_resolve=stale_rows,
     )
-
