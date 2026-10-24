@@ -9,7 +9,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from api.admin import _sign_token
+from api.admin.deps import _sign_token
 from models.agent_trace_event import AgentTraceEvent
 from models.project import Project
 from models.review import Review

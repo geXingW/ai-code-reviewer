@@ -296,7 +296,7 @@ async def test_generate_uses_project_provider_not_first(
         await session.commit()
 
     fake_response: Any = type("R", (), {"content": "## 规则：sql-injection"})()
-    with patch("llm.build_provider") as build:
+    with patch("services.prompt_generation.build_provider") as build:
         build.return_value.chat = AsyncMock(return_value=fake_response)
         headers = await _login(db_client)
         response = await db_client.post(
@@ -406,7 +406,7 @@ async def test_generate_success_filters_by_project(
     fake_response: Any = type(
         "R", (), {"content": "## 规则：sql-injection\n- 已白名单校验的拼接"}
     )()
-    with patch("llm.build_provider") as build:
+    with patch("services.prompt_generation.build_provider") as build:
         build.return_value.chat = AsyncMock(return_value=fake_response)
         headers = await _login(db_client)
         response = await db_client.post(
@@ -459,7 +459,7 @@ async def test_generate_failure_maps_to_500(
         )
         await session.commit()
 
-    with patch("llm.build_provider") as build:
+    with patch("services.prompt_generation.build_provider") as build:
         build.return_value.chat = AsyncMock(side_effect=LLMError("upstream down"))
         headers = await _login(db_client)
         response = await db_client.post(

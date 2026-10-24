@@ -177,7 +177,7 @@ async def test_recent_reviews_returns_latest_manual_review(
 
     from datetime import UTC, datetime, timedelta
 
-    from api.admin import _sign_token
+    from api.admin.deps import _sign_token
 
     # 生成合法 admin JWT（/api/reviews/recent 现在走 JWT 认证）
     token = _sign_token("admin", datetime.now(UTC) + timedelta(hours=1))
