@@ -331,6 +331,10 @@ class ReviewOrchestrator:
                 mode_reason=plan.reason,
                 new_findings=list(merge.new_findings),
                 carried_findings=list(merge.carried_over_untouched),
+                # 引擎（按文件粒度并发审查）回填的跳过文件：明确写进摘要，
+                # 避免用户误以为"没有 finding = 全部文件都审过了"。
+                skipped_files=[item.model_dump() for item in context.skipped_files],
+                reviewed_file_count=max(len(context.diff_hunks) - len(context.skipped_files), 0),
             ),
         )
         await self._gitlab_client.set_commit_status(

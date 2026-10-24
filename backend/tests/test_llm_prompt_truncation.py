@@ -88,15 +88,16 @@ async def test_large_diff_skipped_when_exceeds_file_max_chars(
     client = _CapturingClient(responses=['{"findings": []}'])
     engine = LLMDirectEngine(client=client, settings=settings)
 
+    ctx = _ctx_with_diff(huge_diff)
     with caplog.at_level("INFO", logger="engines.llm_engine.engine"):
-        findings = await engine.review(_ctx_with_diff(huge_diff))
+        findings = await engine.review(ctx)
 
     # 不调 LLM（大文件在信号量前就跳过了）
     assert len(client.prompts) == 0
     assert findings == []
-    assert len(engine.skipped_files) == 1
-    assert engine.skipped_files[0].file_path == "app/big.py"
-    assert engine.skipped_files[0].reason == "too_large"
+    assert len(ctx.skipped_files) == 1
+    assert ctx.skipped_files[0].file_path == "app/big.py"
+    assert ctx.skipped_files[0].reason == "too_large"
     # 有 info 级别日志说明跳过原因
     assert any("too_large" in rec.getMessage() for rec in caplog.records)
 
