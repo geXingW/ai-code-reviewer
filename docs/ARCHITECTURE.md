@@ -431,6 +431,7 @@ core（config / db / policy / summary_builder：任何层可用，但不反向�
 - [engine-development.md](engine-development.md) — 如何开发新引擎（接口契约、注册、测试）
 - [rule-authoring.md](rule-authoring.md) — 规则编写指南
 - [orchestration.md](orchestration.md) — 审查编排链路（阶段、数据结构、错误路径）
+- [commenting-guide.md](commenting-guide.md) — 注释规范（docstring 与行内注释的分工、必写场景）
 - [storage.md](storage.md) — 数据模型与存储约定
 - [review-status-flow.md](review-status-flow.md) — 审查状态流转
 - [api.md](api.md) — REST API 文档

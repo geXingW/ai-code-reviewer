@@ -53,6 +53,9 @@ async def _post_finding_discussions(
     """
 
     diff_refs = _extract_diff_refs(changes_payload, event)
+    # 返回值必须与 findings **同序同长**：调用方用 zip(findings, ids) 落库，
+    # 任何位置错位都会把 discussion id 写到别的 finding 上（后果是下一轮
+    # resolve 掉错误的评论）。因此这里刻意串行 + 逐条 append。
     discussion_ids: list[str | None] = []
     for finding in findings:
         if finding.line_number is None:
@@ -129,6 +132,7 @@ async def _post_commit_finding_comments(
     comment_ids: list[str | None] = []
     for finding in findings:
         if finding.line_number is None:
+            # 没有行号（跨文件/架构级问题）不强行锚定：GitLab 会拒绝无行号的行级评论。
             comment_ids.append(None)
             continue
         _, new_path = _resolve_finding_paths(changes_payload, finding.file_path)
@@ -155,6 +159,8 @@ async def _post_commit_finding_comments(
                 note=build_finding_discussion_body(finding),
                 path=new_path,
                 line=finding.line_number,
+                # 引擎产出的行号一律是新文件侧（post-image）行号，所以固定 "new"。
+                # 若将来支持"删除行"类 finding，需要按 finding 携带 old/new 信息分流。
                 line_type="new",
             )
         except Exception:

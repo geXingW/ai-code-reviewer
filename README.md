@@ -104,6 +104,7 @@ repository 只做数据访问。完整说明见 [docs/ARCHITECTURE.md](docs/ARCH
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构事实源：分层边界、数据模型、阻断策略、误报闭环 |
 | [docs/orchestration.md](docs/orchestration.md) | 一次审查的完整链路：阶段、数据结构、失败语义 |
 | [docs/engine-development.md](docs/engine-development.md) | 新增评审引擎的契约与自检清单 |
+| [docs/commenting-guide.md](docs/commenting-guide.md) | 注释规范：哪些地方必须写"为什么" |
 | [docs/setup.md](docs/setup.md) / [gitlab-setup.md](docs/gitlab-setup.md) / [jenkins-setup.md](docs/jenkins-setup.md) | 部署与流水线接入 |
 | [docs/api.md](docs/api.md) | REST API |
 | [docs/rule-authoring.md](docs/rule-authoring.md) | 规则编写 |

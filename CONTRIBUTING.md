@@ -119,6 +119,18 @@ cd frontend && npm test
 新增管理后台接口 → 加到 `api/admin/` 对应的域模块（而不是再造一个大文件）；
 新增评审引擎 → 按 [docs/engine-development.md](docs/engine-development.md) 的清单实现。
 
+## 注释要求
+
+注释规范见 [docs/commenting-guide.md](docs/commenting-guide.md)。一句话：**docstring 写契约，
+行内注释写"为什么"**——业务阈值、顺序/并发约束、外部系统怪癖、降级决策、魔法数字必须解释。
+
+提交前可自查（输出只是线索，不是门禁）：
+
+```bash
+cd backend
+python scripts/comment_audit.py --min-lines 30
+```
+
 ## 文档
 
 - 改动 API → 更新 [docs/api.md](docs/api.md)

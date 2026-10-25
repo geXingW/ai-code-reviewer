@@ -150,6 +150,16 @@ _HANDLERS = {
 def build_default_tools(reader: RepoReader) -> list[AgentTool]:
     """Build the built-in read-only toolset bound to ``reader``."""
 
+    # 五个工具刻意都是只读的：审查过程不允许改仓库，否则"AI 自己改代码再自评"
+    # 会污染结论。新增工具时同样要保持只读，并且把"什么时候该用它"写进
+    # description —— 这些 description 是**给模型看的文档**，不是给人看的注释，
+    # 模型能读到的只有 name + description + 参数 schema。
+    #
+    # 覆盖的调查路径：定位文件（list_tree）→ 读目标区域（read_file，优先行号、
+    # 大文件用 offset 翻页）→ 追调用方/影响面（search_code，只支持单个关键词）
+    # → 判断历史与责任（get_blame / get_file_history）。
+    # 每个工具的返回都会被引擎按 agent_tool_result_max_chars 截断并计入预算，
+    # 所以 description 里要明确"分页/只查单个标识符"，否则模型容易一次拉满。
     return [
         _RepoTool(
             reader=reader,

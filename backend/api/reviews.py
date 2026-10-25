@@ -69,6 +69,9 @@ async def create_review(
 
     _validate_internal_token(x_internal_token)
     web_url = str(payload.web_url) if payload.web_url is not None else None
+    # 把 Jenkins 传的扁平参数拼成与 webhook 完全一致的归一化事件：复用同一条
+    # 编排链路（策略匹配 / 增量 / 落库 / 通知），避免出现"Jenkins 触发的审查
+    # 走另一套逻辑"这种双实现。
     event = GitLabMergeRequestEvent(
         project_id=payload.project_id,
         project_path=payload.project_path or str(payload.project_id),
@@ -98,6 +101,8 @@ async def create_review(
         policy_applied=result.policy_applied,
         review_url=review_url,
     )
+    # 记录到进程内降级缓冲（DB 才是事实源）：仅在首页查询异常时兜底，
+    # 放在返回前是安全的——它不影响本次审查结果。
     _record_recent_review(payload=payload, result=response)
     return response
 

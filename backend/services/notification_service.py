@@ -303,6 +303,8 @@ class NotificationService:
                     return []
                 mapping_repo = UserMappingRepository(session)
                 mobiles: list[str] = []
+                # 逐个用户名查映射：一次 push 的作者数通常是 1~3，逐查比批量 IN
+                # 更好读。若将来要 @ 整团队，这里应改成一次 IN 查询避免 N+1。
                 for username in usernames:
                     mapping = await mapping_repo.get_by_gitlab_username(
                         project.id,
@@ -317,6 +319,8 @@ class NotificationService:
                             },
                         )
                         continue
+                    # 同一个手机号可能绑了多个 GitLab 账号（或同一人既是触发者
+                    # 又是 commit 作者）：@ 两次会在钉钉里重复提醒，这里按手机号去重。
                     if mapping.dingtalk_mobile not in mobiles:
                         mobiles.append(mapping.dingtalk_mobile)
                 return mobiles

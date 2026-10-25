@@ -100,9 +100,13 @@ async def _write_review(
                     },
                 )
                 return
+            # project_id 在这里才补上（调用方构造 ReviewRow 时还不知道内部 UUID）：
+            # 必须发生在 create_review_with_findings 之前，否则外键为空直接失败。
             review_row.project_id = project.id
             await ReviewRepository(session).create_review_with_findings(
                 review=review_row,
+                # strict=True：长度不一致时宁可抛错被下面的 except 捕获成 warning，
+                # 也不要用 zip 静默截断（截断会丢 finding 或错配 discussion id）。
                 findings=list(zip(findings, ids, strict=True)),
                 stale_finding_ids=list(stale_finding_ids),
                 resolved_in_review_id=review_row.id,
@@ -295,6 +299,8 @@ async def _merge_findings_for_plan(
             if project is None:
                 return empty
             finding_repo = FindingRepository(session)
+            # 只取 status='open'：已 resolved / mr_closed 的历史行不参与合并，
+            # 否则修复过的问题会以"历史遗留"身份重新出现在汇总评论里。
             old_open = await finding_repo.list_open_by_mr(project.id, str(event.mr_iid))
     except SQLAlchemyError:
         logger.exception(
@@ -310,12 +316,20 @@ async def _merge_findings_for_plan(
     stale_rows: list[FindingRow] = []
     carried_untouched: list[Finding] = []
     for row in old_open:
+        # 按"文件是否在本次 push 里被改动"分组：
+        #   - 改动文件 → stale：本轮会整文件重审，旧行必须作废（DB 标 resolved +
+        #     GitLab 侧 resolve discussion），否则同一处会同时挂着新旧两条评论；
+        #   - 未改动文件 → carried：历史问题仍然存在，原样保留并显示为"历史遗留"。
+        # 这里用 row.file_path 与 changed_files（含 old_path，已在上游归一化）比较，
+        # 因此 renamed 文件的老 finding 也能被正确作废。
         if row.file_path in changed:
             stale_rows.append(row)
         else:
             carried_untouched.append(_finding_row_to_engine(row))
 
     new_list = list(new_findings)
+    # combined 顺序刻意是"新增在前、历史在后"：汇总评论按此顺序渲染，
+    # 让评审人先看到这轮要处理的问题，再看"还有哪些老问题没动"。
     combined = new_list + carried_untouched
     return _MergeResult(
         combined_findings=combined,

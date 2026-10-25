@@ -181,6 +181,8 @@ class GitLabClient:
         params: dict[str, str] = {
             "ref": ref,
             "page": str(max(1, page)),
+            # GitLab 对 per_page 硬上限 100，超过直接 400；这里先夹紧再发，
+            # 免得调用方传 500 时拿到一个看起来像"参数错误"的失败。
             "per_page": str(max(1, min(per_page, 100))),
         }
         if path.strip():
@@ -399,6 +401,12 @@ class GitLabClient:
         if line_number <= 0:
             msg = "GitLab discussion line_number must be positive."
             raise ValueError(msg)
+        # position 三件套必须来自**同一个 MR diff refs**（base/start/head 由
+        # MR 的 diff_refs 提供）；随遍拼 SHA 会被 GitLab 判成 "Note position is
+        # invalid"。new_line 指新文件行号（post-image），必须落在某个 hunk 的
+        # 新增行范围内，否则同样 400 —— 这就是行号漂移问题最后要在
+        # orchestrator 侧做 re-locate 的原因。
+        # renamed 文件必须同时给 old_path 与 new_path，只给其一会锚定失败。
         return await self._request_json(
             "POST",
             f"/api/v4/projects/{project_id}/merge_requests/{mr_iid}/discussions",
@@ -553,6 +561,8 @@ class GitLabClient:
             msg = "GitLab commit comment note must not be empty."
             raise ValueError(msg)
         payload: dict[str, Any] = {"note": note}
+        # 行级锚定要求 path + line + line_type 三者同时给（GitLab 语义）：
+        # 只给 line 不给 line_type 会被忽略，评论退化成普通 commit 评论。
         if path is not None:
             payload["path"] = path
         if line is not None:
@@ -604,6 +614,8 @@ class GitLabClient:
             "name": name,
             "description": description,
         }
+        # target_url 指向本地审查详情页；为空时不下发该字段（GitLab 会存成 null，
+        # 前端"详情"链接就没有可点目标）。
         if target_url:
             payload["target_url"] = target_url
         return await self._request_json(
@@ -631,8 +643,13 @@ class GitLabClient:
             headers={"PRIVATE-TOKEN": self._token},
             timeout=self._timeout,
         ) as client:
+            # 每次请求新建 AsyncClient（不复用连接池）：GitLab 侧连接建立成本
+            # 远低于一次 LLM 调用，换来实现简单与线程/事件循环安全。
+            # 若后续要跑高频批量接口（如逐文件 blame），这里应改成注入共享客户端。
             response = await client.request(method, path, json=json, params=params)
 
+        # 严格 2xx 判定：GitLab 有些端点会返回 3xx（重定向到登录页，token 失效
+        # 且实例开了 SSO 时），把它当成功会把 HTML 当 JSON 解析，错误更难查。
         if response.status_code < 200 or response.status_code >= 300:
             raise GitLabClientError(
                 status_code=response.status_code,
@@ -657,6 +674,9 @@ class GitLabClient:
 
         response = await self._send_request(method, path, json=json, params=params)
         data = response.json()
+        # GitLab 有若干端点直接返回**数组**（repository/tree、commits、diff、
+        # search 等）。调用方统一按 dict 处理更简单，这里把数组包成
+        # {"data": [...]}，由各方法负责解包成 list —— 新加方法时别忘了解包。
         if not isinstance(data, dict):
             return {"data": data}
         return data

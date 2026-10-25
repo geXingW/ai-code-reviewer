@@ -162,6 +162,9 @@ def _handle_push_hook(
 
     logger.info("_handle_push_hook", extra={"payload": payload})
     settings = get_settings()
+    # 两道开关：全局是"一键止血"（线上模型/网关异常时立刻停掉所有自动审查），
+    # 项目级是"按仓库灰度"。任一为 false 都直接 200 返回 processed=False，
+    # 不抛错 —— 让 GitLab 侧看到投递成功，避免它反复重投。
     if not settings.commit_review_enabled:
         logger.info("_handle_push_hook", extra={"reason": "commit_review_disabled"})
         return GitLabWebhookResponse(processed=False, reason="commit_review_disabled")
@@ -175,6 +178,8 @@ def _handle_push_hook(
         logger.info("_handle_push_hook", extra={"reason": "ignored_event"})
         return GitLabWebhookResponse(processed=False, reason="ignored_event")
 
+    # 审查要跑 LLM，可能几十秒：放后台任务并立刻 202，否则 GitLab 的 webhook
+    # 超时（默认 10s）会重投同一事件，造成重复审查与重复评论。
     background_tasks.add_task(_process_push_commits, push_info, project)
     return GitLabWebhookResponse(
         processed=True,
@@ -195,17 +200,20 @@ def _parse_push_event(payload: dict[str, Any]) -> _PushEventInfo | None:
         project = _expect_dict(payload["project"], "project")
         project_id = int(project["id"])
     except (KeyError, TypeError, ValueError) as exc:
+        # 用 422 而不是 500：GitLab 对 5xx 会按退避策略重复投递，payload 结构不对
+        # 时重试一万次也不会成功，反而在日志里刷出重复的失败记录。
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid GitLab push payload: {exc}",
         ) from exc
 
     ref = str(payload.get("ref") or "")
+    # 只处理分支 push：tag push、merge-requests ref 等不触发审查。
     if not ref.startswith("refs/heads/"):
         return None
     after = str(payload.get("after") or "")
     if after == "0" * 40:
-        # 删分支 push。
+        # 删分支 push（after 全 0）：没有可审的变更。
         return None
     raw_commits = payload.get("commits")
     if not isinstance(raw_commits, list) or not raw_commits:
@@ -452,11 +460,16 @@ def _parse_merge_request_event(payload: dict[str, Any]) -> GitLabMergeRequestEve
 
     return GitLabMergeRequestEvent(
         project_id=project_id,
+        # path_with_namespace 缺省时退 path、再退数字 ID：仅用于日志与展示，
+        # 不参与任何 API 调用（API 一律用数值 project_id）。
         project_path=str(project.get("path_with_namespace") or project.get("path") or project_id),
         mr_iid=mr_iid,
         source_branch=str(attrs.get("source_branch") or ""),
         target_branch=str(attrs.get("target_branch") or target.get("default_branch") or ""),
         source_commit_sha=source_commit_sha,
+        # 注意：target 段在部分 payload（close/merge 等）里没有 SHA，此时会回退到
+        # default_branch —— 那是**分支名不是 SHA**。它只用于摘要展示与
+        # full 模式的 base_sha 兜底；真正要 diff 时走 GitLab API 重新取。
         target_commit_sha=str(attrs.get("target_branch_sha") or target.get("default_branch") or ""),
         action=str(attrs.get("action") or ""),
         title=str(attrs.get("title") or ""),
@@ -464,6 +477,8 @@ def _parse_merge_request_event(payload: dict[str, Any]) -> GitLabMergeRequestEve
         description=str(attrs.get("description") or ""),
         last_commit_message=str(last_commit.get("message") or ""),
         created_at=str(attrs.get("created_at") or ""),
+        # user 是**事件触发者**（open 时通常就是 MR 作者，update 时可能是别人重跑），
+        # 通知侧 @ 它即可；不要误认为一定是 MR 作者。
         author_username=str(user.get("username") or "") or None,
         author_name=str(user.get("name") or "") or None,
     )
