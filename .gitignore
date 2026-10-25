@@ -24,8 +24,9 @@ coverage/
 .idea/
 .vscode/
 
-# 测试临时 SQLite（不小心被 Claude Code 产出的 orchestrator 单测创建）
+# 测试临时 SQLite（无 Postgres 环境本地跑测试时产生）
 backend/tmp_test.db
+backend/_pytest*.db
 backend/*.db-journal
 
 # AI 助手本地规则（不入库，仅供本地开发使用）
@@ -38,6 +39,7 @@ AGENTS.md
 PROJECT.md
 CONTEXT.md
 .zcode/
+.workbuddy
 
 # 前端构建产物（打进后端 static 目录，发布时由 CI 生成）
 backend/static/*

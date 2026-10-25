@@ -66,6 +66,9 @@ class FindingLike(Protocol):
 
 MatchedPolicy: TypeAlias = BlockPolicyLike
 
+# 严重级别 → 数值秩。数值越大越严重，阻断判定用 "finding 秩 ≥ 阈值秩" 表达
+# "阈值及以上都阻断"。刻意从 1 开始（而非 0）：让 "无严重级别 / 未知" 这类
+# 非法值落不到合法秩上，便于 _finding_rank 直接报错而不是被误当成 INFO。
 _SEVERITY_RANK: dict[Severity, int] = {
     Severity.INFO: 1,
     Severity.WARNING: 2,
@@ -118,8 +121,14 @@ def match_block_policy(
         logger.info("target_branch must not be empty")
         raise ValueError("target_branch must not be empty")
 
+    # 每次调用现排序，不依赖入参顺序：策略来自 DB，不同数据库/不同查询的返回
+    # 顺序不保证一致（MySQL 无 ORDER BY 时尤其如此），而"谁先命中"直接决定
+    # 阻断档位。策略数量是个位数，排序成本可忽略。
     ordered = sorted(policies, key=lambda policy: policy.priority)
     for policy in ordered:
+        # 用 fnmatchcase（区分大小写）而不是 fnmatch：GitLab 分支名大小写敏感，
+        # 若把 release/* 降低成 RELEASE/* 也命中，会误阻断不该阻断的分支。
+        # 注意 fnmatch 的 * 会跨越 "/"，所以 release/* 同时覆盖 release/1.0/hotfix。
         if fnmatchcase(branch, policy.branch_pattern):
             logger.info(
                 "Matched block policy",
@@ -171,6 +180,10 @@ def compute_has_blocker(
         },
     )
     if threshold in {BlockSeverity.NONE, BlockSeverity.ENGINE_ERROR_ONLY}:
+        # 这两档与 finding 严重级别无关：
+        # - NONE：只评论不阻断；
+        # - ENGINE_ERROR_ONLY：只在引擎失败时阻断（由
+        #   compute_has_blocker_for_engine_error 单独判定），finding 再多也不阻断。
         logger.info(
             "Policy severity threshold allows all findings",
             extra={
@@ -186,6 +199,9 @@ def compute_has_blocker(
     threshold_rank = _SEVERITY_RANK[Severity(threshold.value)]
     logger.info("Evaluating %d findings against severity threshold %r: %d",
                 len(findings), threshold, threshold_rank)
+    # "≥ 阈值" 语义：阈值 INFO 时任何 finding 都阻断；阈值 BLOCKER 时只有
+    # BLOCKER 阻断。blocker_count 供 GitLab commit status 的描述文案使用
+    # （"N finding(s), M blocking"），因此要求的是命中数而非布尔值。
     blocker_count = sum(
         1
         for finding in findings
@@ -198,6 +214,11 @@ def compute_has_blocker_for_engine_error(policy: BlockPolicyLike) -> tuple[bool,
     """Compute blocking result when the review engine fails before findings exist."""
 
     threshold = _parse_block_severity(policy.block_severity)
+    # 两个独立触发条件（任一成立即阻断）：
+    # 1. 项目显式勾选了"引擎异常也阻断"（block_on_engine_error）；
+    # 2. 策略档位本身就是 ENGINE_ERROR_ONLY —— 这类分支只关心引擎是否跑通。
+    # 计数固定返回 1：引擎失败在语义上等价于"一条不可忽略的阻断项"，
+    # 让上层 commit status 文案与 finding 路径保持同构。
     should_block = policy.block_on_engine_error or threshold == BlockSeverity.ENGINE_ERROR_ONLY
     return (should_block, 1 if should_block else 0)
 
@@ -211,7 +232,11 @@ def build_default_block_policies(project_id: UUID | str) -> list[ProjectBlockPol
             project_id=normalized_project_id,
             branch_pattern=branch_pattern,
             block_severity=block_severity.value,
+            # 默认不因为"引擎跑挂了"阻断合并：新项目接入期模型/网络不稳，
+            # 一上来就卡主线会让人关掉整个工具。需要严格门禁的项目再单独勾选。
             block_on_engine_error=False,
+            # "所有 discussion 必须 resolved 才能合" 是 GitHub 式习惯，
+            # GitLab 侧由项目自己的设置控制，这里默认关，避免双重门禁难排查。
             require_all_resolved=False,
             priority=priority,
         )
@@ -234,4 +259,6 @@ def _finding_rank(value: str) -> int:
     try:
         return _SEVERITY_RANK[Severity(value)]
     except ValueError as exc:
+        # 未知 severity 直接抛错而不是当 INFO 处理：engine 万一吐出拼错的值
+        # （如 "BLOCK"），静默降级会让本该阻断的 finding 悄悄放行。
         raise ValueError(f"Unsupported finding severity: {value}") from exc

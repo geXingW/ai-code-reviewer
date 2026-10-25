@@ -140,6 +140,9 @@ def build_review_summary_note(
     这些字段全部可选，老调用点不传时行为完全等价旧输出。
     """
 
+    # 失败必须**换掉整块模板**，而不是在正常模板里塞一行 error：
+    # 正常模板的标题是「completed / PASSED」，引擎没跑却显示 PASSED 会误导
+    # 评审人放行 —— 这是历史事故，别把失败分支合并回正常模板。
     if engine_error is not None:
         lines = [
             "# ⚠️ AI Review FAILED",
@@ -296,6 +299,9 @@ def build_commit_review_note(
     """
 
     sha_short = commit_sha[:7] if commit_sha else "?"
+    # 失败必须**换掉整块模板**，而不是在正常模板里塞一行 error：
+    # 正常模板的标题是「completed / PASSED」，引擎没跑却显示 PASSED 会误导
+    # 评审人放行 —— 这是历史事故，别把失败分支合并回正常模板。
     if engine_error is not None:
         lines = [
             "# ⚠️ AI Review FAILED",
@@ -397,6 +403,9 @@ def build_push_review_note(
     """
 
     sha_short = head_sha[:7] if head_sha else "?"
+    # 失败必须**换掉整块模板**，而不是在正常模板里塞一行 error：
+    # 正常模板的标题是「completed / PASSED」，引擎没跑却显示 PASSED 会误导
+    # 评审人放行 —— 这是历史事故，别把失败分支合并回正常模板。
     if engine_error is not None:
         lines = [
             "# ⚠️ AI Review FAILED",
@@ -680,6 +689,8 @@ def _render_skipped_files_section(
     空行由 ``build_review_summary_note`` 统一追加。
     """
 
+    # 按原因分组而不是平铺：三类原因对应三种**不同的后续动作**（拆小 MR /
+    # 重跑或查 provider / 调整 ignore_paths），平铺列表会让评审人无从下手。
     too_large = [s for s in skipped_files if s.get("reason") == "too_large"]
     failed = [s for s in skipped_files if s.get("reason") == "review_failed"]
     filtered_out = [
@@ -688,6 +699,8 @@ def _render_skipped_files_section(
     skipped_count = len(skipped_files)
 
     lines: list[str] = ["", "---", "", "### 审查覆盖说明", ""]
+    # reviewed_file_count 由调用方按「参与审查的 hunk 数 - 跳过数」计算；
+    # 拿不到时显示 "?"，宁可含糊也不要编一个数字。
     reviewed_label = (
         str(reviewed_file_count) if reviewed_file_count is not None else "?"
     )
@@ -695,6 +708,8 @@ def _render_skipped_files_section(
         f"已审查 **{reviewed_label}** 个文件，跳过 **{skipped_count}** 个文件："
     )
 
+    # 段落顺序按"可操作性"排：文件过大（改 MR）→ 审查失败（重跑/查配置）
+    # → 被过滤（几乎无需动作）。
     if too_large:
         threshold_label = f">{file_max_chars} chars" if file_max_chars else "过大"
         lines.extend(["", f"**文件过大（{threshold_label}）：** {len(too_large)} 个"])

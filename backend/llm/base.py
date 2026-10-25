@@ -226,14 +226,21 @@ class LLMProvider(ABC):
                 response.raise_for_status()
                 return cast(HTTPResponseLike, response)
             except httpx.TimeoutException as exc:
+                # 超时按"可重试"处理：多数网关 504/读超时是瞬时抖动。
+                # 注意总耗时 = (max_retries + 1) * timeout，engine 侧还有一层
+                # LLM_REQUEST_TIMEOUT_SECONDS，两层别都往大调。
                 if attempt >= self._max_retries:
                     raise TimeoutError("LLM provider request timed out") from exc
             except httpx.HTTPStatusError as exc:
+                # 只有 5xx（映射成 ServerError）重试；4xx 是请求本身的问题
+                # （鉴权、模型名、上下文超长），重试只会放大 429/400 的伤害。
                 mapped = _map_http_status(exc.response.status_code, exc)
                 if isinstance(mapped, ServerError) and attempt < self._max_retries:
                     logger.warning("LLM provider server error; retrying attempt %s", attempt + 1)
                 else:
                     raise mapped from exc
+            # 指数退避上限 1s：审查是交互式场景，等太久不如尽快把错误暴露给编排层
+            # （编排层会写 engine_error 记录 + 失败评论，而不是无限挂着）。
             await asyncio.sleep(min(0.1 * (2**attempt), 1.0))
         raise ServerError("LLM provider request failed after retries")
 
@@ -308,15 +315,22 @@ class AnthropicProvider(LLMProvider):
     ) -> ChatResponse:
         """Call Anthropic ``/messages`` and normalize the response."""
 
+        # Anthropic 不接受 messages 里出现 role=system：system 必须作为顶层
+        # 字段单独传。这里把多条 system 用空行拼起来，保持与 OpenAI 协议同构的
+        # 调用方体验（调用方只管往 messages 里塞 system）。
         system_messages = [message.content for message in messages if message.role == "system"]
         non_system_messages = [message for message in messages if message.role != "system"]
         payload: dict[str, object] = {
             "model": self.config.model,
             "messages": _to_anthropic_messages(non_system_messages),
+            # max_tokens 在 Anthropic 是必填项，缺省给 4096（够输出一份 findings
+            # JSON，又不至于让单次调用耗时失控）。
             "max_tokens": self.config.max_tokens or 4096,
             "temperature": self.config.temperature,
         }
         if tools:
+            # 工具 schema 的键名与 OpenAI 不同（input_schema vs parameters）。
+            # 这里做协议翻译，让上层的 ToolSpec 保持供应商中立。
             payload["tools"] = [
                 {
                     "name": tool.name,
@@ -513,6 +527,9 @@ def _to_anthropic_messages(messages: Sequence[ChatMessage]) -> list[dict[str, An
     pending_tool_results: list[dict[str, Any]] = []
 
     def _flush_tool_results() -> None:
+        # 连续的 tool_result 必须合并进**同一条** user 消息：Anthropic 要求所有
+        # tool_result 紧跟在上一条 assistant 的 tool_use 之后、且同处一个 user
+        # turn，拆成多条会直接 400（messages: unexpected role sequence）。
         if pending_tool_results:
             payload.append({"role": "user", "content": pending_tool_results.copy()})
             pending_tool_results.clear()
@@ -571,6 +588,9 @@ def _extract_anthropic_content(value: object) -> tuple[str, list[ToolCall]]:
             if not isinstance(name, str) or not name.strip():
                 continue
             tool_input = item.get("input")
+            # Anthropic 的 input 是已解析的对象，而 OpenAI 的 arguments 是
+            # JSON 字符串。这里统一序列化成字符串，让 agent 循环只需要处理
+            # 一种形态（下游 parse_tool_arguments 再解析/容错）。
             if isinstance(tool_input, str):
                 arguments_text = tool_input
             elif isinstance(tool_input, dict):
@@ -588,6 +608,9 @@ def _extract_anthropic_content(value: object) -> tuple[str, list[ToolCall]]:
 
 
 def _map_http_status(status_code: int, exc: Exception) -> LLMError:
+    # 映射结果是"重试决策"的依据（见 _post_with_retry）：只有 ServerError 会重试。
+    # 429 故意映射成 RateLimitError 而不是 ServerError —— 限流重试通常更没有意义，
+    # 且会把配额打得更死；401/403 更要立刻失败，避免把配置错误拖成超时。
     if status_code == 429:
         return RateLimitError("LLM provider rate limit exceeded")
     if status_code in {401, 403}:

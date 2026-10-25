@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from httpx import AsyncClient
 
-from api.admin import _sign_token
+from api.admin.deps import _sign_token
 from engines import (
     Finding,
     HealthStatus,

@@ -28,7 +28,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import ColumnElement
 
-from api.admin import _require_admin_auth
+from api.admin.deps import _require_admin_auth
 from core.db import DbSession
 from models.finding import Finding
 from models.project import Project

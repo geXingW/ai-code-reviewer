@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-from collections import deque
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -13,6 +12,7 @@ from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 from api.gitlab_webhook import review_merge_request_event
 from core.config import get_settings
 from schemas.review import RecentReviewRead
+from services import recent_review_buffer
 from services.review_orchestrator import GitLabMergeRequestEvent
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,6 @@ class ReviewCreateResponse(BaseModel):
     review_url: str | None
 
 
-_recent_reviews: deque[RecentReviewRead] = deque(maxlen=20)
 
 
 @router.post("", response_model=ReviewCreateResponse)
@@ -70,6 +69,9 @@ async def create_review(
 
     _validate_internal_token(x_internal_token)
     web_url = str(payload.web_url) if payload.web_url is not None else None
+    # 把 Jenkins 传的扁平参数拼成与 webhook 完全一致的归一化事件：复用同一条
+    # 编排链路（策略匹配 / 增量 / 落库 / 通知），避免出现"Jenkins 触发的审查
+    # 走另一套逻辑"这种双实现。
     event = GitLabMergeRequestEvent(
         project_id=payload.project_id,
         project_path=payload.project_path or str(payload.project_id),
@@ -99,6 +101,8 @@ async def create_review(
         policy_applied=result.policy_applied,
         review_url=review_url,
     )
+    # 记录到进程内降级缓冲（DB 才是事实源）：仅在首页查询异常时兜底，
+    # 放在返回前是安全的——它不影响本次审查结果。
     _record_recent_review(payload=payload, result=response)
     return response
 
@@ -138,7 +142,7 @@ def _build_review_url(
 def _record_recent_review(*, payload: ReviewCreateRequest, result: ReviewCreateResponse) -> None:
     """Store a sanitized bounded review summary for the MVP dashboard."""
 
-    _recent_reviews.appendleft(
+    recent_review_buffer.record(
         RecentReviewRead(
             review_id=result.review_id,
             project_id=payload.project_id,
@@ -157,6 +161,9 @@ def _record_recent_review(*, payload: ReviewCreateRequest, result: ReviewCreateR
 
 
 def clear_recent_reviews_for_tests() -> None:
-    """Clear in-memory dashboard data between API tests."""
+    """清空降级缓冲区（仅供测试隔离使用）。
 
-    _recent_reviews.clear()
+    ``recent-review-buffer`` 保留进程内降级数据；生产代码不应调用本函数。
+    """
+
+    recent_review_buffer.clear()
