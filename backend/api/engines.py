@@ -1,7 +1,7 @@
 """REST endpoints for the in-memory engine registry.
 
-These endpoints expose the *runtime* :class:`~app.engines.base.ReviewEngine`
-instances registered via :func:`~app.engines.registry.register_engine`,
+These endpoints expose the *runtime* :class:`~engines.base.ReviewEngine`
+instances registered via :func:`~engines.registry.register_engine`,
 not the persisted ``engines`` table (that one is served by a separate
 CRUD router landing in Issue #10).
 """
@@ -10,7 +10,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from api.admin import _require_admin_auth
+from api.admin.deps import _require_admin_auth
 from engines.registry import EngineNotFoundError, get_engine_registry
 from schemas.engine_runtime import EngineHealth, EngineSummary
 
@@ -29,7 +29,7 @@ async def list_engines() -> list[EngineSummary]:
 
     The health probe is called inline for each engine. Engines must
     keep ``health_check`` fast (target <2s) per the contract in
-    :class:`~app.engines.base.ReviewEngine`. Failures are swallowed and
+    :class:`~engines.base.ReviewEngine`. Failures are swallowed and
     represented as ``health_status="error"`` so a single broken engine
     cannot break the whole list.
 

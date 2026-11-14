@@ -11,7 +11,7 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from api.admin import (
+from api.admin.findings import (
     FalsePositiveMarkRequest,
     FalsePositiveReviewRequest,
     confirm_false_positive,
@@ -212,12 +212,12 @@ def patch_gitlab_client(
             return None
         return FakeGitLabClient()
 
-    monkeypatch.setattr("api.admin._build_gitlab_client", fake_build)
+    monkeypatch.setattr("api.admin.findings._build_gitlab_client", fake_build)
 
     async def fake_recompute(finding: object, db: object) -> None:
         recompute_calls.append({"finding_id": getattr(finding, "id", None)})
 
-    monkeypatch.setattr("api.admin._recompute_mr_block_status", fake_recompute)
+    monkeypatch.setattr("api.admin.findings._recompute_mr_block_status", fake_recompute)
 
 
 @pytest.mark.asyncio

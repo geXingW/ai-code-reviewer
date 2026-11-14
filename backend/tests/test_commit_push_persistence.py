@@ -23,7 +23,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from api.admin import _sign_token
+from api.admin.deps import _sign_token
 from engines import Finding, HealthStatus, ReviewContext, ReviewEngine
 from engines.registry import EngineRegistry
 from models.agent_trace_event import AgentTraceEvent

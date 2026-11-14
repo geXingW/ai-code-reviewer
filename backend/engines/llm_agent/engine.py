@@ -59,7 +59,6 @@ from engines.types import (
     HealthStatus,
     ProviderConfig,
     ReviewContext,
-    SkippedFile,
 )
 from llm import (
     AsyncHTTPClient,
@@ -313,7 +312,6 @@ class LLMAgentEngine(ReviewEngine):
             settings=self._settings,
             timeout_seconds=effective_timeout,
         )
-        self.skipped_files: list[SkippedFile] = []
         logger.debug(
             "LLM agent engine config: timeout=%.1fs, max_turns=%d, "
             "tool_result_max_chars=%d, total_context_max_chars=%d, "
@@ -334,7 +332,6 @@ class LLMAgentEngine(ReviewEngine):
     async def review(self, ctx: ReviewContext) -> list[Finding]:
         """Review ``ctx`` with an investigation loop and return findings."""
 
-        self.skipped_files = []
         if not ctx.diff_hunks:
             return []
         if ctx.provider is None:

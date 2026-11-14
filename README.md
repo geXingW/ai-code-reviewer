@@ -69,25 +69,61 @@ CONFIRMED 写入 negative_examples
 
 ## 技术栈
 
-- **后端**：Python 3.11 + FastAPI + SQLAlchemy (async)
+- **后端**：Python 3.11 + FastAPI + SQLAlchemy 2.x (async)，全异步
 - **数据库**：PostgreSQL 15 或 MySQL 8.0（跨方言，二选一）
-- **前端**：React 19 + Vite + TypeScript + Vitest
+- **前端**：React 19 + Vite + TypeScript + Ant Design v6 + Vitest
+- **评审引擎**：`llm-direct`（纯 diff 五段式 Prompt）/ `llm-agent`（多轮工具调用 + 执行轨迹）
 - **部署**：Docker 单镜像 / pip 安装 / Docker Compose（开发）
+
+## 代码结构
+
+```
+backend/
+├── api/            HTTP 层：鉴权、校验、序列化（admin/ 按资源域分包）
+├── services/       应用层：review_orchestration/ 审查编排、通知、提示词生成
+├── engines/        引擎层：ReviewEngine 抽象 + llm_engine / llm_agent（必须无状态）
+├── llm/            LLM 供应商适配（openai_compatible / anthropic / custom）
+├── repositories/   数据访问层（一模型一仓储）
+├── models/         SQLAlchemy ORM
+├── schemas/        Pydantic v2 出入参
+└── core/           横切能力：config / db / block_policy / summary_builder …
+frontend/src/
+├── pages/          14 个页面（列表统一走 hooks/usePagedList 服务端分页）
+├── components/     AgentTraceDrawer / GlobalSearchModal / BlockPolicyEditor …
+├── api.ts          API 客户端与类型定义
+└── theme.ts        Ant Design 主题（品牌色 / 圆角 / 字体 / zhCN）
+```
+
+四条分层硬约束（改动前请先读）：api 不写业务、engine 不碰数据库、engine 实例必须无状态、
+repository 只做数据访问。完整说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 第十节。
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构事实源：分层边界、数据模型、阻断策略、误报闭环 |
+| [docs/orchestration.md](docs/orchestration.md) | 一次审查的完整链路：阶段、数据结构、失败语义 |
+| [docs/engine-development.md](docs/engine-development.md) | 新增评审引擎的契约与自检清单 |
+| [docs/commenting-guide.md](docs/commenting-guide.md) | 注释规范：哪些地方必须写"为什么" |
+| [docs/setup.md](docs/setup.md) / [gitlab-setup.md](docs/gitlab-setup.md) / [jenkins-setup.md](docs/jenkins-setup.md) | 部署与流水线接入 |
+| [docs/api.md](docs/api.md) | REST API |
+| [docs/rule-authoring.md](docs/rule-authoring.md) | 规则编写 |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | 常见问题排查 |
 
 ## 路线图
 
 ### v0.1.0 MVP（Phase 1）
 
 - [x] 项目治理基础设施
-- [x] 后端骨架 + 数据模型（10 表 + Fernet 加密）
+- [x] 后端骨架 + 数据模型（约 21 表 + Fernet 加密）
 - [x] ReviewEngine 抽象 + LLMEngine 实现
 - [x] GitLab 客户端（diff / discussion / commit status）
-- [x] Webhook 接收 + 评审编排
+- [x] Webhook 接收 + 评审编排（MR / Push / Commit 三链路统一落库）
 - [x] 阻断策略匹配引擎
-- [x] REST API（5 套 CRUD + 误报闭环 + JWT 认证）
+- [x] REST API（RBAC + 误报闭环 + JWT 认证）
 - [x] Jenkins Pipeline 模板
 - [x] 部署 + 配置文档
-- [x] 前端管理后台（8 个页面，Linear 风格）
+- [x] 前端管理后台（14 个页面，Ant Design v6）
 
 ### v0.2.0（Phase 2）
 
@@ -100,9 +136,10 @@ CONFIRMED 写入 negative_examples
 ### v0.3.0+（Phase 3 远期）
 
 - [ ] RAG 知识库（pgvector）
-- [ ] AgentEngine（Claude Code 深度评审）
+- [x] AgentEngine（多轮工具调用 + 执行轨迹持久化）
+- [x] 用户权限 / 审计日志（RBAC）
 - [ ] Skill 包格式（替代扁平 Rule）
-- [ ] 用户权限 / SSO / 审计日志
+- [ ] SSO
 
 详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 

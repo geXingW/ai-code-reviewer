@@ -85,9 +85,12 @@ class GitLabRepoReader:
                 ref=effective_ref,
             )
         except Exception as exc:  # noqa: BLE001 - 契约：任何失败都归一化为错误观察
+            # 不抛异常而是返回 "[error] ..." 字符串：agent 循环把返回文本当作
+            # 工具观察喂回模型（模型据此换策略），抛异常会直接终止整轮审查。
             logger.info("repo_reader read_file failed", extra={"file_path": file_path})
             return _error_text(f"read_file({file_path}@{effective_ref})", exc)
         if line_start is not None:
+            # 行号模式优先：agent 需要与 diff 同一坐标系的行号来做引用。
             return _render_lines(content, line_start, line_end, max_chars)
         if offset < 0:
             return f"[error] read_file offset must be >= 0, got {offset}"
@@ -100,9 +103,12 @@ class GitLabRepoReader:
         if len(page) <= max_chars:
             if offset == 0:
                 return page
+            # 末页提示"已到文件尾"，否则模型会继续用更大的 offset 反复试。
             return page + (
                 f"\n[file complete: chars {offset}-{offset + len(page)} of {len(content)}]"
             )
+        # 截断提示必须带**下一页的 offset**：早期只提示"truncated"，模型会加大
+        # max_chars 重试（拿到的还是同一段），陷入复读机循环。
         truncated = page[:max_chars]
         return truncated + (
             f"\n... (truncated, total {len(content)} chars; returned chars "
@@ -245,14 +251,19 @@ def _render_lines(
     selected: list[str] = []
     returned_end = line_start - 1
     for line_no in range(line_start, end + 1):
+        # 每行都带 "行号: " 前缀（不是等宽对齐的 gutter）：模型引用 finding 的
+        # line_number 时直接抄这个数字即可，省去自己数行。
         piece = f"{line_no}: {lines[line_no - 1]}"
         candidate = piece if not selected else "\n".join([*selected, piece])
+        # 超预算时**按整行**截断（不做字符级切分）：半行内容会让模型误读代码。
+        # 至少返回一行，否则 line_start 精确命中一个超长行时会返回空结果。
         if len(candidate) > max_chars and selected:
             break
         selected.append(piece)
         returned_end = line_no
     block = "\n".join(selected)
     if returned_end < end:
+        # 续读提示同样给**下一段的 line_start**，避免模型改用 offset 乱翻。
         block += (
             f"\n... (truncated, file has {total} lines; returned lines "
             f"{line_start}-{returned_end}; use line_start={returned_end + 1} "

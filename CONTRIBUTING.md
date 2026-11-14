@@ -93,18 +93,50 @@ Closes #4
 - 后端覆盖率目标：≥ 70%（核心 engines / orchestrator 模块 ≥ 85%）
 
 ```bash
-# 后端测试
+# 后端测试（需要 PostgreSQL / MySQL）
 cd backend && pytest --cov
+
+# 没有数据库时：用 SQLite 跑同一套用例（需 pip install -r requirements-dev.txt）
+cd backend && DATABASE_URL=sqlite+aiosqlite:///./_pytest.db pytest
 
 # 前端测试
 cd frontend && npm test
+```
+
+> 后端测试通过 `DATABASE_URL` 决定测试库，`tests/conftest.py` 每个用例重建 schema。
+> `--workers` / 生产库连接串**不要**用于测试环境。
+
+## 代码结构约定
+
+改动前请先读 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 第十节「代码分层与模块边界」。四条硬约束：
+
+1. **api 不写业务**：路由只做鉴权 / 校验 / 序列化 / 错误映射，业务逻辑放 `services/`。
+2. **engine 不碰数据库**：引擎只消费 `ReviewContext`，配置由编排层解析后注入。
+3. **engine 实例必须无状态**：`EngineRegistry` 里是进程级单例，per-review 数据放局部变量或
+   `ReviewContext` 的回填字段（`skipped_files`）。
+4. **repository 只做数据访问**：不返回 HTTP 语义、不拼展示文案。
+
+新增管理后台接口 → 加到 `api/admin/` 对应的域模块（而不是再造一个大文件）；
+新增评审引擎 → 按 [docs/engine-development.md](docs/engine-development.md) 的清单实现。
+
+## 注释要求
+
+注释规范见 [docs/commenting-guide.md](docs/commenting-guide.md)。一句话：**docstring 写契约，
+行内注释写"为什么"**——业务阈值、顺序/并发约束、外部系统怪癖、降级决策、魔法数字必须解释。
+
+提交前可自查（输出只是线索，不是门禁）：
+
+```bash
+cd backend
+python scripts/comment_audit.py --min-lines 30
 ```
 
 ## 文档
 
 - 改动 API → 更新 [docs/api.md](docs/api.md)
 - 改动数据模型 → 更新 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) + 运行 `python scripts/export_schema_sql.py` 重新生成建库 SQL
-- 新增 engine → 在 [docs/engine-development.md](docs/engine-development.md) 加示例
+- 改动审查流程（阶段 / 失败语义 / 落库） → 更新 [docs/orchestration.md](docs/orchestration.md)
+- 新增 engine → 按 [docs/engine-development.md](docs/engine-development.md) 实现并补示例
 - 用户可见行为变更 → 更新 [CHANGELOG.md](CHANGELOG.md) `[Unreleased]` 段
 
 ## 安全

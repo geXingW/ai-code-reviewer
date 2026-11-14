@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.block_policy import BlockPolicyLike, compute_has_blocker
 from core.diff_filter import DiffFilterConfig
-from core.summary_builder import build_review_summary_note
+from core.summary_builder import SkippedFileEntry, build_review_summary_note
 from engines import ReviewContext
 from engines.registry import EngineRegistry, get_engine_registry
 from integrations.gitlab.client import GitLabClient
@@ -331,6 +331,19 @@ class ReviewOrchestrator:
                 mode_reason=plan.reason,
                 new_findings=list(merge.new_findings),
                 carried_findings=list(merge.carried_over_untouched),
+                # 引擎（按文件粒度并发审查）回填的跳过文件：明确写进摘要，
+                # 避免用户误以为"没有 finding = 全部文件都审过了"。
+                # 显式构造 TypedDict 而非 model_dump()：mypy 下 dict[str, Any]
+                # 不能赋给 TypedDict，且字段名写错能在编译期暴露。
+                skipped_files=[
+                    SkippedFileEntry(
+                        file_path=item.file_path,
+                        reason=item.reason,
+                        detail=item.detail,
+                    )
+                    for item in context.skipped_files
+                ],
+                reviewed_file_count=max(len(context.diff_hunks) - len(context.skipped_files), 0),
             ),
         )
         await self._gitlab_client.set_commit_status(

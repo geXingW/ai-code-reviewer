@@ -367,9 +367,9 @@ class LLMDirectEngine(ReviewEngine):
             timeout_seconds=effective_timeout,
         )
         self._timeout_seconds = effective_timeout
-        # 按文件粒度并发审查时记录被跳过的文件（过大 / 失败），由 orchestrator
-        # 在 review() 返回后读取并交给 summary builder 渲染。每次 review() 重置。
-        self.skipped_files: list[SkippedFile] = []
+        # 注意：引擎实例是进程级单例（``EngineRegistry``），**不允许**在 ``self``
+        # 上保存 review 期间的可变状态。被跳过的文件通过 ``ReviewContext``
+        # 回填给调用方（见 :meth:`review`）。
         # 启动/构造时打一次配置，便于线上排查"到底用了哪套 timeout/重试/filter 开关"。
         logger.debug(
             "LLM engine config: timeout=%.1fs, max_retries=%d, filter_enabled=%s, "
@@ -398,8 +398,9 @@ class LLMDirectEngine(ReviewEngine):
           不截断、不占并发槽。
         - 单文件 LLM 调用 / 响应解析失败 -> 降级为 skipped（reason=review_failed），
           不拖垮整体 review。``review()`` 本身不再因单文件失败而抛异常。
-        - 跳过的文件记录在实例属性 ``self.skipped_files``，由 orchestrator 在
-          review 完成后读取并交给 summary builder 渲染，避免用户误以为“全部审查通过”。
+        - 跳过的文件记录在 ``ctx.skipped_files``（review 局部，随上下文生命周期
+          消失），由 orchestrator 在 review 完成后交给 summary builder 渲染，
+          避免用户误以为“全部审查通过”。引擎实例本身无状态，可并发复用。
         - 全部文件的 findings 合并后统一走 ``_filter_findings``（filter 阶段
           逻辑不变，仍是单轮全量、fail-open）。
 
@@ -408,8 +409,8 @@ class LLMDirectEngine(ReviewEngine):
         """
         logger.info("llm-direct review start", extra={"ctx": ctx})
 
-        # 每次 review 重置 skipped_files，避免跨 review 串味。
-        self.skipped_files = []
+        # review 局部集合：不落在 self 上，避免并发 review 互相覆盖。
+        skipped_files: list[SkippedFile] = []
 
         if ctx.provider is None:
             logger.info("llm-direct review skipped: provider config missing")
@@ -443,16 +444,19 @@ class LLMDirectEngine(ReviewEngine):
         for findings, skipped in results:
             all_findings.extend(findings)
             if skipped is not None:
-                self.skipped_files.append(skipped)
+                skipped_files.append(skipped)
+
+        # 回填给调用方（review 局部通道，详见 ``ReviewContext.skipped_files``）。
+        ctx.skipped_files.extend(skipped_files)
 
         logger.info(
             "llm-direct concurrent review: %d files reviewed, %d skipped "
             "(too_large=%d, review_failed=%d, filtered_out=%d, review_id=%s)",
-            len(ctx.diff_hunks) - len(self.skipped_files),
-            len(self.skipped_files),
-            sum(1 for s in self.skipped_files if s.reason == "too_large"),
-            sum(1 for s in self.skipped_files if s.reason == "review_failed"),
-            sum(1 for s in self.skipped_files if s.reason == "filtered_out"),
+            len(ctx.diff_hunks) - len(skipped_files),
+            len(skipped_files),
+            sum(1 for s in skipped_files if s.reason == "too_large"),
+            sum(1 for s in skipped_files if s.reason == "review_failed"),
+            sum(1 for s in skipped_files if s.reason == "filtered_out"),
             ctx.review_id,
         )
 

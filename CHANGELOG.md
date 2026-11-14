@@ -19,6 +19,15 @@
 
 ### Added
 
+- **注释规范与自检脚本**：新增 `docs/commenting-guide.md`（docstring 写契约、行内注释写"为什么"，
+  明确六类必写场景与四类反模式），以及 `backend/scripts/comment_audit.py`
+  （列出 ≥30 行且函数体内零注释的函数，供 PR 自查，非门禁）。
+- **关键路径补行内注释**：为二开最容易踩坑的位置补齐"为什么"级注释——阻断策略语义
+  （`core/block_policy.py`）、GitLab position 三件套与数组响应解包（`integrations/gitlab/client.py`）、
+  LLM 重试策略与 Anthropic 协议差异（`llm/base.py`）、增量审查的"按文件换代"合并语义
+  （`persistence.py`）、push/MR 事件归一化的回退字段（`api/gitlab_webhook.py`）、
+  finding 行号反查与降级（`engines/finding_parsing.py`、`gitlab_feedback.py`）、
+  汇总评论失败模板（`core/summary_builder.py`）、repo_reader 的行号/分页提示（`services/repo_reader.py`）。
 - **审查记录统一口径（MR / Push / Commit 合并展示）**：「审查记录」页合并展示全部来源的审查（原独立「Push/Commit 审查」菜单下线），新增「来源」筛选器（默认 MR 防高频 push 刷屏，可一键切「全部来源」），首列按来源分支渲染（MR 行显示 MR 编号 + 分支对，push/commit 行显示 commit 短 SHA + 来源徽章 + diff 起点），搜索框智能识别（纯数字按 MR 号、十六进制按 commit SHA 过滤）；首页「最近审查」面板同步合并口径（`/api/reviews/recent` 返回全来源，push/commit 行 `mr_iid=null`、标题用短 SHA、带 `review_kind` 字段）。
 - **Push/Commit 审查落库与新页面**：push / commit 审查结果此前只写回 GitLab 不落库，Agent 执行轨迹（`agent_trace_events`）虽在写库但查不出来（reviews 表无对应行 → 轨迹端点 404）。现在三条路径（正常完成 / 空 diff / engine_error）均经 `_persist_commit_style_review` 落库 `reviews` + `review_findings`（`review_kind='commit'/'push'`，`mr_iid=NULL`，`review_mode='full'`，行级评论 id 复用 `gitlab_discussion_id` 列）；`GET /api/reviews/records` 新增 `review_kind`（多值）与 `commit_sha` 过滤参数；行展开可看问题列表与 Agent 执行轨迹。
 - **Push 合并审查**：Push Hook 改为一次拉取该 push 全部 commit 的合并变更（`compare before..after`）后单次 LLM 审查，行级评论 / 汇总评论 / commit status 统一写回 head commit；新建分支（before 全 0）降级用 head commit diff；`commit_review_max_per_push` 保留字段但不再截断（MR 审查链路零影响）。
@@ -37,11 +46,36 @@
 
 ### Changed
 
+- **`api/admin.py` 拆分为按域分包**（2506 行 / 99 函数 / 55 路由 → `api/admin/` 下 11 个模块）：
+  `deps`（鉴权 / RBAC）、`common`（`Page` / 排序白名单 / CRUD 薄封装）、`auth`、`providers`、`rules`、
+  `projects`、`reviews`、`findings`、`engines`、`prompts`、`rbac`。每个域模块自持
+  `APIRouter(prefix="/api", dependencies=[Depends(_require_admin_auth)])`，路由级权限仍逐条显式声明；
+  `api/admin/__init__.py` 只做聚合。**66 条路由的路径 + 方法集合与拆分前逐条比对一致**，零行为变更。
+- **落库双函数收敛公共流程**：`_persist_review` / `_persist_commit_style_review` 原为两份 107 行近似实现，
+  现共享 `_write_review`（项目解析 → 行挂载 → 事务 → 错误兜底），公开签名不变，差异仅剩字段映射。
+- **负样本提示词生成下沉到 service 层**：`api/admin/prompts.py` 不再直接 `build_provider().chat()`，
+  改由 `services/prompt_generation.py` 承载提示词模板、样本分组渲染与失败语义
+  （`PromptGenerationError`），路由只做鉴权 / 校验 / HTTP 错误映射。
+- **首页「最近审查」降级缓冲独立成模块**：`api/reviews.py` 内的 `deque` 迁至
+  `services/recent_review_buffer.py`（`record` / `snapshot` / `clear`），消除 `api.admin` 对路由私有符号的跨模块引用；
+  DB 仍是唯一事实源，缓冲仅作查询失败时的降级。
+- **CRUD 辅助函数不再绕过仓储契约**：`_create` / `_delete` / `_get_or_404` 改用 `AsyncSession.add/delete/get`，
+  移除运行时改写 `BaseRepository.model` 的写法；`BaseRepository` 回归"子类声明 model"的契约。
+- `docs/ARCHITECTURE.md` 新增「十、代码分层与模块边界」（目录地图、依赖方向、四条硬约束、admin 分包表、
+  双管线现状）；新增 `docs/orchestration.md`（编排阶段 / 数据结构 / 失败语义 / 演进方向）与
+  `docs/engine-development.md`（引擎开发指南，修复原先指向不存在文件的死链）。
+- 后端测试支持无 Postgres 环境：`requirements-dev.txt` 增加 `aiosqlite`，
+  可用 `DATABASE_URL=sqlite+aiosqlite:///./_pytest.db pytest` 直接跑全量用例。
 - 后端启动依赖新增 `aiomysql` / `pymysql`（可选，仅当 `DATABASE_URL` 指向 MySQL 时生效）。
 - 数据访问统一走 Repository 层，未来注入 mock repository / 切换存储后端只需实现同一接口。
 
 ### Fixed
 
+- **`skipped_files` 跨 review 污染（并发缺陷）**：`LLMDirectEngine` / `LLMAgentEngine` 曾把"被跳过的文件"
+  存在实例属性上，而引擎是进程级单例（`EngineRegistry`）——并发审查会互相清空/串味，与 2026-09 修掉的
+  agent 观察缓存属同类问题。现改为 review 局部通道 `ReviewContext.skipped_files`，引擎实例回归无状态；
+  同时把这一直未被消费的结果接进 MR 汇总评论（新增「跳过文件」分区 + 已审文件数），
+  不再出现"跳过文件却显示全部审查通过"的误导。
 - **建库脚本 MySQL 语法错误**：`scripts/export_schema_sql.py` 编译 DDL 时未传目标方言，SQLAlchemy 退回默认方言渲染——`global_settings.key`（MySQL 保留字）未加反引号导致 `schema-mysql.sql` 执行报 `You have an error in your SQL syntax`，`BOOLEAN DEFAULT x NOT NULL` 属性顺序也不合 MySQL 语法，PostgreSQL 文件被渲染成 `DATETIME` / `CHAR(32)` 等非法类型。现显式按目标方言编译（MySQL：`` `key` ``、`BOOL NOT NULL DEFAULT x`；PostgreSQL：原生 `UUID` / `TIMESTAMP WITH TIME ZONE`），两份 `backend/sql/schema-*.sql` 已重新生成，并新增 `tests/test_schema_export.py` 回归测试。
 - **供应商编辑误覆盖 API Key**：编辑供应商时不再反显脱敏值 `****`，改为留空则不修改，与项目编辑中 GitLab Access Token / Webhook Secret 的行为保持一致；此前保存未编辑的密钥会被脱敏占位符覆盖，导致供应商鉴权失效。
 

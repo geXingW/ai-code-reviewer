@@ -310,8 +310,11 @@ def normalise_raw_finding(
 
     existing_code = optional_str(raw.get("existing_code"))
     line_number = optional_int(raw.get("line_number"))
+    # 行号优先信模型给的值，但**不盲信**：缺行号时用 existing_code 在新增行里
+    # 反查（滑动窗口匹配），这是根治"行号漂移"的关键一步——模型数行号经常偏。
     if line_number is None and existing_code:
         line_number = resolve_line_number(file_path, existing_code, diff_hunks)
+    # 最终必须落在本 diff 的新增行上；否则丢弃该条（挂错行比漏报更伤信任）。
     if line_number is not None and not line_in_diff(file_path, line_number, diff_hunks):
         return None
 
@@ -345,23 +348,30 @@ def parse_findings_from_response(
     payload = loads_model_json(raw_response)
     raw_findings = payload.get("findings", [])
     if not isinstance(raw_findings, list):
+        # 顶层结构不符合约定（模型偶尔返回 {"result": [...]}），当作"没有 findings"
+        # 而不是抛错：解析失败不应该把整次审查标成 engine_error。
         return []
 
     parsed: list[Finding] = []
     for raw in raw_findings:
         if not isinstance(raw, Mapping):
             continue
+        # 规范化会丢掉"文件不在 diff 内 / 非法 severity / 行号不在新增行上"的条目
+        # —— 这些是幻觉定位，宁可漏报也不能把评论挂到错误位置。
         normalized = normalise_raw_finding(raw, ctx.diff_hunks)
         if normalized is None:
             continue
         try:
             finding = Finding(**normalized)
         except ValidationError:
+            # 单条 schema 不合法只跳过该条：模型经常在一条里多给字段少给字段，
+            # 没必要因此丢弃整批 findings。
             logger.info(
                 "ignored invalid finding payload",
                 extra={"finding": normalized},
             )
             continue
+        # 历史负样本命中（已确认的误报）在入口就压掉，省掉后续渲染与评论开销。
         if matches_false_positive_history(finding, ctx.history):
             continue
         parsed.append(tag_finding_source(finding, ctx))

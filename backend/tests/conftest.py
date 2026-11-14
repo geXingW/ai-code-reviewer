@@ -19,6 +19,13 @@ from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+# 未显式提供 SECRET_KEY 时，在**导入 core / main 之前**放一个合法 Fernet key：
+# 部分用例直接构造 Project / Provider（加密字段在 flush 时解密校验），不经过
+# db_session_factory fixture；若等到 fixture 再 setenv，settings 已被 lru_cache
+# 固定成默认占位值 "CHANGE_ME..."，会报 EncryptionConfigurationError。
+# 仅在未设置时兜底，CI 显式注入的 key 优先。
+os.environ.setdefault("SECRET_KEY", Fernet.generate_key().decode("utf-8"))
+
 from core import config, db
 from core.db import Base, get_db
 from main import app as default_app

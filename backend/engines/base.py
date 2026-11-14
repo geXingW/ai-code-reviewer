@@ -1,8 +1,8 @@
 """Abstract base class for review engines.
 
 A ``ReviewEngine`` is the pluggable strategy that turns a
-:class:`~app.engines.types.ReviewContext` into a list of
-:class:`~app.engines.types.Finding` objects.
+:class:`~engines.types.ReviewContext` into a list of
+:class:`~engines.types.Finding` objects.
 
 Subclasses must:
 
@@ -27,7 +27,7 @@ class ReviewEngine(ABC):
     """Strategy interface every review engine must implement.
 
     Engines are looked up by :attr:`name` via the
-    :class:`~app.engines.registry.EngineRegistry`. The name doubles as
+    :class:`~engines.registry.EngineRegistry`. The name doubles as
     the value persisted in ``reviews.engine_used``, so once an engine
     has shipped to production, **do not rename it** — add a new engine
     instead.
@@ -55,7 +55,11 @@ class ReviewEngine(ABC):
         Implementations MUST:
 
         * Be async-safe — they will be awaited inside FastAPI.
-        * Not mutate ``ctx``.
+        * **Be stateless** — the instance is a process-wide singleton served
+          concurrently. Per-review data lives in locals, not on ``self``.
+        * Not mutate input fields of ``ctx``. The only allowed write is
+          ``ctx.skipped_files`` (an output channel for files the engine chose
+          not to review, e.g. oversized diffs).
         * Return findings whose ``file_path`` and ``line_number`` refer
           to the *new* side of the diff (post-merge line numbers).
         * Raise on unrecoverable errors; the orchestrator will mark the
@@ -102,7 +106,7 @@ class ReviewEngine(ABC):
         Used by both ``/api/engines/{name}/health`` and the periodic
         status pings from the operator dashboard. Should return quickly
         (target <2s) and MUST NOT raise — failures should be reported
-        via :class:`~app.engines.types.HealthStatus` with
+        via :class:`~engines.types.HealthStatus` with
         ``status="error"`` and a populated ``message``.
 
         Returns:

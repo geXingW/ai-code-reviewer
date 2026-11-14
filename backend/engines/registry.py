@@ -152,7 +152,7 @@ def register_engine(cls: type[T]) -> type[T]:
     The decorator instantiates the class with no arguments and registers
     the resulting instance in the shared registry. Engines that need
     runtime configuration should accept it from
-    :class:`~app.engines.types.ReviewContext` (per-review) or read
+    :class:`~engines.types.ReviewContext` (per-review) or read
     application settings inside :meth:`review` / :meth:`health_check`
     (process-wide).
 
